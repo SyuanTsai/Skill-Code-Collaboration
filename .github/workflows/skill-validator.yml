@@ -1,13 +1,11 @@
 name: Skill Validator
 
 on:
-  pull_request:
+  push:
     paths:
       - '.agents/skills/**'
       - '.github/workflows/skill-validator.yml'
-  push:
-    branches:
-      - main
+  pull_request:
     paths:
       - '.agents/skills/**'
       - '.github/workflows/skill-validator.yml'
@@ -28,7 +26,12 @@ jobs:
           cache: false
 
       - name: Install skill-validator
-        run: go install github.com/agent-ecosystem/skill-validator/cmd/skill-validator@latest
+        run: go install github.com/agent-ecosystem/skill-validator/cmd/skill-validator@v1.6.0
+
+      - name: Show skill-validator version
+        run: |
+          VALIDATOR="$(go env GOPATH)/bin/skill-validator"
+          "$VALIDATOR" --version
 
       - name: Validate Agent Skills
         run: |
@@ -39,4 +42,4 @@ jobs:
         if: always()
         run: |
           VALIDATOR="$(go env GOPATH)/bin/skill-validator"
-          "$VALIDATOR" check --allow-dirs=agents -o markdown .agents/skills/ >> "$GITHUB_STEP_SUMMARY" || true
+          "$VALIDATOR" check --strict --allow-dirs=agents -o markdown .agents/skills/ >> "$GITHUB_STEP_SUMMARY" || true
