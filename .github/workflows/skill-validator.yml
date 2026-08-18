@@ -1,25 +1,26 @@
 name: Skill Validator
 
 on:
+  pull_request:
+    paths:
+      - '.agents/skills/**'
+      - '.github/workflows/skill-validator.yml'
   push:
     branches:
-      - agent/syp-83-skill-validator-final
-    paths-ignore:
-      - validation/skill-validator-report.md
-      - validation/skill-validator-report.json
-  pull_request:
+      - main
+    paths:
+      - '.agents/skills/**'
+      - '.github/workflows/skill-validator.yml'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   validate-skills:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref || github.ref_name }}
 
       - uses: actions/setup-go@v5
         with:
@@ -29,39 +30,13 @@ jobs:
       - name: Install skill-validator
         run: go install github.com/agent-ecosystem/skill-validator/cmd/skill-validator@latest
 
-      - name: Run skill-validator
-        id: validator
-        shell: bash
+      - name: Validate Agent Skills
         run: |
-          set +e
-          mkdir -p validation
           VALIDATOR="$(go env GOPATH)/bin/skill-validator"
           "$VALIDATOR" check --strict --allow-dirs=agents --emit-annotations .agents/skills/
-          STATUS=$?
-          "$VALIDATOR" check --allow-dirs=agents -o markdown .agents/skills/ > validation/skill-validator-report.md
-          "$VALIDATOR" check --allow-dirs=agents -o json .agents/skills/ > validation/skill-validator-report.json
-          cat validation/skill-validator-report.md >> "$GITHUB_STEP_SUMMARY"
-          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
-          exit 0
 
-      - name: Persist validation report
-        if: github.event_name == 'push'
-        shell: bash
+      - name: Write validation report
+        if: always()
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add validation/skill-validator-report.md validation/skill-validator-report.json
-          if git diff --cached --quiet; then
-            echo "Validation report unchanged."
-          else
-            git commit -m "Record skill-validator report"
-            git push
-          fi
-
-      - name: Enforce validation result
-        shell: bash
-        run: |
-          if [ "${{ steps.validator.outputs.status }}" != "0" ]; then
-            echo "skill-validator strict validation failed."
-            exit 1
-          fi
+          VALIDATOR="$(go env GOPATH)/bin/skill-validator"
+          "$VALIDATOR" check --allow-dirs=agents -o markdown .agents/skills/ >> "$GITHUB_STEP_SUMMARY" || true
