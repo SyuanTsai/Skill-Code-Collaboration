@@ -31,6 +31,19 @@ Default to a local review report and drafted feedback. Publish comments only whe
 10. Before commenting, show the exact draft comments unless the user's current instruction already authorizes reviewing and commenting on that exact PR or update. Re-read the PR, confirm that its source commit still matches the reviewed commit, and re-fetch and re-review when it changed.
 11. Publish only the authorized new comments. Re-read the created comments, report their identifiers and links, and disclose partial failures without retrying writes blindly.
 
+## Example
+
+```text
+User request:
+"Review Bitbucket PR 42 and draft comments, but do not publish them."
+
+Expected workflow:
+1. Resolve the exact workspace, repository, PR, source SHA, and destination SHA.
+2. Fetch both commits and build the complete local merge-base diff.
+3. Reconcile existing comments and validate each finding against current code.
+4. Return evidence-based findings plus draft comments without performing remote writes.
+```
+
 ## Feedback Decisions
 
 - Publish a new comment only after an explicit instruction to comment on the exact PR or its reviewed update.
