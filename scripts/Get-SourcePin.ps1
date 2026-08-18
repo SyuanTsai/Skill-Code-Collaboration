@@ -17,7 +17,8 @@ function Invoke-GitText {
     return @($output | ForEach-Object { [string] $_ })
 }
 
-$resolvedCommit = (Invoke-GitText -Arguments @('rev-parse', "$Ref^{commit}"))[0].Trim()
+$resolvedCommitLines = @(Invoke-GitText -Arguments @('rev-parse', "$Ref^{commit}"))
+$resolvedCommit = $resolvedCommitLines[0].Trim()
 if ($resolvedCommit -notmatch '^[0-9a-f]{40}$') {
     throw "Ref '$Ref' did not resolve to a full commit SHA."
 }
