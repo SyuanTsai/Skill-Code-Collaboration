@@ -7,10 +7,21 @@ on:
       - main
 
 jobs:
-  catalog:
+  repository-contract:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Validate Code Collaboration catalog
+        with:
+          fetch-depth: 0
+      - name: Validate Code Collaboration repository contract
         shell: pwsh
         run: ./tests/validate-catalog.ps1
+      - name: Validate reproducible source pin
+        shell: pwsh
+        run: |
+          $pin = ./scripts/Get-SourcePin.ps1 -Ref HEAD | ConvertFrom-Json
+          if ($pin.sourceId -ne 'code-collaboration') { throw 'Unexpected sourceId.' }
+          if ($pin.resolvedCommit -notmatch '^[0-9a-f]{40}$') { throw 'Invalid resolved commit.' }
+          if ($pin.contentSha256 -notmatch '^[0-9a-f]{64}$') { throw 'Invalid content SHA-256.' }
+          if ($pin.resolvedVersion -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid repository version.' }
+          Write-Host "Validated pin for $($pin.resolvedCommit) with content SHA-256 $($pin.contentSha256)."
