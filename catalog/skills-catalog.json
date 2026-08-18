@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "catalogId": "code-collaboration",
+  "sources": [
+    {
+      "id": "code-collaboration",
+      "repository": "https://github.com/SyuanTsai/Skill-Code-Collaboration.git"
+    }
+  ],
+  "profiles": [
+    {
+      "id": "copilot",
+      "description": "GitHub Copilot implementation delegation workflow.",
+      "default": false,
+      "includes": [
+        "write-copilot-implementation-prompt"
+      ],
+      "excludes": []
+    },
+    {
+      "id": "bitbucket",
+      "description": "Bitbucket pull-request review workflow.",
+      "default": false,
+      "includes": [
+        "review-bitbucket-pull-request"
+      ],
+      "excludes": []
+    }
+  ],
+  "skills": [
+    {
+      "id": "write-copilot-implementation-prompt",
+      "group": "code-collaboration",
+      "source": {
+        "sourceId": "code-collaboration",
+        "path": ".agents/skills/write-copilot-implementation-prompt"
+      },
+      "profiles": [
+        "copilot"
+      ],
+      "compatibility": {
+        "platforms": [
+          "any"
+        ],
+        "shells": [],
+        "requiredCapabilities": [],
+        "anyOfCapabilities": []
+      },
+      "dependencies": [],
+      "lifecycle": {
+        "status": "active",
+        "aliases": []
+      }
+    },
+    {
+      "id": "review-bitbucket-pull-request",
+      "group": "code-collaboration",
+      "source": {
+        "sourceId": "code-collaboration",
+        "path": ".agents/skills/review-bitbucket-pull-request"
+      },
+      "profiles": [
+        "bitbucket"
+      ],
+      "compatibility": {
+        "platforms": [
+          "any"
+        ],
+        "shells": [],
+        "requiredCapabilities": [
+          {
+            "kind": "command",
+            "id": "git",
+            "state": "available"
+          }
+        ],
+        "anyOfCapabilities": [
+          [
+            {
+              "kind": "connector",
+              "id": "bitbucket-cloud",
+              "state": "configured"
+            },
+            {
+              "kind": "environment",
+              "id": "bitbucket-cloud-api",
+              "state": "configured"
+            }
+          ]
+        ]
+      },
+      "dependencies": [],
+      "lifecycle": {
+        "status": "active",
+        "aliases": []
+      }
+    }
+  ]
+}
