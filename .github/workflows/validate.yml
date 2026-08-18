@@ -1,10 +1,12 @@
 name: Validate
 
 on:
-  pull_request:
   push:
-    branches:
-      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   repository-contract:
@@ -13,9 +15,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - name: Validate Code Collaboration repository contract
         shell: pwsh
         run: ./tests/validate-catalog.ps1
+
       - name: Validate reproducible source pin
         shell: pwsh
         run: |
