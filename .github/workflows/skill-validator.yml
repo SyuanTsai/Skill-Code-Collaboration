@@ -1,0 +1,31 @@
+name: Skill Validator
+
+on:
+  push:
+    branches:
+      - agent/syp-83-skill-validator-final
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validate-skills:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.5'
+          cache: false
+
+      - name: Install skill-validator
+        run: go install github.com/agent-ecosystem/skill-validator/cmd/skill-validator@latest
+
+      - name: Validate Agent Skills
+        run: |
+          "$(go env GOPATH)/bin/skill-validator" check --strict --allow-dirs=agents --emit-annotations .agents/skills/
+
+      - name: Write validation report
+        if: always()
+        run: |
+          "$(go env GOPATH)/bin/skill-validator" check --allow-dirs=agents -o markdown .agents/skills/ >> "$GITHUB_STEP_SUMMARY" || true
