@@ -1,6 +1,6 @@
 ---
 name: review-bitbucket-pull-request
-description: Review Bitbucket Cloud pull requests using local Git for the complete code diff, inspect the PR description and all existing feedback, produce evidence-based findings, and publish comments only when explicitly instructed. Use for Bitbucket PR URLs or identifiers, PR feedback, code review, unresolved review threads, or requests to review an updated pull request and comment on it.
+description: Analyze and check Cloud-hosted code proposals using local Git for the complete diff, existing feedback, and build evidence. Use when the user needs to inspect, find, or assess modifications from a Bitbucket URL or identifier, with remote comments published only after explicit authorization.
 ---
 
 # Review Bitbucket Pull Request
@@ -43,6 +43,24 @@ Expected workflow:
 3. Reconcile existing comments and validate each finding against current code.
 4. Return evidence-based findings plus draft comments without performing remote writes.
 ```
+
+Example finding:
+
+```text
+File: src/Orders/OrderService.cs:142
+Condition: retry path executes after the database write succeeds but before the idempotency marker is stored.
+Impact: duplicate orders can be created on retry.
+Evidence: changed transaction boundary in the reviewed diff.
+Action: make the write and marker atomic, then add a retry regression test.
+```
+
+## Error Handling
+
+- If the workspace, repository, PR ID, source SHA, or destination SHA is ambiguous, stop before fetching or commenting and resolve the exact target.
+- If either PR commit cannot be fetched and verified locally, mark the review incomplete and do not publish comments or claim that no findings exist.
+- If the PR head changes after analysis, re-fetch and re-review before any remote write.
+- If line mapping is uncertain, use a global draft comment rather than attaching feedback to an unverified line.
+- If a comment write partially fails, report the successful and failed actions separately and do not retry blindly.
 
 ## Feedback Decisions
 
