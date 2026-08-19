@@ -16,6 +16,4 @@ If a released change must be reverted, create a new commit that restores the pre
 
 ## Safe fallback behavior
 
-Consumers must treat an unavailable or uninstalled Skill as absent. They must not assume a direct `.agents/skills/...` path exists merely because this repository contains that Skill. This allows consumers to omit the Copilot or Bitbucket profile independently without producing a broken path.
-
-For `review-bitbucket-pull-request`, a consumer must also exclude the Skill from its available set when `git` is unavailable or when neither supported Bitbucket access capability is configured.
+Consumers must treat an unavailable or uninstalled Skill as absent. They must not assume a direct `.agents/skills/...` path exists merely because a related workflow exists in another source repository.
