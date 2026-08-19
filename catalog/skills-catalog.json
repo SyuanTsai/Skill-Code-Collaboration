@@ -16,15 +16,6 @@
         "write-copilot-implementation-prompt"
       ],
       "excludes": []
-    },
-    {
-      "id": "bitbucket",
-      "description": "Bitbucket pull-request review workflow.",
-      "default": false,
-      "includes": [
-        "review-bitbucket-pull-request"
-      ],
-      "excludes": []
     }
   ],
   "skills": [
@@ -45,49 +36,6 @@
         "shells": [],
         "requiredCapabilities": [],
         "anyOfCapabilities": []
-      },
-      "dependencies": [],
-      "lifecycle": {
-        "status": "active",
-        "aliases": []
-      }
-    },
-    {
-      "id": "review-bitbucket-pull-request",
-      "group": "code-collaboration",
-      "source": {
-        "sourceId": "code-collaboration",
-        "path": ".agents/skills/review-bitbucket-pull-request"
-      },
-      "profiles": [
-        "bitbucket"
-      ],
-      "compatibility": {
-        "platforms": [
-          "any"
-        ],
-        "shells": [],
-        "requiredCapabilities": [
-          {
-            "kind": "command",
-            "id": "git",
-            "state": "available"
-          }
-        ],
-        "anyOfCapabilities": [
-          [
-            {
-              "kind": "connector",
-              "id": "bitbucket-cloud",
-              "state": "configured"
-            },
-            {
-              "kind": "environment",
-              "id": "bitbucket-cloud-api",
-              "state": "configured"
-            }
-          ]
-        ]
       },
       "dependencies": [],
       "lifecycle": {

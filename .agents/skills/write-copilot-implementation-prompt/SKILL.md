@@ -30,3 +30,10 @@ Prompt:
 <self-contained Copilot prompt>
 ```
 ````
+
+## Error Handling
+
+- If the repository, target change, or applicable rules cannot be inspected, identify the missing evidence and do not invent file paths, symbols, constraints, or acceptance criteria.
+- If the selectable Copilot model list cannot be established from the user's environment or current official documentation, ask for the exact names shown in the model picker before recommending one.
+- If repository instructions conflict or the requested scope is ambiguous, surface the conflict or decision that Copilot must not guess and obtain clarification before finalizing the prompt.
+- If an exact validation command cannot be verified, require Copilot to discover the repository-supported command, run it when safe, and report the command and result instead of fabricating one.
