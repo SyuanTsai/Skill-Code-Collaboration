@@ -1,3 +1,7 @@
+<!--
+SPDX-FileCopyrightText: 2026 SyuanTsai
+SPDX-License-Identifier: Apache-2.0
+-->
 # Rollback
 
 Rollback is source-pin based. Do not rewrite a released tag or force-update a consumer to a different commit under the same version.

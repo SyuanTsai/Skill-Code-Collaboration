@@ -2,6 +2,10 @@
 name: write-copilot-implementation-prompt
 description: Produce a self-contained, repository-scoped implementation prompt for GitHub Copilot and recommend the exact selectable name of the lowest sufficient available model. Use when the user asks for a prompt that Copilot will use to implement, fix, refactor, or test a change.
 ---
+<!--
+SPDX-FileCopyrightText: 2026 SyuanTsai
+SPDX-License-Identifier: Apache-2.0
+-->
 
 # Write a GitHub Copilot Implementation Prompt
 
