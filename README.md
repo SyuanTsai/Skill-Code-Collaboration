@@ -1,3 +1,7 @@
+<!--
+SPDX-FileCopyrightText: 2026 SyuanTsai
+SPDX-License-Identifier: Apache-2.0
+-->
 # Skill Code Collaboration
 
 Independent Agent Skills source repository for code-delegation workflows.
@@ -59,6 +63,14 @@ The GitHub Actions workflow runs catalog/layout validation for pull requests and
 ## Versioning and rollback
 
 This repository is independently versioned. Release and pin rules are documented in `docs/RELEASE.md`. A consumer can roll back without modifying Skill content by restoring its previous source pin; see `docs/ROLLBACK.md`.
+
+## License and contribution boundary
+
+The Apache-2.0 license in [LICENSE](LICENSE) applies to the repository-authored Skill instructions, agent metadata, catalog data, documentation, validation scripts, tests, and workflow configuration in this repository. It does not grant rights to external services, GitHub/Copilot product materials, consumer prompts or outputs, credentials, tenant data, or other content supplied by a user.
+
+The repository does not vendor third-party source code. CI and developer tools are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); their upstream terms remain applicable. The evidence and file-by-file decision record is [PROVENANCE.md](PROVENANCE.md).
+
+Contributors must have the right to submit their contribution. Unless a separate written agreement says otherwise, an intentional contribution to this repository is submitted under Apache-2.0; contributors must preserve existing notices and identify material that is not their own.
 
 ## Scope
 
