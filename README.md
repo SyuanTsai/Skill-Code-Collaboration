@@ -7,7 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 Independent Agent Skills source repository for code-delegation workflows.
 
 - Stable source ID: `code-collaboration`
-- Catalog: `catalog/skills-catalog.json`
+- Source inventory: `catalog/source.json`
+- Profile catalog extension: `catalog/profiles.json`
 - Current repository version: `0.1.0`
 
 ## Skills
@@ -21,12 +22,12 @@ Bitbucket pull-request review belongs to the separately versioned `Skill-Atlassi
 ## Repository layout
 
 ```text
-.agents/skills/
+skills/
   write-copilot-implementation-prompt/
     SKILL.md
     agents/openai.yaml
 catalog/
-  skills-catalog.json
+  profiles.json
 docs/
   RELEASE.md
   ROLLBACK.md
@@ -41,11 +42,11 @@ VERSION
 
 ## Discovery and selection
 
-Consumers discover this source through `catalog/skills-catalog.json`. The Copilot Skill uses `sourceId: code-collaboration` and the `copilot` profile.
+Consumers discover this source through the canonical `catalog/source.json` inventory. The domain-specific `catalog/profiles.json` retains the opt-in `copilot` profile and selection metadata.
 
 Direct paths are stable within a pinned version:
 
-- `.agents/skills/write-copilot-implementation-prompt`
+- `skills/write-copilot-implementation-prompt`
 
 Consumers should resolve a release tag to an immutable commit SHA and persist that SHA plus a reproducible repository content hash. `scripts/Get-SourcePin.ps1` produces the pin metadata used for that purpose.
 
@@ -56,9 +57,11 @@ Run from the repository root:
 ```powershell
 pwsh -File ./tests/validate-catalog.ps1
 pwsh -File ./scripts/Get-SourcePin.ps1 -Ref HEAD
+pwsh -File ./scripts/Test-Repository.ps1
+pwsh -File ./scripts/Validate.ps1
 ```
 
-The GitHub Actions workflow runs catalog/layout validation for pull requests and pushes to `main`.
+The GitHub Actions workflow runs the canonical Standard v1 validation for pull requests and pushes.
 
 ## Versioning and rollback
 

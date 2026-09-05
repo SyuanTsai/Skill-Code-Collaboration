@@ -12,7 +12,7 @@ Rollback is source-pin based. Do not rewrite a released tag or force-update a co
 2. Restore the consumer's previous `code-collaboration` requested ref, resolved commit SHA, and content SHA-256.
 3. Re-run the consumer's resolver/discovery step.
 4. Verify the available Skill set matches the restored pin and that capability filtering is applied again.
-5. Remove only artifacts managed by the newer source pin; do not delete unrelated `.agents/skills` content.
+5. Remove only artifacts managed by the newer source pin; do not delete unrelated `skills/` content.
 
 ## Repository rollback
 
@@ -20,4 +20,4 @@ If a released change must be reverted, create a new commit that restores the pre
 
 ## Safe fallback behavior
 
-Consumers must treat an unavailable or uninstalled Skill as absent. They must not assume a direct `.agents/skills/...` path exists merely because a related workflow exists in another source repository.
+Consumers must treat an unavailable or uninstalled Skill as absent. They must not assume a direct `skills/...` path exists merely because a related workflow exists in another source repository.

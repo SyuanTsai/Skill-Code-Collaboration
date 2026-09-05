@@ -11,7 +11,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 function Invoke-GitText {
     param([Parameter(Mandatory = $true)][string[]] $Arguments)
 
-    $output = & git -C $repoRoot @Arguments 2>&1
+    $output = & git -c "safe.directory=$repoRoot" -C $repoRoot @Arguments 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "git $($Arguments -join ' ') failed: $($output -join [Environment]::NewLine)"
     }
