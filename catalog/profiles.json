@@ -24,7 +24,7 @@
       "group": "code-collaboration",
       "source": {
         "sourceId": "code-collaboration",
-        "path": ".agents/skills/write-copilot-implementation-prompt"
+        "path": "skills/write-copilot-implementation-prompt"
       },
       "profiles": [
         "copilot"

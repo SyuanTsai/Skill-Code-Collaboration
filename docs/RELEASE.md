@@ -10,14 +10,15 @@ This repository is versioned independently from any consumer repository. Use Sem
 
 ## Release checklist
 
-1. Run `pwsh -File ./tests/validate-catalog.ps1`.
-2. Run `pwsh -File ./scripts/Get-SourcePin.ps1 -Ref HEAD` and retain the reported commit and content SHA-256 in release evidence.
-3. Confirm `catalog/skills-catalog.json` exposes only the intended Skills and profiles.
-4. Confirm the Copilot profile selects only `write-copilot-implementation-prompt`.
-5. Merge the release commit to `main`.
-6. Create an annotated release tag matching `VERSION`, for example `v0.1.0`.
-7. Resolve that tag to its immutable 40-character commit SHA and generate the source content hash again from the tagged commit.
-8. Consumers pin the tag, resolved commit SHA, and content SHA-256; they must not rely on a mutable branch alone.
+1. Run `pwsh -File ./scripts/Test-Repository.ps1` and `pwsh -File ./tests/validate-catalog.ps1`.
+2. Run `pwsh -File ./scripts/Validate.ps1` for the complete Standard v1 gate.
+3. Run `pwsh -File ./scripts/Get-SourcePin.ps1 -Ref HEAD` and retain the reported commit and content SHA-256 in release evidence.
+4. Confirm `catalog/profiles.json` exposes only the intended Skills and profiles.
+5. Confirm the Copilot profile selects only `write-copilot-implementation-prompt`.
+6. Merge the release commit to `main`.
+7. Create an annotated release tag matching `VERSION`, for example `v0.1.0`.
+8. Resolve that tag to its immutable 40-character commit SHA and generate the source content hash again from the tagged commit.
+9. Consumers pin the tag, resolved commit SHA, and content SHA-256; they must not rely on a mutable branch alone.
 
 ## Pin invariants
 

@@ -3,7 +3,7 @@
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$catalogPath = Join-Path $repoRoot 'catalog/skills-catalog.json'
+$catalogPath = Join-Path $repoRoot 'catalog/profiles.json'
 $catalog = Get-Content -LiteralPath $catalogPath -Raw | ConvertFrom-Json
 
 function Assert-True {
@@ -27,7 +27,7 @@ Assert-True (@($skills.id | Sort-Object -Unique).Count -eq 1) 'Skill IDs must be
 $copilot = @($skills | Where-Object id -eq 'write-copilot-implementation-prompt')[0]
 Assert-True ($null -ne $copilot) 'Copilot skill is missing.'
 Assert-True ($copilot.source.sourceId -eq 'code-collaboration') 'Copilot sourceId is invalid.'
-Assert-True ($copilot.source.path -eq '.agents/skills/write-copilot-implementation-prompt') 'Copilot source path is invalid.'
+Assert-True ($copilot.source.path -eq 'skills/write-copilot-implementation-prompt') 'Copilot source path is invalid.'
 
 $profiles = @($catalog.profiles)
 Assert-True ($profiles.Count -eq 1) 'Exactly one profile is expected.'
@@ -40,7 +40,7 @@ Assert-True ($copilotProfile.includes[0] -eq 'write-copilot-implementation-promp
 Assert-True (@($copilot.compatibility.requiredCapabilities).Count -eq 0) 'Copilot skill must not require Bitbucket/Git capabilities.'
 Assert-True (@($copilot.compatibility.anyOfCapabilities).Count -eq 0) 'Copilot skill must be independently available.'
 
-$skillRoot = Join-Path $repoRoot '.agents/skills'
+$skillRoot = Join-Path $repoRoot 'skills'
 $actualSkillDirectories = @(Get-ChildItem -LiteralPath $skillRoot -Directory | Select-Object -ExpandProperty Name | Sort-Object)
 $expectedSkillDirectories = @('write-copilot-implementation-prompt')
 Assert-True (($actualSkillDirectories -join "`n") -eq ($expectedSkillDirectories -join "`n")) 'Repository contains missing or unexpected Skill directories.'

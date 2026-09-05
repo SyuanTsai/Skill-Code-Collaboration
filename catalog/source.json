@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 2,
+  "sourceId": "code-collaboration",
+  "repository": "https://github.com/SyuanTsai/Skill-Code-Collaboration.git",
+  "skillsRoot": "skills",
+  "skills": [
+    "write-copilot-implementation-prompt"
+  ]
+}
