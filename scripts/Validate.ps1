@@ -11,6 +11,7 @@ param(
     ),
     [string] $AuthorityArchivePath,
     [string] $BaseCommit,
+    [string] $ExpectedGoRuntimeVersion = $env:STANDARD_GO_RUNTIME_VERSION,
     [string] $OutputPath
 )
 
@@ -388,8 +389,16 @@ function Invoke-NativeChecked {
 
 function Test-SecurityRelevantSkillChange {
     param([string] $GitPath, [string] $RepositoryRoot, [string] $BaseCommit)
-    if ([string]::IsNullOrWhiteSpace($BaseCommit)) { return $false }
-    $lines = @(& $GitPath -C $RepositoryRoot diff --find-renames=100% --name-status "$BaseCommit...HEAD")
+    $diffArguments = if ([string]::IsNullOrWhiteSpace($BaseCommit)) {
+        # Without an immutable comparison base, inspect the complete committed
+        # candidate so an earlier Skill change cannot evade semantic scanning.
+        $emptyTreeObject = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+        @('-C', $RepositoryRoot, 'diff', '--find-renames=100%', '--name-status', $emptyTreeObject, 'HEAD')
+    }
+    else {
+        @('-C', $RepositoryRoot, 'diff', '--find-renames=100%', '--name-status', "$BaseCommit...HEAD")
+    }
+    $lines = @(& $GitPath @diffArguments)
     if ($LASTEXITCODE -ne 0) { throw "Could not compare candidate with base commit '$BaseCommit'." }
     foreach ($line in $lines) {
         $columns = ([string]$line).Split("`t")
@@ -560,7 +569,7 @@ $expectedSources = [ordered]@{
 $receipts = [ordered]@{}
 foreach ($toolName in $expectedSources.Keys) {
     $receiptPath = Join-Path $runRoot "receipt-$toolName.json"
-    & $resolverPath -PolicyPath $policyPath -ToolName $toolName -Install -InstallRoot $installRoot -OutputPath $receiptPath | Out-Host
+    & $resolverPath -PolicyPath $policyPath -ToolName $toolName -Install -InstallRoot $installRoot -ExpectedGoRuntimeVersion $ExpectedGoRuntimeVersion -OutputPath $receiptPath | Out-Host
     $receipt = Read-JsonFile -Path $receiptPath -Context "$toolName resolver receipt"
     if ($receipt.toolName -cne $toolName -or $receipt.source -cne $expectedSources[$toolName] -or
         $receipt.channel -cne 'latest-stable' -or $receipt.frozenForRun -ne $true -or
@@ -655,7 +664,11 @@ $diffArguments = if (-not [string]::IsNullOrWhiteSpace($BaseCommit)) {
     @('-C', $repoRoot, 'diff', '--check', "$BaseCommit...HEAD")
 }
 else {
-    @('-C', $repoRoot, 'diff-tree', '--check', '--root', '-r', 'HEAD')
+    # A missing event base must validate the complete committed candidate,
+    # not only the final commit. All supported GitHub repositories use the
+    # SHA-1 object format, whose canonical empty tree object is stable.
+    $emptyTreeObject = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+    @('-C', $repoRoot, 'diff', '--check', $emptyTreeObject, 'HEAD')
 }
 $diffOutput = @(& $gitPath @diffArguments 2>&1)
 if ($LASTEXITCODE -ne 0) {
