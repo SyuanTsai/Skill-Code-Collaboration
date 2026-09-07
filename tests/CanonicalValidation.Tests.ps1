@@ -48,6 +48,8 @@ Describe 'Canonical Standard v1 validation adapter' {
         # Purpose: Check every committed candidate path instead of only HEAD's parent.
         $script:Validator | Should -Match 'emptyTreeObject = ''4b825dc642cb6eb9a060e54bf8d69288fbee4904'''
         $script:Validator | Should -Match ([regex]::Escape("'diff'") + '.*' + [regex]::Escape("'--check'") + '.*' + [regex]::Escape('$emptyTreeObject') + '.*' + [regex]::Escape("'HEAD'"))
+        $script:Validator | Should -Match 'Test-SecurityRelevantSkillChange'
+        $script:Validator | Should -Match ([regex]::Escape("'--name-status'") + '.*' + [regex]::Escape('$emptyTreeObject') + '.*' + [regex]::Escape("'HEAD'"))
         $script:Validator | Should -Not -Match 'diff-tree.*--root.*HEAD'
     }
 

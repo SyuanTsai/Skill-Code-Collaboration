@@ -389,8 +389,16 @@ function Invoke-NativeChecked {
 
 function Test-SecurityRelevantSkillChange {
     param([string] $GitPath, [string] $RepositoryRoot, [string] $BaseCommit)
-    if ([string]::IsNullOrWhiteSpace($BaseCommit)) { return $false }
-    $lines = @(& $GitPath -C $RepositoryRoot diff --find-renames=100% --name-status "$BaseCommit...HEAD")
+    $diffArguments = if ([string]::IsNullOrWhiteSpace($BaseCommit)) {
+        # Without an immutable comparison base, inspect the complete committed
+        # candidate so an earlier Skill change cannot evade semantic scanning.
+        $emptyTreeObject = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+        @('-C', $RepositoryRoot, 'diff', '--find-renames=100%', '--name-status', $emptyTreeObject, 'HEAD')
+    }
+    else {
+        @('-C', $RepositoryRoot, 'diff', '--find-renames=100%', '--name-status', "$BaseCommit...HEAD")
+    }
+    $lines = @(& $GitPath @diffArguments)
     if ($LASTEXITCODE -ne 0) { throw "Could not compare candidate with base commit '$BaseCommit'." }
     foreach ($line in $lines) {
         $columns = ([string]$line).Split("`t")
