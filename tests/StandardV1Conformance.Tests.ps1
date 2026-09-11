@@ -47,7 +47,7 @@ Describe 'Code Collaboration Standard v1 conformance' {
     It 'routes CI through the same canonical validator without a second policy workflow' {
         $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') -Raw
         $workflow | Should -Match 'scripts/Validate\.ps1'
-        $workflow | Should -Match 'tests/validate-catalog\.ps1'
+        $workflow | Should -Not -Match 'tests/validate-catalog\.ps1'
         $workflow | Should -Match 'persist-credentials:\s*false'
         $workflow | Should -Match 'actions/checkout@[0-9a-f]{40}'
         $workflow | Should -Match 'actions/setup-go@[0-9a-f]{40}'
