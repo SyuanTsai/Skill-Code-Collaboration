@@ -55,13 +55,10 @@ Consumers should resolve a release tag to an immutable commit SHA and persist th
 Run from the repository root:
 
 ```powershell
-pwsh -File ./tests/validate-catalog.ps1
-pwsh -File ./scripts/Get-SourcePin.ps1 -Ref HEAD
-pwsh -File ./scripts/Test-Repository.ps1
 pwsh -File ./scripts/Validate.ps1
 ```
 
-The GitHub Actions workflow runs the canonical Standard v1 validation for pull requests and pushes.
+The GitHub Actions workflow runs the canonical Standard v1 validation for pull requests and pushes. Component scripts are not additional public validation gates. Use `scripts/Get-SourcePin.ps1 -Ref HEAD` separately when producing source-pin metadata.
 
 ## Versioning and rollback
 

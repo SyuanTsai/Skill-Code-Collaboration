@@ -10,8 +10,8 @@ This repository is versioned independently from any consumer repository. Use Sem
 
 ## Release checklist
 
-1. Run `pwsh -File ./scripts/Test-Repository.ps1` and `pwsh -File ./tests/validate-catalog.ps1`.
-2. Run `pwsh -File ./scripts/Validate.ps1` for the complete Standard v1 gate.
+1. Run `pwsh -File ./scripts/Validate.ps1` as the single public entry point for the complete Standard v1 gate.
+2. `scripts/Test-Repository.ps1` and `tests/validate-catalog.ps1` remain components, not additional release commands.
 3. Run `pwsh -File ./scripts/Get-SourcePin.ps1 -Ref HEAD` and retain the reported commit and content SHA-256 in release evidence.
 4. Confirm `catalog/profiles.json` exposes only the intended Skills and profiles.
 5. Confirm the Copilot profile selects only `write-copilot-implementation-prompt`.
