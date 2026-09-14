@@ -147,6 +147,15 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match '--prefix=candidate-\$candidateCommit/'
     }
 
+    It 'preserves an unbased run and scans the full candidate from the empty tree' {
+        # Scenario: workflow_dispatch or an initial push has no meaningful base commit.
+        # Purpose: prevent a HEAD^ fallback from hiding Skill changes in an earlier candidate commit.
+        $script:Validator | Should -Not -Match 'IsNullOrWhiteSpace\(\$BaseCommit\).*HEAD\^'
+        $script:Validator | Should -Match '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+        $script:Validator | Should -Match '\$semanticRequired = \$unbased'
+        $script:Validator | Should -Match '\$changedPaths = @\(& \$gitPath -C \$repoRoot diff --find-renames=100% --name-only \$changeDetectionBase \$candidateCommit\)'
+    }
+
     It 'keeps generated adapter and evidence roots outside the candidate' {
         # Scenario: an output path or temporary tool root is redirected into the candidate repository.
         # Purpose: prevent evidence and resolved tools from changing the immutable candidate.

@@ -78,6 +78,15 @@ Describe 'Code Collaboration Standard v1 conformance' {
         }
     }
 
+    It 'keeps no-base workflow events unbased instead of substituting HEAD^' {
+        # Scenario: workflow_dispatch or a push with an all-zero before SHA has no comparison base.
+        # Purpose: require the canonical validator to perform full-candidate change detection.
+        $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') -Raw
+        $workflow | Should -Not -Match 'git rev-parse HEAD\^'
+        $workflow | Should -Match "else \{\s*''\s*\}"
+        $workflow | Should -Match 'BaseCommit \$baseCommit'
+    }
+
     It 'keeps public validation documentation on the canonical entry point' {
         # Scenario: component validators become undocumented alternate release gates.
         # Purpose: document Validate.ps1 as the sole public validation command.

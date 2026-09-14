@@ -23,6 +23,7 @@ $script:SourceRepository = 'https://github.com/SyuanTsai/Skill-Code-Collaboratio
 $script:AuthorityRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
 $script:AuthorityCommit = 'a403abdf038a3346d775431a6908a71cc3d35a5b'
 $script:AuthorityArchiveSha256 = '17154929fadfa63487263db1efcb78f4948195af9c11c25a66432eff3411b2d3'
+$script:EmptyTreeObject = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 $script:AuthorityFiles = [ordered]@{
     'docs/standards/README.md' = '5e1ddd737d26a5ec1ff1ebd08e158376ddaf1ea21008bb987fc7f51376923f7c'
     'docs/standards/managed-skill-lifecycle.md' = '70950cf8bdd02819efae6f6e06ac5be1da3e70f809c23e3c6f8d3b217797416c'
@@ -657,10 +658,18 @@ try {
     $candidateCommit = Resolve-GitRevision -GitPath $gitPath -Root $repoRoot -Revision 'HEAD' -Context 'Candidate revision'
     $dirty = @(& $gitPath -C $repoRoot status --porcelain=v1 --untracked-files=all)
     if ($LASTEXITCODE -ne 0 -or $dirty.Count -ne 0) { throw 'Canonical validation requires a clean immutable candidate commit.' }
-    $baseInput = if ([string]::IsNullOrWhiteSpace($BaseCommit)) { 'HEAD^' } else { $BaseCommit }
-    $baseRevision = Resolve-GitRevision -GitPath $gitPath -Root $repoRoot -Revision $baseInput -Context 'Base commit'
-    & $gitPath -C $repoRoot merge-base --is-ancestor $baseRevision $candidateCommit
-    if ($LASTEXITCODE -ne 0 -or $baseRevision -ceq $candidateCommit) { throw 'Base commit must be a distinct ancestor of the immutable candidate.' }
+    $unbased = [string]::IsNullOrWhiteSpace($BaseCommit)
+    if ($unbased) {
+        # The P02 runner requires a concrete commit identity. Keep the no-base state
+        # separately and use the candidate only as that technical identity; semantic
+        # change detection below compares the full candidate against the empty tree.
+        $baseRevision = $candidateCommit
+    }
+    else {
+        $baseRevision = Resolve-GitRevision -GitPath $gitPath -Root $repoRoot -Revision $BaseCommit -Context 'Base commit'
+        & $gitPath -C $repoRoot merge-base --is-ancestor $baseRevision $candidateCommit
+        if ($LASTEXITCODE -ne 0 -or $baseRevision -ceq $candidateCommit) { throw 'Base commit must be a distinct ancestor of the immutable candidate.' }
+    }
 
     $config = Read-JsonFile -Path (Join-Path $repoRoot 'config/standard-v1.json') -Context 'config/standard-v1.json'
     Assert-AuthorityConfig -Config $config
@@ -786,8 +795,10 @@ try {
     $childRunnerPath = Join-Path $trustedRoot 'Invoke-CodeCollaborationValidationChild.ps1'
     Write-Utf8NoBom -Path $childRunnerPath -Text $childRunnerText
 
-    $semanticRequired = $false
-    $changedPaths = @(& $gitPath -C $repoRoot diff --find-renames=100% --name-only "$baseRevision...$candidateCommit")
+    $semanticRequired = $unbased
+    $changeDetectionBase = if ($unbased) { $script:EmptyTreeObject } else { $baseRevision }
+    $changedPaths = @(& $gitPath -C $repoRoot diff --find-renames=100% --name-only $changeDetectionBase $candidateCommit)
+    if ($LASTEXITCODE -ne 0) { throw 'Could not determine the immutable candidate change set.' }
     foreach ($changedPath in $changedPaths) {
         if ([string]$changedPath -like 'skills/*') { $semanticRequired = $true; break }
     }
