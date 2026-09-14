@@ -91,6 +91,26 @@ Describe 'Code Collaboration profile catalog contract' {
         { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot -OutputPath (Join-Path $script:FixtureRoot ("artifacts/{0}.json" -f [guid]::NewGuid().ToString('N'))) } | Should -Throw '*profiles must include profile*'
     }
 
+    It 'requires the established Copilot profile to remain opt-in' {
+        # Scenario: a catalog changes the existing Copilot profile to default-on.
+        # Purpose: prevent consumers from receiving the delegation Skill without explicit opt-in.
+        $catalogPath = Join-Path $script:FixtureRoot 'catalog/profiles.json'
+        $catalog = Get-Content -LiteralPath $catalogPath -Raw | ConvertFrom-Json
+        $catalog.profiles[0].default = $true
+        $catalog | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $catalogPath -Encoding utf8NoBOM
+        { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot -OutputPath (Join-Path $script:FixtureRoot ("artifacts/{0}.json" -f [guid]::NewGuid().ToString('N'))) } | Should -Throw '*Copilot profile must be opt-in*'
+    }
+
+    It 'requires the established Copilot profile identity' {
+        # Scenario: a catalog renames the compatibility-sensitive Copilot profile.
+        # Purpose: keep the documented opt-in profile available to existing consumers.
+        $catalogPath = Join-Path $script:FixtureRoot 'catalog/profiles.json'
+        $catalog = Get-Content -LiteralPath $catalogPath -Raw | ConvertFrom-Json
+        $catalog.profiles[0].id = 'renamed-profile'
+        $catalog | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $catalogPath -Encoding utf8NoBOM
+        { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot -OutputPath (Join-Path $script:FixtureRoot ("artifacts/{0}.json" -f [guid]::NewGuid().ToString('N'))) } | Should -Throw '*established copilot profile is required*'
+    }
+
     It 'rejects a catalog whose Skill path has a case or identity drift' {
         # Scenario: catalog metadata points at a different or differently cased package path.
         # Purpose: keep stable Skill ID, source path, and filesystem identity exact.

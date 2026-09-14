@@ -140,6 +140,10 @@ foreach ($profile in $profiles) {
         Assert-True ($sourceSkillIds -ccontains [string]$skillId) "Profile '$($profile.id)' references unknown Skill '$skillId'."
     }
 }
+$copilotProfiles = @($profiles | Where-Object { [string]$_.id -ceq 'copilot' })
+Assert-True ($copilotProfiles.Count -eq 1) 'The established copilot profile is required.'
+$copilotProfile = $copilotProfiles[0]
+Assert-True ($copilotProfile.default -eq $false) 'Copilot profile must be opt-in.'
 
 $catalogSkills = @($catalog.skills)
 $catalogSkillIds = @($catalogSkills | ForEach-Object { [string]$_.id })
@@ -154,6 +158,11 @@ Assert-True (($catalogSkillIds -join "`n") -ceq ($sortedCatalogIds -join "`n")) 
 Assert-True (($sortedCatalogIds -join "`n") -ceq ($sourceSkillIds -join "`n")) 'Catalog Skill IDs must exactly match source inventory.'
 $catalogSkillById = @{}
 foreach ($skill in $catalogSkills) { $catalogSkillById[[string]$skill.id] = $skill }
+$copilotSkillId = 'write-copilot-implementation-prompt'
+$copilotSkill = $catalogSkillById[$copilotSkillId]
+Assert-True ($null -ne $copilotSkill) 'The established Copilot Skill is required.'
+Assert-True (@($copilotProfile.includes) -ccontains $copilotSkillId) 'Copilot profile must select the established Copilot Skill.'
+Assert-True (@($copilotSkill.compatibility.requiredCapabilities).Count -eq 0 -and @($copilotSkill.compatibility.anyOfCapabilities).Count -eq 0) 'Copilot Skill must remain independently available.'
 foreach ($profile in $profiles) {
     foreach ($skillId in @($profile.includes)) {
         $skill = $catalogSkillById[[string]$skillId]

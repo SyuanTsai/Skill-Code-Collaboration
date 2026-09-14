@@ -109,6 +109,56 @@ function Get-FileSha256 {
     return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
 }
 
+function Get-GitEntryModeManifest {
+    param(
+        [Parameter(Mandatory = $true)][string] $GitPath,
+        [Parameter(Mandatory = $true)][string] $RepositoryRoot,
+        [Parameter(Mandatory = $true)][string] $CandidateCommit
+    )
+
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $GitPath
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    foreach ($argument in @('-C', $RepositoryRoot, 'ls-tree', '-r', '-z', '--full-tree', '--format=%(objectmode)%x09%(path)', $CandidateCommit, '--', 'skills')) {
+        [void]$startInfo.ArgumentList.Add($argument)
+    }
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    $output = [IO.MemoryStream]::new()
+    try {
+        if (-not $process.Start()) { throw 'Could not start Git tree inventory process.' }
+        $process.StandardOutput.BaseStream.CopyTo($output)
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) { throw "Git tree inventory failed: $stderr" }
+        $raw = [Text.UTF8Encoding]::new($false, $true).GetString($output.ToArray())
+    }
+    finally {
+        $output.Dispose()
+        $process.Dispose()
+    }
+
+    $entries = @()
+    foreach ($record in $raw.Split([char]0, [StringSplitOptions]::RemoveEmptyEntries)) {
+        $separator = $record.IndexOf([char]9)
+        if ($separator -le 0 -or $separator -ge $record.Length - 1) { throw 'Git tree inventory returned a malformed entry.' }
+        $mode = $record.Substring(0, $separator)
+        $path = $record.Substring($separator + 1)
+        $segments = $path.Split('/')
+        if ($mode -cnotmatch '^[0-9]{6}$' -or $segments.Count -lt 3 -or $segments[0] -cne 'skills' -or
+            $segments[1] -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$' -or $segments -contains '' -or
+            $segments -contains '.' -or $segments -contains '..' -or $path.Contains('\') -or
+            $path.Contains(':') -or $path -cmatch '[\x00-\x1f\x7f]') {
+            throw "Git tree inventory returned an unsafe entry '$path' with mode '$mode'."
+        }
+        $entries += [ordered]@{ path = $path; mode = $mode }
+    }
+    if ($entries.Count -eq 0) { throw 'Git tree inventory did not contain any canonical Skill entries.' }
+    return [ordered]@{ schemaVersion = 1; candidateCommit = $CandidateCommit; entries = $entries }
+}
+
 function Assert-Sha256 {
     param([Parameter(Mandatory = $true)][string] $Value, [Parameter(Mandatory = $true)][string] $Context)
     if ($Value -cnotmatch '^[0-9a-f]{64}$') { throw "$Context must be a lowercase SHA-256 value." }
@@ -289,6 +339,7 @@ param(
     [string] $SourceRepository,
     [string] $SourceRevision,
     [string] $ArchiveSha256,
+    [string] $GitEntryModeManifestPath,
     [string] $SemanticRequired = 'false'
 )
 Set-StrictMode -Version Latest
@@ -588,7 +639,7 @@ try {
             $validatorPath = Join-Path $candidateRoot 'scripts/Test-Repository.ps1'
             if (-not (Test-Path -LiteralPath $validatorPath -PathType Leaf)) { throw 'Test-Repository.ps1 is missing from the candidate snapshot.' }
             $reportPath = Join-Path (Get-Location) 'repository-integrity-report.json'
-            & $validatorPath -RepositoryRoot $candidateRoot -OutputPath $reportPath -ReadOnlySnapshot *> $null
+            & $validatorPath -RepositoryRoot $candidateRoot -OutputPath $reportPath -ReadOnlySnapshot -GitEntryModeManifestPath $candidateGitEntryModeManifestPath *> $null
             $report = Read-Json -Path $reportPath -Context 'Test-Repository report'
             if ([string]$report.result -cne 'passed' -or [int]$report.activeSkillCount -ne $activeSkills.Count) { throw 'Test-Repository did not pass the complete active Skill inventory.' }
             $reportedSkills = @($report.skills | ForEach-Object { [string]$_.skillId })
@@ -723,6 +774,10 @@ try {
     Assert-NoReparseAncestors -Path $candidateExtractRoot -Context 'Candidate snapshot root'
     Assert-NoReparseAncestors -Path $resolvedToolsRoot -Context 'Resolved tools root'
 
+    $candidateGitEntryModeManifestPath = Join-Path $runRoot 'candidate-git-entry-modes.json'
+    $candidateGitEntryModeManifest = Get-GitEntryModeManifest -GitPath $gitPath -RepositoryRoot $repoRoot -CandidateCommit $candidateCommit
+    Write-Utf8NoBom -Path $candidateGitEntryModeManifestPath -Text ($candidateGitEntryModeManifest | ConvertTo-Json -Depth 20)
+
     $candidateArchivePath = Join-Path $runRoot 'candidate.zip'
     & $gitPath -C $repoRoot archive --format=zip "--prefix=candidate-$candidateCommit/" "--output=$candidateArchivePath" $candidateCommit
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $candidateArchivePath -PathType Leaf)) { throw 'Could not create the immutable candidate archive.' }
@@ -820,7 +875,7 @@ try {
     foreach ($changedPath in $changedPaths) {
         if ([string]$changedPath -like 'skills/*') { $semanticRequired = $true; break }
     }
-    $commonArguments = @('-NoProfile', '-NonInteractive', '-File', $childRunnerPath, '-ToolchainPath', $toolchainPath, '-ToolchainSha256', $toolchainSha256, '-SourceRepository', $script:SourceRepository, '-SourceRevision', $candidateCommit, '-ArchiveSha256', $candidateArchiveSha256)
+    $commonArguments = @('-NoProfile', '-NonInteractive', '-File', $childRunnerPath, '-ToolchainPath', $toolchainPath, '-ToolchainSha256', $toolchainSha256, '-SourceRepository', $script:SourceRepository, '-SourceRevision', $candidateCommit, '-ArchiveSha256', $candidateArchiveSha256, '-GitEntryModeManifestPath', $candidateGitEntryModeManifestPath)
     $adapter = [ordered]@{
         schemaVersion = 1
         adapter = 'standard-validation-adapter-v1'

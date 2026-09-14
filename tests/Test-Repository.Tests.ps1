@@ -31,6 +31,28 @@ Describe 'Code Collaboration Standard v1 repository contract' {
         $first.skills[0].contentSha256 | Should -Match '^[0-9a-f]{64}$'
     }
 
+    It 'requires a Git entry mode manifest for read-only snapshots' {
+        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot -ReadOnlySnapshot } | Should -Throw '*requires GitEntryModeManifestPath*'
+    }
+
+    It 'rejects a read-only snapshot whose Git manifest contains a symlink entry' {
+        # Scenario: archive extraction materializes a committed symlink as an ordinary file.
+        # Purpose: preserve the original Git entry-type gate across snapshot validation.
+        $manifestPath = Join-Path $script:FixtureRoot 'git-entry-modes.json'
+        $entries = @(Get-ChildItem -LiteralPath (Join-Path $script:FixtureRoot 'skills') -Recurse -File | ForEach-Object {
+            [ordered]@{
+                path = [IO.Path]::GetRelativePath($script:FixtureRoot, $_.FullName).Replace([IO.Path]::DirectorySeparatorChar, '/')
+                mode = '100644'
+            }
+        })
+        $entries[0].mode = '120000'
+        [ordered]@{ schemaVersion = 1; candidateCommit = ('a' * 40); entries = $entries } |
+            ConvertTo-Json -Depth 20 |
+            Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
+
+        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot -ReadOnlySnapshot -GitEntryModeManifestPath $manifestPath } | Should -Throw '*non-regular Git entry*'
+    }
+
     It 'rejects an unlisted Skill directory' {
         New-Item -ItemType Directory -Path (Join-Path $script:FixtureRoot 'skills/unlisted-skill') | Out-Null
         { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*inventory does not exactly match*'

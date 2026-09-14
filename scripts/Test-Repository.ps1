@@ -6,7 +6,8 @@
 param(
     [string] $RepositoryRoot,
     [string] $OutputPath,
-    [switch] $ReadOnlySnapshot
+    [switch] $ReadOnlySnapshot,
+    [string] $GitEntryModeManifestPath
 )
 
 Set-StrictMode -Version Latest
@@ -76,6 +77,47 @@ function Read-StrictJson {
     catch {
         throw "JSON cannot be materialized at '$Path': $($_.Exception.Message)"
     }
+}
+
+function Read-GitEntryModeManifest {
+    param([Parameter(Mandatory = $true)][string] $Path)
+
+    $manifest = Read-StrictJson -Path $Path
+    Assert-ExactPropertySet -Value $manifest -Expected @('schemaVersion', 'candidateCommit', 'entries') -Context 'Git entry mode manifest'
+    if (($manifest.schemaVersion -isnot [int] -and $manifest.schemaVersion -isnot [long]) -or [int64]$manifest.schemaVersion -ne 1) {
+        throw 'Git entry mode manifest schemaVersion must be integer 1.'
+    }
+    if ($manifest.candidateCommit -isnot [string] -or [string]$manifest.candidateCommit -cnotmatch '^[0-9a-f]{40}$') {
+        throw 'Git entry mode manifest candidateCommit must be a lowercase full Git object ID.'
+    }
+    if ($manifest.entries -isnot [array] -or @($manifest.entries).Count -eq 0) {
+        throw 'Git entry mode manifest entries must be a non-empty array.'
+    }
+
+    $modes = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::Ordinal)
+    foreach ($entry in @($manifest.entries)) {
+        Assert-ExactPropertySet -Value $entry -Expected @('path', 'mode') -Context 'Git entry mode manifest entry'
+        if ($entry.path -isnot [string] -or $entry.mode -isnot [string]) {
+            throw 'Git entry mode manifest entries must contain string path and mode values.'
+        }
+        $pathValue = [string]$entry.path
+        $segments = $pathValue.Split('/')
+        if ($segments.Count -lt 3 -or $segments[0] -cne 'skills' -or
+            $segments[1] -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$' -or
+            $segments -contains '' -or $segments -contains '.' -or $segments -contains '..' -or
+            $pathValue.Contains('\') -or $pathValue.Contains(':') -or
+            $pathValue -cmatch '[\x00-\x1f\x7f]') {
+            throw "Git entry mode manifest contains an unsafe path '$pathValue'."
+        }
+        $modeValue = [string]$entry.mode
+        if ($modeValue -cnotmatch '^[0-9]{6}$') {
+            throw "Git entry mode manifest contains invalid mode '$modeValue' for '$pathValue'."
+        }
+        if (-not $modes.TryAdd($pathValue, $modeValue)) {
+            throw "Git entry mode manifest contains duplicate path '$pathValue'."
+        }
+    }
+    return $modes
 }
 
 function Get-UnicodeScalarCount {
@@ -341,7 +383,8 @@ function Get-ContentInventory {
     param(
         [Parameter(Mandatory = $true)][string] $RepositoryRoot,
         [Parameter(Mandatory = $true)][string] $SkillId,
-        [switch] $ReadOnlySnapshot
+        [switch] $ReadOnlySnapshot,
+        [Collections.Generic.Dictionary[string, string]] $SnapshotGitEntryModes
     )
 
     $skillRoot = [IO.Path]::GetFullPath((Join-Path $RepositoryRoot "skills/$SkillId"))
@@ -386,6 +429,27 @@ function Get-ContentInventory {
     if ($pathToFile.Count -eq 0) { throw "Skill '$SkillId' has an empty package inventory." }
 
     if ($ReadOnlySnapshot) {
+        if ($null -eq $SnapshotGitEntryModes) {
+            throw "Skill '$SkillId' read-only snapshot validation requires a Git entry mode manifest."
+        }
+        $prefix = "skills/$SkillId/"
+        $expectedPaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($entry in $SnapshotGitEntryModes.GetEnumerator()) {
+            if ($entry.Key.StartsWith($prefix, [StringComparison]::Ordinal)) {
+                if ([string]$entry.Value -cnotin @('100644', '100755')) {
+                    throw "Skill '$SkillId' contains non-regular Git entry '$($entry.Key)' with mode '$($entry.Value)'."
+                }
+                [void]$expectedPaths.Add($entry.Key.Substring($prefix.Length))
+            }
+        }
+        if ($expectedPaths.Count -ne $pathToFile.Count) {
+            throw "Skill '$SkillId' filesystem inventory does not match the Git entry mode manifest."
+        }
+        foreach ($path in $pathToFile.Keys) {
+            if (-not $expectedPaths.Contains($path)) {
+                throw "Skill '$SkillId' filesystem inventory is missing Git entry mode '$path'."
+            }
+        }
         [string[]]$sortedPaths = @($pathToFile.Keys)
         [Array]::Sort($sortedPaths, [StringComparer]::Ordinal)
         $files = @()
@@ -455,6 +519,14 @@ $repoRoot = if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
     [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 }
 else { [IO.Path]::GetFullPath($RepositoryRoot) }
+
+$snapshotGitEntryModes = $null
+if ($ReadOnlySnapshot) {
+    if ([string]::IsNullOrWhiteSpace($GitEntryModeManifestPath)) {
+        throw 'Read-only snapshot validation requires GitEntryModeManifestPath.'
+    }
+    $snapshotGitEntryModes = Read-GitEntryModeManifest -Path ([IO.Path]::GetFullPath($GitEntryModeManifestPath))
+}
 
 $sourcePath = Join-Path $repoRoot 'catalog/source.json'
 $inventory = Read-StrictJson -Path $sourcePath
@@ -526,7 +598,7 @@ foreach ($skillId in $skillIds) {
     }
     [void](Read-SkillFrontmatter -Path $skillFile -ExpectedSkillId $skillId)
     [void](Read-OpenAiMetadata -Path $metadataFile -ExpectedSkillId $skillId)
-    $packages += Get-ContentInventory -RepositoryRoot $repoRoot -SkillId $skillId -ReadOnlySnapshot:$ReadOnlySnapshot
+    $packages += Get-ContentInventory -RepositoryRoot $repoRoot -SkillId $skillId -ReadOnlySnapshot:$ReadOnlySnapshot -SnapshotGitEntryModes $snapshotGitEntryModes
 }
 
 $result = [pscustomobject][ordered]@{

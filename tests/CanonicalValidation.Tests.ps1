@@ -85,9 +85,18 @@ Describe 'Canonical Standard v1 validation adapter' {
     It 'keeps repository domain, catalog, and Pester child output JSON-only' {
         # Scenario: a repository component writes a human-readable success line before its JSON evidence.
         # Purpose: keep the central runner envelope parseable and make catalog validation a canonical child stage.
-        $script:Validator | Should -Match '& \$validatorPath -RepositoryRoot \$candidateRoot -OutputPath \$reportPath -ReadOnlySnapshot \*> \$null'
+        $script:Validator | Should -Match '& \$validatorPath -RepositoryRoot \$candidateRoot -OutputPath \$reportPath -ReadOnlySnapshot -GitEntryModeManifestPath \$candidateGitEntryModeManifestPath \*> \$null'
         $script:Validator | Should -Match 'tests/validate-catalog\.ps1'
         $script:Validator | Should -Match 'Invoke-Pester -Path \$testRoot -Output None -PassThru 6>\$null'
+    }
+
+    It 'carries immutable Git entry modes into snapshot integrity validation' {
+        # Scenario: ZIP extraction changes a committed symlink into an ordinary file.
+        # Purpose: keep snapshot validation bound to the candidate commit's original Git entry types.
+        $script:Validator | Should -Match 'Get-GitEntryModeManifest'
+        $script:Validator | Should -Match "ls-tree.*--format=%\(objectmode\)%x09%\(path\)"
+        $script:Validator | Should -Match 'candidate-git-entry-modes\.json'
+        $script:Validator | Should -Match '& \$validatorPath -RepositoryRoot \$candidateRoot -OutputPath \$reportPath -ReadOnlySnapshot -GitEntryModeManifestPath \$candidateGitEntryModeManifestPath \*> \$null'
     }
 
     It 'normalizes a singleton active Skill inventory before child comparisons' {
