@@ -101,9 +101,12 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match "'-GitEntryModeManifestPath', \`$candidateGitEntryModeManifestPath"
     }
 
-    It 'rejects a non-array SkillSpector issue collection' {
+    It 'validates the raw SkillSpector issue array before deserialization' {
         # Scenario: a SkillSpector report returns a null or schema-drifted issues value.
-        # Purpose: prevent a malformed report from being converted into an empty passing finding set.
+        # Purpose: distinguish a valid empty JSON array from a null report field after PowerShell deserialization.
+        $script:Validator | Should -Match 'function Assert-JsonArrayProperty'
+        $script:Validator | Should -Match 'Assert-JsonArrayProperty -Path \$reportPath -PropertyName ''issues'''
+        $script:Validator | Should -Match '\.ValueKind -ne \[System\.Text\.Json\.JsonValueKind\]::Array'
         $script:Validator | Should -Match '\$issues = Get-Property -Object \$Report -Name ''issues'' -Context ''SkillSpector report'''
         $script:Validator | Should -Match '\$issues\s+-isnot\s+\[array\]'
     }

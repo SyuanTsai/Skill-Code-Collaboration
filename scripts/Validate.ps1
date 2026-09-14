@@ -364,6 +364,27 @@ function Read-Json {
     try { return (Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 100) }
     catch { throw "$Context is not valid JSON: $($_.Exception.Message)" }
 }
+function Assert-JsonArrayProperty {
+    param(
+        [Parameter(Mandatory = $true)][string] $Path,
+        [Parameter(Mandatory = $true)][string] $PropertyName,
+        [Parameter(Mandatory = $true)][string] $Context
+    )
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "$Context is missing: $Path" }
+    $document = $null
+    try {
+        $text = [IO.File]::ReadAllText($Path, [Text.UTF8Encoding]::new($false, $true))
+        $document = [System.Text.Json.JsonDocument]::Parse($text)
+        $property = $document.RootElement.GetProperty($PropertyName)
+        if ($property.ValueKind -ne [System.Text.Json.JsonValueKind]::Array) {
+            throw "$Context property '$PropertyName' must be a JSON array."
+        }
+    }
+    catch { throw "$Context does not contain a valid JSON array property '$PropertyName': $($_.Exception.Message)" }
+    finally {
+        if ($null -ne $document) { $document.Dispose() }
+    }
+}
 function Test-PathEqual {
     param([Parameter(Mandatory = $true)][string] $Left, [Parameter(Mandatory = $true)][string] $Right)
     $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
@@ -576,9 +597,12 @@ function Assert-SkillSpectorReport {
         $path = [string](Get-Property -Object $component -Name 'path' -Context 'SkillSpector component')
         if (-not ($Inventory -ccontains $path) -or -not $observed.Add($path)) { throw "SkillSpector did not cover the exact inventory for '$SkillId'." }
     }
+    # Validate the raw JSON property before PowerShell deserialization; some hosts
+    # materialize a valid empty JSON array as $null.
     $issues = Get-Property -Object $Report -Name 'issues' -Context 'SkillSpector report'
-    if ($issues -isnot [array]) { throw "SkillSpector report issues must be an array for '$SkillId'." }
-    $issues = @($issues)
+    if ($null -eq $issues) { $issues = @() }
+    elseif ($issues -isnot [array]) { throw "SkillSpector report issues must be an array for '$SkillId'." }
+    else { $issues = @($issues) }
     $findings = @()
     foreach ($issue in $issues) { $findings += New-Finding -Issue $issue -SkillId $SkillId -Stage 'skillspector-static' }
     return ,$findings
@@ -631,6 +655,7 @@ try {
                 $inventory = Get-InventoryPaths -SkillRoot $skillRoot
                 $reportPath = Join-Path (Get-Location) ("skillspector-$skillId.json")
                 & ([string]$toolchain.skillSpectorPath) scan $skillRoot --no-llm --format json --output $reportPath | Out-Null
+                Assert-JsonArrayProperty -Path $reportPath -PropertyName 'issues' -Context "SkillSpector report for '$skillId'"
                 $report = Read-Json -Path $reportPath -Context "SkillSpector report for '$skillId'"
                 $findings += Assert-SkillSpectorReport -Report $report -SkillRoot $skillRoot -SkillId $skillId -Inventory $inventory
             }
