@@ -63,6 +63,16 @@ Describe 'Code Collaboration profile catalog contract' {
         { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Not -Throw
     }
 
+    It 'keeps output-path execution JSON-only for the central runner' {
+        # Scenario: the central Repository Tests adapter requests a file report from the catalog validator.
+        # Purpose: prevent a second stdout JSON document from corrupting the child-runner envelope.
+        $outputPath = Join-Path $script:FixtureRoot 'artifacts/catalog-report.json'
+        $stdout = @(& $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot -OutputPath $outputPath)
+        $stdout | Should -BeNullOrEmpty
+        Test-Path -LiteralPath $outputPath -PathType Leaf | Should -BeTrue
+        { Get-Content -LiteralPath $outputPath -Raw | ConvertFrom-Json } | Should -Not -Throw
+    }
+
     It 'rejects a catalog whose Skill path has a case or identity drift' {
         # Scenario: catalog metadata points at a different or differently cased package path.
         # Purpose: keep stable Skill ID, source path, and filesystem identity exact.

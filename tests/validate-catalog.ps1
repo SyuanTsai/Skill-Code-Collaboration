@@ -204,4 +204,6 @@ if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
     if (Test-Path -LiteralPath $outputFullPath -PathType Leaf) { throw "OutputPath already exists: $outputFullPath" }
     [IO.File]::WriteAllText($outputFullPath, $json + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 }
-[Console]::Out.WriteLine($json)
+if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+    [Console]::Out.WriteLine($json)
+}
