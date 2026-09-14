@@ -149,6 +149,11 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match '\$locations = Get-PropertyValue -Object \$result -Name ''locations'''
         $script:Validator | Should -Match '\[Collections\.Generic\.Dictionary\[string, object\]\]::new\(\[StringComparer\]::Ordinal\)'
         $script:Validator | Should -Match 'skill-tools SARIF contains a duplicate rule ID'
+        $script:Validator | Should -Match 'function Get-ScalarProperty'
+        $script:Validator | Should -Match '\$execution = Get-ScalarProperty -Object \$Report -Name ''execution_successful'''
+        $script:Validator | Should -Match '\$statusValue = Get-ScalarProperty -Object \$completeness -Name ''status'''
+        $script:Validator | Should -Match '\$statusValue = Get-ScalarProperty -Object \$report -Name ''status'''
+        $script:Validator | Should -Match 'scalar JSON value'
     }
 
     It 'normalizes a singleton active Skill inventory before child comparisons' {

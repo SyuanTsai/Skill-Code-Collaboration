@@ -363,6 +363,12 @@ function Get-PropertyValue {
     if ($null -eq $Object -or $null -eq $Object.PSObject.Properties[$Name]) { throw "$Context is missing '$Name'." }
     return ,$Object.PSObject.Properties[$Name].Value
 }
+function Get-ScalarProperty {
+    param([Parameter(Mandatory = $true)] $Object, [Parameter(Mandatory = $true)][string] $Name, [Parameter(Mandatory = $true)][string] $Context)
+    $value = Get-PropertyValue -Object $Object -Name $Name -Context $Context
+    if ($null -eq $value -or $value -is [array]) { throw "$Context property '$Name' must be a non-null scalar JSON value." }
+    return $value
+}
 function Assert-NoDuplicateJsonProperties {
     param(
         [Parameter(Mandatory = $true)][System.Text.Json.JsonElement] $Element,
@@ -520,7 +526,9 @@ function Get-TextSha256 {
 }
 function New-Finding {
     param([Parameter(Mandatory = $true)] $Issue, [Parameter(Mandatory = $true)][string] $SkillId, [Parameter(Mandatory = $true)][string] $Stage)
-    $severity = [string](Get-Property -Object $Issue -Name 'severity' -Context "$Stage issue").ToLowerInvariant()
+    $severityValue = Get-ScalarProperty -Object $Issue -Name 'severity' -Context "$Stage issue"
+    if ($severityValue -isnot [string] -or [string]::IsNullOrWhiteSpace($severityValue)) { throw "$Stage issue severity must be a non-empty string for '$SkillId'." }
+    $severity = ([string]$severityValue).ToLowerInvariant()
     $severity = switch ($severity) {
         'critical' { 'critical'; break }
         'high' { 'high'; break }
@@ -531,12 +539,39 @@ function New-Finding {
         default { throw "$Stage returned unsupported severity '$severity' for '$SkillId'." }
     }
     $issueJson = $Issue | ConvertTo-Json -Depth 30 -Compress
-    $path = if ($null -ne $Issue.PSObject.Properties['file']) { [string]$Issue.file } elseif ($null -ne $Issue.PSObject.Properties['path']) { [string]$Issue.path } else { '' }
+    $path = ''
+    if ($null -ne $Issue.PSObject.Properties['file']) {
+        $pathValue = Get-ScalarProperty -Object $Issue -Name 'file' -Context "$Stage issue"
+        if ($pathValue -isnot [string]) { throw "$Stage issue file must be a string for '$SkillId'." }
+        $path = [string]$pathValue
+    }
+    elseif ($null -ne $Issue.PSObject.Properties['path']) {
+        $pathValue = Get-ScalarProperty -Object $Issue -Name 'path' -Context "$Stage issue"
+        if ($pathValue -isnot [string]) { throw "$Stage issue path must be a string for '$SkillId'." }
+        $path = [string]$pathValue
+    }
+    $ruleId = $Stage
+    if ($null -ne $Issue.PSObject.Properties['rule_id']) {
+        $ruleIdValue = Get-ScalarProperty -Object $Issue -Name 'rule_id' -Context "$Stage issue"
+        if ($ruleIdValue -isnot [string] -or [string]::IsNullOrWhiteSpace($ruleIdValue)) { throw "$Stage issue rule_id must be a non-empty string for '$SkillId'." }
+        $ruleId = [string]$ruleIdValue
+    }
+    elseif ($null -ne $Issue.PSObject.Properties['ruleId']) {
+        $ruleIdValue = Get-ScalarProperty -Object $Issue -Name 'ruleId' -Context "$Stage issue"
+        if ($ruleIdValue -isnot [string] -or [string]::IsNullOrWhiteSpace($ruleIdValue)) { throw "$Stage issue ruleId must be a non-empty string for '$SkillId'." }
+        $ruleId = [string]$ruleIdValue
+    }
+    $message = $issueJson
+    if ($null -ne $Issue.PSObject.Properties['message']) {
+        $messageValue = Get-ScalarProperty -Object $Issue -Name 'message' -Context "$Stage issue"
+        if ($messageValue -isnot [string] -or [string]::IsNullOrWhiteSpace($messageValue)) { throw "$Stage issue message must be a non-empty string for '$SkillId'." }
+        $message = [string]$messageValue
+    }
     return [ordered]@{
         severity = $severity
         fingerprint = Get-TextSha256 -Text $issueJson
-        ruleId = if ($null -ne $Issue.PSObject.Properties['rule_id']) { [string]$Issue.rule_id } elseif ($null -ne $Issue.PSObject.Properties['ruleId']) { [string]$Issue.ruleId } else { $Stage }
-        message = if ($null -ne $Issue.PSObject.Properties['message']) { [string]$Issue.message } else { $issueJson }
+        ruleId = $ruleId
+        message = $message
         path = $path
         skillId = $SkillId
     }
@@ -584,8 +619,9 @@ function Invoke-NativeJson {
 }
 function Assert-SkillValidatorReport {
     param([Parameter(Mandatory = $true)] $Report, [Parameter(Mandatory = $true)][string] $SkillRoot, [Parameter(Mandatory = $true)][string[]] $Inventory, [Parameter(Mandatory = $true)][string] $SkillId)
-    $skillDirectory = [string](Get-Property -Object $Report -Name 'skill_dir' -Context 'skill-validator report')
-    $passed = Get-Property -Object $Report -Name 'passed' -Context 'skill-validator report'
+    $skillDirectory = Get-ScalarProperty -Object $Report -Name 'skill_dir' -Context 'skill-validator report'
+    $passed = Get-ScalarProperty -Object $Report -Name 'passed' -Context 'skill-validator report'
+    if ($skillDirectory -isnot [string] -or [string]::IsNullOrWhiteSpace($skillDirectory)) { throw "skill-validator skill_dir must be a non-empty string for '$SkillId'." }
     $errors = Get-PropertyValue -Object $Report -Name 'errors' -Context 'skill-validator report'
     $warnings = Get-PropertyValue -Object $Report -Name 'warnings' -Context 'skill-validator report'
     $integerTypeCodes = @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::UInt16, [TypeCode]::UInt32, [TypeCode]::UInt64, [TypeCode]::Int16, [TypeCode]::Int32, [TypeCode]::Int64)
@@ -614,8 +650,12 @@ function Assert-SkillValidatorReport {
         }
         $level = ([string]$levelValue).ToLowerInvariant()
         if ($level -notin @('pass', 'info')) { throw "skill-validator returned a blocking or malformed result for '$SkillId'." }
+        $filePath = ''
         if ($null -ne $result.PSObject.Properties['file']) {
-            [void](Resolve-ReportedFilePath -Value $result.file -SkillRoot $SkillRoot -ExpectedPaths $Inventory -Context 'skill-validator result file')
+            $fileValue = Get-ScalarProperty -Object $result -Name 'file' -Context 'skill-validator result'
+            if ($fileValue -isnot [string]) { throw "skill-validator result file must be a string for '$SkillId'." }
+            [void](Resolve-ReportedFilePath -Value $fileValue -SkillRoot $SkillRoot -ExpectedPaths $Inventory -Context 'skill-validator result file')
+            $filePath = [string]$fileValue
         }
         if ($null -ne $result.PSObject.Properties['line']) {
             $lineValue = Get-PropertyValue -Object $result -Name 'line' -Context 'skill-validator result'
@@ -625,22 +665,27 @@ function Assert-SkillValidatorReport {
             }
         }
         if ($level -eq 'info') {
-            $findings += [ordered]@{ severity = 'informational'; fingerprint = Get-TextSha256 -Text ($result | ConvertTo-Json -Depth 20 -Compress); ruleId = [string]$categoryValue; message = [string]$messageValue; path = if ($null -ne $result.PSObject.Properties['file']) { [string]$result.file } else { '' }; skillId = $SkillId }
+            $findings += [ordered]@{ severity = 'informational'; fingerprint = Get-TextSha256 -Text ($result | ConvertTo-Json -Depth 20 -Compress); ruleId = [string]$categoryValue; message = [string]$messageValue; path = $filePath; skillId = $SkillId }
         }
     }
     return ,$findings
 }
 function Assert-SkillToolsReport {
     param([Parameter(Mandatory = $true)] $Report, [Parameter(Mandatory = $true)][string] $SkillRoot, [Parameter(Mandatory = $true)][string[]] $Inventory, [Parameter(Mandatory = $true)][string] $SkillId)
-    $version = [string](Get-Property -Object $Report -Name 'version' -Context 'skill-tools SARIF')
+    $versionValue = Get-ScalarProperty -Object $Report -Name 'version' -Context 'skill-tools SARIF'
+    if ($versionValue -isnot [string] -or [string]::IsNullOrWhiteSpace($versionValue)) { throw "skill-tools SARIF version must be a non-empty string for '$SkillId'." }
+    $version = [string]$versionValue
     $runs = Get-PropertyValue -Object $Report -Name 'runs' -Context 'skill-tools SARIF'
     if ($null -eq $runs) { $runs = @() }
     elseif ($runs -isnot [array]) { throw "skill-tools SARIF runs must be an array for '$SkillId'." }
     else { $runs = @($runs) }
     if ($version -cne '2.1.0' -or $runs.Count -ne 1) { throw "skill-tools did not produce SARIF 2.1.0 for '$SkillId'." }
     $run = $runs[0]
-    $driver = Get-Property -Object (Get-Property -Object $run -Name 'tool' -Context 'skill-tools SARIF run') -Name 'driver' -Context 'skill-tools SARIF tool'
-    $driverName = [string](Get-Property -Object $driver -Name 'name' -Context 'skill-tools SARIF driver')
+    $tool = Get-ScalarProperty -Object $run -Name 'tool' -Context 'skill-tools SARIF run'
+    $driver = Get-ScalarProperty -Object $tool -Name 'driver' -Context 'skill-tools SARIF tool'
+    $driverNameValue = Get-ScalarProperty -Object $driver -Name 'name' -Context 'skill-tools SARIF driver'
+    if ($driverNameValue -isnot [string] -or [string]::IsNullOrWhiteSpace($driverNameValue)) { throw "skill-tools SARIF driver name must be a non-empty string for '$SkillId'." }
+    $driverName = [string]$driverNameValue
     $rules = Get-PropertyValue -Object $driver -Name 'rules' -Context 'skill-tools SARIF driver'
     if ($null -eq $rules) { $rules = @() }
     elseif ($rules -isnot [array]) { throw "skill-tools SARIF rules must be an array for '$SkillId'." }
@@ -663,24 +708,35 @@ function Assert-SkillToolsReport {
         if ($ruleIdValue -isnot [string] -or [string]::IsNullOrWhiteSpace($ruleIdValue)) { throw "skill-tools SARIF result ruleId must be a non-empty string for '$SkillId'." }
         $ruleId = [string]$ruleIdValue
         if (-not $ruleById.ContainsKey($ruleId)) { throw "skill-tools SARIF references an unknown rule for '$SkillId'." }
-        $level = if ($null -ne $result.PSObject.Properties['level']) { [string]$result.level } else {
-            [string](Get-Property -Object (Get-Property -Object $ruleById[$ruleId] -Name 'defaultConfiguration' -Context 'skill-tools SARIF rule') -Name 'level' -Context 'skill-tools SARIF rule default')
+        $levelValue = if ($null -ne $result.PSObject.Properties['level']) {
+            Get-ScalarProperty -Object $result -Name 'level' -Context 'skill-tools SARIF result'
         }
+        else {
+            $defaultConfiguration = Get-ScalarProperty -Object $ruleById[$ruleId] -Name 'defaultConfiguration' -Context 'skill-tools SARIF rule'
+            Get-ScalarProperty -Object $defaultConfiguration -Name 'level' -Context 'skill-tools SARIF rule default'
+        }
+        if ($levelValue -isnot [string] -or [string]::IsNullOrWhiteSpace($levelValue)) { throw "skill-tools SARIF level must be a non-empty string for '$SkillId'." }
+        $level = [string]$levelValue
         if ($level -notin @('none', 'note', 'warning', 'error')) { throw "skill-tools SARIF level is malformed for '$SkillId'." }
         if ($level -in @('warning', 'error')) { throw "skill-tools SARIF contains a blocking result for '$SkillId'." }
-        $message = Get-Property -Object $result -Name 'message' -Context 'skill-tools SARIF result'
+        $message = Get-ScalarProperty -Object $result -Name 'message' -Context 'skill-tools SARIF result'
+        $messageTextValue = Get-ScalarProperty -Object $message -Name 'text' -Context 'skill-tools SARIF message'
+        if ($messageTextValue -isnot [string] -or [string]::IsNullOrWhiteSpace($messageTextValue)) { throw "skill-tools SARIF message text must be a non-empty string for '$SkillId'." }
+        $messageText = [string]$messageTextValue
         $locations = Get-PropertyValue -Object $result -Name 'locations' -Context 'skill-tools SARIF result'
         if ($null -eq $locations) { $locations = @() }
         elseif ($locations -isnot [array]) { throw "skill-tools SARIF locations must be an array for '$SkillId'." }
         else { $locations = @($locations) }
-        if ([string]::IsNullOrWhiteSpace([string](Get-Property -Object $message -Name 'text' -Context 'skill-tools SARIF message')) -or $locations.Count -eq 0) { throw "skill-tools SARIF lacks candidate-bound evidence for '$SkillId'." }
+        if ($locations.Count -eq 0) { throw "skill-tools SARIF lacks candidate-bound evidence for '$SkillId'." }
         foreach ($location in $locations) {
-            $physical = Get-Property -Object $location -Name 'physicalLocation' -Context 'skill-tools SARIF location'
-            $artifact = Get-Property -Object $physical -Name 'artifactLocation' -Context 'skill-tools SARIF physical location'
-            [void](Resolve-ReportedFilePath -Value (Get-Property -Object $artifact -Name 'uri' -Context 'skill-tools SARIF artifact location') -SkillRoot $SkillRoot -ExpectedPaths $Inventory -Context 'skill-tools SARIF artifact location')
+            $physical = Get-ScalarProperty -Object $location -Name 'physicalLocation' -Context 'skill-tools SARIF location'
+            $artifact = Get-ScalarProperty -Object $physical -Name 'artifactLocation' -Context 'skill-tools SARIF physical location'
+            $uriValue = Get-ScalarProperty -Object $artifact -Name 'uri' -Context 'skill-tools SARIF artifact location'
+            if ($uriValue -isnot [string]) { throw "skill-tools SARIF artifact location URI must be a string for '$SkillId'." }
+            [void](Resolve-ReportedFilePath -Value $uriValue -SkillRoot $SkillRoot -ExpectedPaths $Inventory -Context 'skill-tools SARIF artifact location')
         }
         if ($level -eq 'note') {
-            $findings += [ordered]@{ severity = 'informational'; fingerprint = Get-TextSha256 -Text ($result | ConvertTo-Json -Depth 20 -Compress); ruleId = $ruleId; message = [string]$message.text; path = ''; skillId = $SkillId }
+            $findings += [ordered]@{ severity = 'informational'; fingerprint = Get-TextSha256 -Text ($result | ConvertTo-Json -Depth 20 -Compress); ruleId = $ruleId; message = $messageText; path = ''; skillId = $SkillId }
         }
     }
     return ,$findings
@@ -693,16 +749,20 @@ function Assert-SkillSpectorReport {
         [Parameter(Mandatory = $true)][string[]] $Inventory,
         [string] $Stage = 'skillspector-static'
     )
-    $execution = Get-Property -Object $Report -Name 'execution_successful' -Context 'SkillSpector report'
-    $completeness = Get-Property -Object $Report -Name 'analysis_completeness' -Context 'SkillSpector report'
+    $execution = Get-ScalarProperty -Object $Report -Name 'execution_successful' -Context 'SkillSpector report'
+    $completeness = Get-ScalarProperty -Object $Report -Name 'analysis_completeness' -Context 'SkillSpector report'
+    $completenessExecution = Get-ScalarProperty -Object $completeness -Name 'execution_successful' -Context 'SkillSpector completeness'
+    $isComplete = Get-ScalarProperty -Object $completeness -Name 'is_complete' -Context 'SkillSpector completeness'
+    $statusValue = Get-ScalarProperty -Object $completeness -Name 'status' -Context 'SkillSpector completeness'
     $coveragePercent = Get-PropertyValue -Object $completeness -Name 'coverage_percent' -Context 'SkillSpector completeness'
     $coverageType = if ($null -eq $coveragePercent) { [TypeCode]::Empty } else { [Convert]::GetTypeCode($coveragePercent) }
     if ($execution -isnot [bool] -or -not $execution -or
-        (Get-Property -Object $completeness -Name 'execution_successful' -Context 'SkillSpector completeness') -isnot [bool] -or
-        -not (Get-Property -Object $completeness -Name 'execution_successful' -Context 'SkillSpector completeness') -or
-        (Get-Property -Object $completeness -Name 'is_complete' -Context 'SkillSpector completeness') -isnot [bool] -or
-        -not (Get-Property -Object $completeness -Name 'is_complete' -Context 'SkillSpector completeness') -or
-        [string](Get-Property -Object $completeness -Name 'status' -Context 'SkillSpector completeness') -cne 'complete' -or
+        $completenessExecution -isnot [bool] -or
+        -not $completenessExecution -or
+        $isComplete -isnot [bool] -or
+        -not $isComplete -or
+        $statusValue -isnot [string] -or
+        [string]$statusValue -cne 'complete' -or
         $coverageType -notin @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::UInt16, [TypeCode]::UInt32, [TypeCode]::UInt64, [TypeCode]::Int16, [TypeCode]::Int32, [TypeCode]::Int64, [TypeCode]::Single, [TypeCode]::Double, [TypeCode]::Decimal) -or
         [double]$coveragePercent -ne 100) {
         throw "SkillSpector did not prove complete static analysis for '$SkillId'."
@@ -714,16 +774,23 @@ function Assert-SkillSpectorReport {
         else { $items = @($items) }
         if ($items.Count -ne 0) { throw "SkillSpector reported incomplete '$name' evidence for '$SkillId'." }
     }
-    $skill = Get-Property -Object $Report -Name 'skill' -Context 'SkillSpector report'
-    if ([string](Get-Property -Object $skill -Name 'name' -Context 'SkillSpector skill identity') -cne $SkillId -or
-        -not (Test-PathEqual -Left ([string](Get-Property -Object $skill -Name 'source' -Context 'SkillSpector skill identity')) -Right $SkillRoot)) {
+    $skill = Get-ScalarProperty -Object $Report -Name 'skill' -Context 'SkillSpector report'
+    $skillName = Get-ScalarProperty -Object $skill -Name 'name' -Context 'SkillSpector skill identity'
+    $skillSource = Get-ScalarProperty -Object $skill -Name 'source' -Context 'SkillSpector skill identity'
+    if ($skillName -isnot [string] -or [string]$skillName -cne $SkillId -or
+        $skillSource -isnot [string] -or -not (Test-PathEqual -Left ([string]$skillSource) -Right $SkillRoot)) {
         throw "SkillSpector report identity does not match '$SkillId'."
     }
-    $components = @(Get-Property -Object $Report -Name 'components' -Context 'SkillSpector report')
+    $components = Get-PropertyValue -Object $Report -Name 'components' -Context 'SkillSpector report'
+    if ($null -eq $components) { $components = @() }
+    elseif ($components -isnot [array]) { throw "SkillSpector report components must be an array for '$SkillId'." }
+    else { $components = @($components) }
     if ($components.Count -ne $Inventory.Count) { throw "SkillSpector did not cover the exact inventory for '$SkillId'." }
     $observed = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($component in $components) {
-        $path = [string](Get-Property -Object $component -Name 'path' -Context 'SkillSpector component')
+        $pathValue = Get-ScalarProperty -Object $component -Name 'path' -Context 'SkillSpector component'
+        if ($pathValue -isnot [string]) { throw "SkillSpector component path must be a string for '$SkillId'." }
+        $path = [string]$pathValue
         if (-not ($Inventory -ccontains $path) -or -not $observed.Add($path)) { throw "SkillSpector did not cover the exact inventory for '$SkillId'." }
     }
     # Raw JSON array paths are validated before this function; preserve the
@@ -752,8 +819,11 @@ try {
             $reportPath = Join-Path (Get-Location) 'upstream-adapter-report.json'
             & ([string]$toolchain.upstreamAdapterValidatorPath) -PackageRoot $candidateRoot -PolicyPath ([string]$toolchain.upstreamPolicyPath) -SourceRepository $SourceRepository -SourceRevision $SourceRevision -ArchiveSha256 $ArchiveSha256 -OutputPath $reportPath | Out-Null
             $report = Read-Json -Path $reportPath -Context 'upstream adapter report'
-            $status = [string](Get-Property -Object $report -Name 'status' -Context 'upstream adapter report')
-            $decision = [string](Get-Property -Object $report -Name 'decision' -Context 'upstream adapter report')
+            $statusValue = Get-ScalarProperty -Object $report -Name 'status' -Context 'upstream adapter report'
+            $decisionValue = Get-ScalarProperty -Object $report -Name 'decision' -Context 'upstream adapter report'
+            if ($statusValue -isnot [string] -or $decisionValue -isnot [string]) { throw 'Upstream adapter report status and decision must be strings.' }
+            $status = [string]$statusValue
+            $decision = [string]$decisionValue
             if (($status -eq 'passed' -and $decision -ne 'PASS') -or ($status -eq 'not-applicable' -and $decision -ne 'NOT_APPLICABLE') -or $status -notin @('passed', 'not-applicable')) { throw 'Upstream adapter report did not pass or prove not-applicable.' }
             New-Envelope -ActiveSkills $activeSkills -Additional @{ adapterStatus = $status; adapterSurfaces = @($report.surfaces); semanticRequired = $false }
         }
