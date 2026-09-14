@@ -43,14 +43,35 @@ Describe 'Code Collaboration Standard v1 repository contract' {
             [ordered]@{
                 path = [IO.Path]::GetRelativePath($script:FixtureRoot, $_.FullName).Replace([IO.Path]::DirectorySeparatorChar, '/')
                 mode = '100644'
+                sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
             }
         })
         $entries[0].mode = '120000'
-        [ordered]@{ schemaVersion = 1; candidateCommit = ('a' * 40); entries = $entries } |
+        [ordered]@{ schemaVersion = 2; candidateCommit = ('a' * 40); entries = $entries } |
             ConvertTo-Json -Depth 20 |
             Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
 
         { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot -ReadOnlySnapshot -GitEntryModeManifestPath $manifestPath } | Should -Throw '*non-regular Git entry*'
+    }
+
+    It 'rejects read-only snapshot bytes that do not match committed Git blob digests' {
+        # Scenario: git archive export-subst rewrites a committed Skill file before extraction.
+        # Purpose: ensure snapshot evidence remains bound to the original committed blob bytes.
+        $manifestPath = Join-Path $script:FixtureRoot 'git-entry-modes.json'
+        $entries = @(Get-ChildItem -LiteralPath (Join-Path $script:FixtureRoot 'skills') -Recurse -File | ForEach-Object {
+            [ordered]@{
+                path = [IO.Path]::GetRelativePath($script:FixtureRoot, $_.FullName).Replace([IO.Path]::DirectorySeparatorChar, '/')
+                mode = '100644'
+                sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+            }
+        })
+        [ordered]@{ schemaVersion = 2; candidateCommit = ('a' * 40); entries = $entries } |
+            ConvertTo-Json -Depth 20 |
+            Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
+        Add-Content -LiteralPath (Join-Path $script:SkillRoot 'SKILL.md') -Value 'snapshot export-subst mutation'
+
+        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot -ReadOnlySnapshot -GitEntryModeManifestPath $manifestPath } |
+            Should -Throw '*committed Git blob*'
     }
 
     It 'rejects an unlisted Skill directory' {

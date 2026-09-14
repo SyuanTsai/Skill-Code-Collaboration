@@ -109,6 +109,39 @@ function Get-FileSha256 {
     return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
 }
 
+function Get-GitBlobSha256 {
+    param(
+        [Parameter(Mandatory = $true)][string] $GitPath,
+        [Parameter(Mandatory = $true)][string] $RepositoryRoot,
+        [Parameter(Mandatory = $true)][string] $ObjectId
+    )
+
+    if ($ObjectId -cnotmatch '^[0-9a-f]{40}$') { throw "Invalid Git blob identity '$ObjectId'." }
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $GitPath
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    foreach ($argument in @('-C', $RepositoryRoot, 'cat-file', 'blob', $ObjectId)) {
+        [void]$startInfo.ArgumentList.Add($argument)
+    }
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try {
+        if (-not $process.Start()) { throw "Could not start Git blob reader for '$ObjectId'." }
+        $hash = $hasher.ComputeHash($process.StandardOutput.BaseStream)
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) { throw "Git blob reader failed for '$ObjectId': $stderr" }
+        return ([BitConverter]::ToString($hash) -replace '-', '').ToLowerInvariant()
+    }
+    finally {
+        $hasher.Dispose()
+        $process.Dispose()
+    }
+}
+
 function Get-GitEntryModeManifest {
     param(
         [Parameter(Mandatory = $true)][string] $GitPath,
@@ -121,7 +154,7 @@ function Get-GitEntryModeManifest {
     $startInfo.UseShellExecute = $false
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
-    foreach ($argument in @('-C', $RepositoryRoot, 'ls-tree', '-r', '-z', '--full-tree', '--format=%(objectmode)%x09%(path)', $CandidateCommit, '--', 'skills')) {
+    foreach ($argument in @('-C', $RepositoryRoot, 'ls-tree', '-r', '-z', '--full-tree', '--format=%(objectmode)%x09%(objectname)%x09%(path)', $CandidateCommit, '--', 'skills')) {
         [void]$startInfo.ArgumentList.Add($argument)
     }
     $process = [Diagnostics.Process]::new()
@@ -142,21 +175,25 @@ function Get-GitEntryModeManifest {
 
     $entries = @()
     foreach ($record in $raw.Split([char]0, [StringSplitOptions]::RemoveEmptyEntries)) {
-        $separator = $record.IndexOf([char]9)
-        if ($separator -le 0 -or $separator -ge $record.Length - 1) { throw 'Git tree inventory returned a malformed entry.' }
-        $mode = $record.Substring(0, $separator)
-        $path = $record.Substring($separator + 1)
+        $firstSeparator = $record.IndexOf([char]9)
+        $secondSeparator = if ($firstSeparator -ge 0) { $record.IndexOf([char]9, $firstSeparator + 1) } else { -1 }
+        if ($firstSeparator -le 0 -or $secondSeparator -le $firstSeparator + 1 -or $secondSeparator -ge $record.Length - 1) {
+            throw 'Git tree inventory returned a malformed entry.'
+        }
+        $mode = $record.Substring(0, $firstSeparator)
+        $objectId = $record.Substring($firstSeparator + 1, $secondSeparator - $firstSeparator - 1)
+        $path = $record.Substring($secondSeparator + 1)
         $segments = $path.Split('/')
         if ($mode -cnotmatch '^[0-9]{6}$' -or $segments.Count -lt 3 -or $segments[0] -cne 'skills' -or
             $segments[1] -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$' -or $segments -contains '' -or
             $segments -contains '.' -or $segments -contains '..' -or $path.Contains('\') -or
-            $path.Contains(':') -or $path -cmatch '[\x00-\x1f\x7f]') {
+            $path.Contains(':') -or $path -cmatch '[\x00-\x1f\x7f]' -or $objectId -cnotmatch '^[0-9a-f]{40}$') {
             throw "Git tree inventory returned an unsafe entry '$path' with mode '$mode'."
         }
-        $entries += [ordered]@{ path = $path; mode = $mode }
+        $entries += [ordered]@{ path = $path; mode = $mode; sha256 = Get-GitBlobSha256 -GitPath $GitPath -RepositoryRoot $RepositoryRoot -ObjectId $objectId }
     }
     if ($entries.Count -eq 0) { throw 'Git tree inventory did not contain any canonical Skill entries.' }
-    return [ordered]@{ schemaVersion = 1; candidateCommit = $CandidateCommit; entries = $entries }
+    return [ordered]@{ schemaVersion = 2; candidateCommit = $CandidateCommit; entries = $entries }
 }
 
 function Assert-Sha256 {

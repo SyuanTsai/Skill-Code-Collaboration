@@ -5,6 +5,7 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:RepositoryRoot = Split-Path -Parent $PSScriptRoot
         $script:ValidatorPath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
         $script:Validator = Get-Content -LiteralPath $script:ValidatorPath -Raw
+        $script:RepositoryValidator = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Test-Repository.ps1') -Raw
         $script:Adapter = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'config/standard-v1.json') -Raw |
             ConvertFrom-Json -Depth 20
         $script:ExpectedAuthorityCommit = 'a403abdf038a3346d775431a6908a71cc3d35a5b'
@@ -95,11 +96,21 @@ Describe 'Canonical Standard v1 validation adapter' {
         # Scenario: ZIP extraction changes a committed symlink into an ordinary file.
         # Purpose: keep snapshot validation bound to the candidate commit's original Git entry types.
         $script:Validator | Should -Match 'Get-GitEntryModeManifest'
-        $script:Validator | Should -Match "ls-tree.*--format=%\(objectmode\)%x09%\(path\)"
+        $script:Validator | Should -Match "ls-tree.*--format=%\(objectmode\)%x09%\(objectname\)%x09%\(path\)"
+        $script:Validator | Should -Match 'Get-GitBlobSha256'
+        $script:Validator | Should -Match 'sha256 = Get-GitBlobSha256'
         $script:Validator | Should -Match 'candidate-git-entry-modes\.json'
         $script:Validator | Should -Match '& \$validatorPath -RepositoryRoot \$candidateRoot -OutputPath \$reportPath -ReadOnlySnapshot -GitEntryModeManifestPath \$GitEntryModeManifestPath \*> \$null'
         $script:Validator | Should -Match '\[string\] \$GitEntryModeManifestPath'
         $script:Validator | Should -Match "'-GitEntryModeManifestPath', \`$candidateGitEntryModeManifestPath"
+    }
+
+    It 'binds extracted Skill bytes to committed Git blob digests' {
+        # Scenario: git archive export-subst rewrites a committed placeholder before extraction.
+        # Purpose: prevent rewritten snapshot bytes from becoming trusted integrity evidence.
+        $script:RepositoryValidator | Should -Match 'filesystem content is not bound to its committed Git blob'
+        $script:Validator | Should -Match 'schemaVersion = 2; candidateCommit = \$CandidateCommit; entries = \$entries'
+        $script:RepositoryValidator | Should -Match "Expected @\('path', 'mode', 'sha256'\)"
     }
 
     It 'validates raw SkillSpector arrays before deserialization' {
