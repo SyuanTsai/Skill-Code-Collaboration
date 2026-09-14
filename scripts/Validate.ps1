@@ -7,7 +7,7 @@ param(
     [string] $RepositoryRoot,
     [string] $ArtifactsRoot = $(
         if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) { $env:RUNNER_TEMP }
-        else { [IO.Path]::GetTempPath() }
+        else { Join-Path ([IO.Path]::GetTempPath()) "skcv1-artifacts-$([guid]::NewGuid().ToString('N'))" }
     ),
     [string] $AuthorityArchivePath,
     [string] $BaseCommit,
@@ -681,16 +681,31 @@ try {
     Assert-OutsideRoot -Path $artifactsRootPath -Root $repoRoot -Context 'Artifacts root'
     [void](New-Item -ItemType Directory -Path $artifactsRootPath -Force)
     Assert-NoReparseAncestors -Path $artifactsRootPath -Context 'Artifacts root'
-    $outputFull = if ([string]::IsNullOrWhiteSpace($OutputPath)) { Join-Path $artifactsRootPath 'code-collaboration-conformance-report.json' } else { Assert-PathWithinRoot -Path $OutputPath -Root $artifactsRootPath -Context 'OutputPath' }
-    if (Test-Path -LiteralPath $outputFull -PathType Leaf) { throw "OutputPath already exists and evidence is create-only: $outputFull" }
 
     $runId = [guid]::NewGuid().ToString('N')
     $runRoot = Join-Path $artifactsRootPath "skcv1-$($runId.Substring(0, 12))"
     if (Test-Path -LiteralPath $runRoot) { throw 'Run-owned artifact path unexpectedly exists.' }
     [void](New-Item -ItemType Directory -Path $runRoot -Force)
+    $outputFull = if ([string]::IsNullOrWhiteSpace($OutputPath)) { Join-Path $runRoot 'code-collaboration-conformance-report.json' } else { Assert-PathWithinRoot -Path $OutputPath -Root $artifactsRootPath -Context 'OutputPath' }
+    if (Test-Path -LiteralPath $outputFull -PathType Leaf) { throw "OutputPath already exists and evidence is create-only: $outputFull" }
+
     $externalRootParent = Split-Path -Parent $artifactsRootPath
-    if ([string]::IsNullOrWhiteSpace($externalRootParent)) { throw 'Could not allocate an external run-root parent beside ArtifactsRoot.' }
-    $externalRootParent = [IO.Path]::GetFullPath($externalRootParent)
+    $externalRootCandidates = @(
+        [IO.Path]::GetTempPath(),
+        [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData),
+        [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile),
+        $externalRootParent
+    )
+    $externalRootParent = $null
+    foreach ($candidateParent in $externalRootCandidates) {
+        if ([string]::IsNullOrWhiteSpace([string]$candidateParent)) { continue }
+        $candidateParentFull = [IO.Path]::GetFullPath([string]$candidateParent)
+        if (Test-PathWithinOrEqual -Path $candidateParentFull -Root $artifactsRootPath) { continue }
+        if (-not (Test-Path -LiteralPath $candidateParentFull -PathType Container)) { continue }
+        $externalRootParent = $candidateParentFull
+        break
+    }
+    if ([string]::IsNullOrWhiteSpace($externalRootParent)) { throw 'Could not allocate a writable external run-root parent outside ArtifactsRoot.' }
     $trustedRoot = Join-Path $externalRootParent "skcv1-tools-$runId"
     $candidateExtractRoot = Join-Path $externalRootParent "skcv1-candidate-$runId"
     if ((Test-Path -LiteralPath $trustedRoot) -or (Test-Path -LiteralPath $candidateExtractRoot)) { throw 'Run-owned temporary root unexpectedly exists.' }
