@@ -81,6 +81,16 @@ Describe 'Code Collaboration profile catalog contract' {
         $validator | Should -Not -Match '\|\s*Sort-Object'
     }
 
+    It 'rejects non-reciprocal profile membership' {
+        # Scenario: a profile includes a Skill while that Skill omits the profile.
+        # Purpose: keep profile.includes and Skill.profiles as one consistent membership relation.
+        $catalogPath = Join-Path $script:FixtureRoot 'catalog/profiles.json'
+        $catalog = Get-Content -LiteralPath $catalogPath -Raw | ConvertFrom-Json
+        $catalog.skills[0].profiles = @()
+        $catalog | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $catalogPath -Encoding utf8NoBOM
+        { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot -OutputPath (Join-Path $script:FixtureRoot ("artifacts/{0}.json" -f [guid]::NewGuid().ToString('N'))) } | Should -Throw '*profiles must include profile*'
+    }
+
     It 'rejects a catalog whose Skill path has a case or identity drift' {
         # Scenario: catalog metadata points at a different or differently cased package path.
         # Purpose: keep stable Skill ID, source path, and filesystem identity exact.

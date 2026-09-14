@@ -152,6 +152,14 @@ Assert-True ($catalogSkills.Count -eq $sourceSkillIds.Count) 'Catalog Skill coun
 [Array]::Sort($sortedCatalogIds, [StringComparer]::Ordinal)
 Assert-True (($catalogSkillIds -join "`n") -ceq ($sortedCatalogIds -join "`n")) 'Catalog Skills must use ordinal ascending order.'
 Assert-True (($sortedCatalogIds -join "`n") -ceq ($sourceSkillIds -join "`n")) 'Catalog Skill IDs must exactly match source inventory.'
+$catalogSkillById = @{}
+foreach ($skill in $catalogSkills) { $catalogSkillById[[string]$skill.id] = $skill }
+foreach ($profile in $profiles) {
+    foreach ($skillId in @($profile.includes)) {
+        $skill = $catalogSkillById[[string]$skillId]
+        Assert-True ($null -ne $skill -and @($skill.profiles) -ccontains [string]$profile.id) "Skill '$skillId' profiles must include profile '$($profile.id)' when the profile includes the Skill."
+    }
+}
 
 $activeSkills = @()
 foreach ($skill in $catalogSkills) {
@@ -164,6 +172,8 @@ foreach ($skill in $catalogSkills) {
     Assert-StringArray -Value $skill.profiles -Context "Skill '$skillId' profiles"
     foreach ($profileId in @($skill.profiles)) {
         Assert-True ($profileIds.Contains([string]$profileId)) "Skill '$skillId' references unknown profile '$profileId'."
+        $profile = @($profiles | Where-Object { [string]$_.id -ceq [string]$profileId })[0]
+        Assert-True (@($profile.includes) -ccontains $skillId) "Profile '$profileId' must include Skill '$skillId' when the Skill lists the profile."
     }
     Assert-ExactPropertySet -Value $skill.compatibility -Expected @('platforms', 'shells', 'requiredCapabilities', 'anyOfCapabilities') -Context "Skill '$skillId' compatibility"
     foreach ($name in @('platforms', 'shells', 'requiredCapabilities', 'anyOfCapabilities')) {
