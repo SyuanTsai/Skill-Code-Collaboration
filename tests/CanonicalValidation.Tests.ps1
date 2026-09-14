@@ -158,6 +158,8 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match 'schemaVersion must be integer 1'
         $script:Validator | Should -Match 'if \(\$toolName -ceq ''skillspector''\) \{\s+Remove-Item -LiteralPath ''Env:GITHUB_TOKEN'', ''Env:GH_TOKEN'''
         $script:Validator | Should -Match '\[void\]\(Assert-PathWithinRoot -Path \$toolPath -Root \$resolvedToolsRoot'
+        $script:Validator | Should -Match 'if \(\$entry\.confineToResolvedRoot\)'
+        $script:Validator | Should -Match 'skill-tools Node''; confineToResolvedRoot = \$false'
         $script:Validator | Should -Match 'Assert-NoReparseAncestors -Path \$toolPath -Context "\$\(\$entry\.name\) receipt path"'
     }
 

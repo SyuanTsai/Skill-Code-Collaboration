@@ -1107,14 +1107,16 @@ try {
         pesterVersion = [string]$receipts.pester.resolvedVersion
     }
     foreach ($entry in @(
-        [pscustomobject]@{ path = $toolchain.skillValidatorPath; sha = $toolchain.skillValidatorSha256; name = 'skill-validator' },
-        [pscustomobject]@{ path = $toolchain.skillToolsNodePath; sha = $toolchain.skillToolsNodeSha256; name = 'skill-tools Node' },
-        [pscustomobject]@{ path = $toolchain.skillToolsEntryPointPath; sha = $toolchain.skillToolsEntryPointSha256; name = 'skill-tools entry point' },
-        [pscustomobject]@{ path = $toolchain.skillSpectorPath; sha = $toolchain.skillSpectorSha256; name = 'SkillSpector' },
-        [pscustomobject]@{ path = $toolchain.pesterModulePath; sha = $toolchain.pesterModuleSha256; name = 'Pester' }
+        [pscustomobject]@{ path = $toolchain.skillValidatorPath; sha = $toolchain.skillValidatorSha256; name = 'skill-validator'; confineToResolvedRoot = $true },
+        [pscustomobject]@{ path = $toolchain.skillToolsNodePath; sha = $toolchain.skillToolsNodeSha256; name = 'skill-tools Node'; confineToResolvedRoot = $false },
+        [pscustomobject]@{ path = $toolchain.skillToolsEntryPointPath; sha = $toolchain.skillToolsEntryPointSha256; name = 'skill-tools entry point'; confineToResolvedRoot = $true },
+        [pscustomobject]@{ path = $toolchain.skillSpectorPath; sha = $toolchain.skillSpectorSha256; name = 'SkillSpector'; confineToResolvedRoot = $true },
+        [pscustomobject]@{ path = $toolchain.pesterModulePath; sha = $toolchain.pesterModuleSha256; name = 'Pester'; confineToResolvedRoot = $true }
     )) {
         $toolPath = [IO.Path]::GetFullPath([string]$entry.path)
-        [void](Assert-PathWithinRoot -Path $toolPath -Root $resolvedToolsRoot -Context "$($entry.name) receipt path")
+        if ($entry.confineToResolvedRoot) {
+            [void](Assert-PathWithinRoot -Path $toolPath -Root $resolvedToolsRoot -Context "$($entry.name) receipt path")
+        }
         Assert-NoReparseAncestors -Path $toolPath -Context "$($entry.name) receipt path"
         Assert-Sha256 -Value ([string]$entry.sha) -Context "$($entry.name) receipt hash"
         if ((Get-FileSha256 -Path $toolPath) -cne [string]$entry.sha) { throw "$($entry.name) changed after resolver completion." }
