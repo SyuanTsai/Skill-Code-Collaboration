@@ -53,14 +53,14 @@ Describe 'Code Collaboration profile catalog contract' {
     It 'accepts the current source and profile catalog' {
         # Scenario: the checked-in catalog and all current packages are internally consistent.
         # Purpose: establish the valid baseline for the canonical Repository Tests child.
-        { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Not -Throw
+        { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot -OutputPath (Join-Path $script:FixtureRoot ("artifacts/{0}.json" -f [guid]::NewGuid().ToString('N'))) } | Should -Not -Throw
     }
 
     It 'accepts a newly declared safe Skill and its metadata' {
         # Scenario: a new valid package is added to source inventory and a profile.
         # Purpose: prove future Skills are automatically covered without adding a new hard-coded gate.
         & $script:AddSafeCatalogSkillFixture -Root $script:FixtureRoot
-        { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Not -Throw
+        { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot -OutputPath (Join-Path $script:FixtureRoot ("artifacts/{0}.json" -f [guid]::NewGuid().ToString('N'))) } | Should -Not -Throw
     }
 
     It 'keeps output-path execution JSON-only for the central runner' {
@@ -80,7 +80,7 @@ Describe 'Code Collaboration profile catalog contract' {
         $catalog = Get-Content -LiteralPath $catalogPath -Raw | ConvertFrom-Json
         $catalog.skills[0].source.path = 'skills/Write-Copilot-Implementation-Prompt'
         $catalog | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $catalogPath -Encoding utf8NoBOM
-        { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*source path*'
+        { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot -OutputPath (Join-Path $script:FixtureRoot ("artifacts/{0}.json" -f [guid]::NewGuid().ToString('N'))) } | Should -Throw '*source path*'
     }
 
     It 'rejects duplicate catalog Skill IDs' {
@@ -90,7 +90,7 @@ Describe 'Code Collaboration profile catalog contract' {
         $catalog = Get-Content -LiteralPath $catalogPath -Raw | ConvertFrom-Json
         $catalog.skills = @($catalog.skills + $catalog.skills[0])
         $catalog | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $catalogPath -Encoding utf8NoBOM
-        { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*Skill IDs must be unique*'
+        { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot -OutputPath (Join-Path $script:FixtureRoot ("artifacts/{0}.json" -f [guid]::NewGuid().ToString('N'))) } | Should -Throw '*Skill IDs must be unique*'
     }
 
     It 'rejects a catalog that omits a source-inventory Skill' {
@@ -101,6 +101,6 @@ Describe 'Code Collaboration profile catalog contract' {
         $catalog = Get-Content -LiteralPath $catalogPath -Raw | ConvertFrom-Json
         $catalog.skills = @($catalog.skills | Where-Object id -ne 'safe-fixture-skill')
         $catalog | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $catalogPath -Encoding utf8NoBOM
-        { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*exactly match source inventory*'
+        { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot -OutputPath (Join-Path $script:FixtureRoot ("artifacts/{0}.json" -f [guid]::NewGuid().ToString('N'))) } | Should -Throw '*exactly match source inventory*'
     }
 }
