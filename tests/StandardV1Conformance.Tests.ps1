@@ -84,6 +84,12 @@ Describe 'Code Collaboration Standard v1 conformance' {
         $readme = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'README.md') -Raw
         $readme | Should -Match 'scripts/Validate\.ps1'
         $readme | Should -Not -Match 'scripts/(?:Invoke-StandardValidation|Test-Repository)\.ps1'
+        $readme | Should -Not -Match 'scripts/Get-SourcePin\.ps1'
         $readme | Should -Not -Match '(?i)\b(?:Invoke-Pester|pytest|skill-validator|skill-tools|skillspector)\b'
+
+        $release = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'docs/RELEASE.md') -Raw
+        $release | Should -Match 'scripts/Validate\.ps1'
+        $release | Should -Not -Match 'scripts/(?:Get-SourcePin|Test-Repository)\.ps1'
+        $release | Should -Not -Match 'tests/validate-catalog\.ps1'
     }
 }
