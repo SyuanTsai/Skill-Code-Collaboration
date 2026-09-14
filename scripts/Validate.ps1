@@ -639,7 +639,7 @@ try {
             $validatorPath = Join-Path $candidateRoot 'scripts/Test-Repository.ps1'
             if (-not (Test-Path -LiteralPath $validatorPath -PathType Leaf)) { throw 'Test-Repository.ps1 is missing from the candidate snapshot.' }
             $reportPath = Join-Path (Get-Location) 'repository-integrity-report.json'
-            & $validatorPath -RepositoryRoot $candidateRoot -OutputPath $reportPath -ReadOnlySnapshot -GitEntryModeManifestPath $candidateGitEntryModeManifestPath *> $null
+            & $validatorPath -RepositoryRoot $candidateRoot -OutputPath $reportPath -ReadOnlySnapshot -GitEntryModeManifestPath $GitEntryModeManifestPath *> $null
             $report = Read-Json -Path $reportPath -Context 'Test-Repository report'
             if ([string]$report.result -cne 'passed' -or [int]$report.activeSkillCount -ne $activeSkills.Count) { throw 'Test-Repository did not pass the complete active Skill inventory.' }
             $reportedSkills = @($report.skills | ForEach-Object { [string]$_.skillId })
