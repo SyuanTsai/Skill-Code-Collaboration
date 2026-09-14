@@ -156,6 +156,16 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match '\$changedPaths = @\(& \$gitPath -C \$repoRoot diff --find-renames=100% --name-only \$changeDetectionBase \$candidateCommit\)'
     }
 
+    It 'keeps generated roots outside the artifact root when local defaults share the system temp path' {
+        # Scenario: RUNNER_TEMP is unset and ArtifactsRoot defaults to the system temp directory.
+        # Purpose: prevent trusted tools and candidate extraction from being rejected as artifact descendants.
+        $script:Validator | Should -Match '\$externalRootParent = Split-Path -Parent \$artifactsRootPath'
+        $script:Validator | Should -Match 'Join-Path \$externalRootParent "skcv1-tools-\$runId"'
+        $script:Validator | Should -Match 'Join-Path \$externalRootParent "skcv1-candidate-\$runId"'
+        $script:Validator | Should -Match 'Join-Path \$externalRootParent "skcv1-resolved-tools-\$runId"'
+        $script:Validator | Should -Not -Match 'Join-Path \(\[IO.Path\]::GetTempPath\(\)\) "skcv1-(?:tools|candidate|resolved-tools)-'
+    }
+
     It 'keeps generated adapter and evidence roots outside the candidate' {
         # Scenario: an output path or temporary tool root is redirected into the candidate repository.
         # Purpose: prevent evidence and resolved tools from changing the immutable candidate.

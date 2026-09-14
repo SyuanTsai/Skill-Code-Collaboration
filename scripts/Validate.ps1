@@ -688,12 +688,15 @@ try {
     $runRoot = Join-Path $artifactsRootPath "skcv1-$($runId.Substring(0, 12))"
     if (Test-Path -LiteralPath $runRoot) { throw 'Run-owned artifact path unexpectedly exists.' }
     [void](New-Item -ItemType Directory -Path $runRoot -Force)
-    $trustedRoot = Join-Path ([IO.Path]::GetTempPath()) "skcv1-tools-$runId"
-    $candidateExtractRoot = Join-Path ([IO.Path]::GetTempPath()) "skcv1-candidate-$runId"
+    $externalRootParent = Split-Path -Parent $artifactsRootPath
+    if ([string]::IsNullOrWhiteSpace($externalRootParent)) { throw 'Could not allocate an external run-root parent beside ArtifactsRoot.' }
+    $externalRootParent = [IO.Path]::GetFullPath($externalRootParent)
+    $trustedRoot = Join-Path $externalRootParent "skcv1-tools-$runId"
+    $candidateExtractRoot = Join-Path $externalRootParent "skcv1-candidate-$runId"
     if ((Test-Path -LiteralPath $trustedRoot) -or (Test-Path -LiteralPath $candidateExtractRoot)) { throw 'Run-owned temporary root unexpectedly exists.' }
     [void](New-Item -ItemType Directory -Path $trustedRoot -Force)
     [void](New-Item -ItemType Directory -Path $candidateExtractRoot -Force)
-    $resolvedToolsRoot = Join-Path ([IO.Path]::GetTempPath()) "skcv1-resolved-tools-$runId"
+    $resolvedToolsRoot = Join-Path $externalRootParent "skcv1-resolved-tools-$runId"
     if (Test-Path -LiteralPath $resolvedToolsRoot) { throw 'Run-owned resolved-tools path unexpectedly exists.' }
     [void](New-Item -ItemType Directory -Path $resolvedToolsRoot -Force)
     Assert-OutsideRoot -Path $trustedRoot -Root $repoRoot -Context 'Trusted tool root'
