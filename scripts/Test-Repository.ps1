@@ -84,8 +84,8 @@ function Read-GitEntryModeManifest {
 
     $manifest = Read-StrictJson -Path $Path
     Assert-ExactPropertySet -Value $manifest -Expected @('schemaVersion', 'candidateCommit', 'entries') -Context 'Git entry mode manifest'
-    if (($manifest.schemaVersion -isnot [int] -and $manifest.schemaVersion -isnot [long]) -or [int64]$manifest.schemaVersion -ne 2) {
-        throw 'Git entry mode manifest schemaVersion must be integer 2.'
+    if (($manifest.schemaVersion -isnot [int] -and $manifest.schemaVersion -isnot [long]) -or [int64]$manifest.schemaVersion -ne 3) {
+        throw 'Git entry mode manifest schemaVersion must be integer 3.'
     }
     if ($manifest.candidateCommit -isnot [string] -or [string]$manifest.candidateCommit -cnotmatch '^[0-9a-f]{40}$') {
         throw 'Git entry mode manifest candidateCommit must be a lowercase full Git object ID.'
@@ -102,9 +102,7 @@ function Read-GitEntryModeManifest {
         }
         $pathValue = [string]$entry.path
         $segments = $pathValue.Split('/')
-        if ($segments.Count -lt 3 -or $segments[0] -cne 'skills' -or
-            $segments[1] -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$' -or
-            $segments -contains '' -or $segments -contains '.' -or $segments -contains '..' -or
+        if ([IO.Path]::IsPathRooted($pathValue) -or $segments -contains '' -or $segments -contains '.' -or $segments -contains '..' -or
             $pathValue.Contains('\') -or $pathValue.Contains(':') -or
             $pathValue -cmatch '[\x00-\x1f\x7f]') {
             throw "Git entry mode manifest contains an unsafe path '$pathValue'."

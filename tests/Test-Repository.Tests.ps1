@@ -47,7 +47,7 @@ Describe 'Code Collaboration Standard v1 repository contract' {
             }
         })
         $entries[0].mode = '120000'
-        [ordered]@{ schemaVersion = 2; candidateCommit = ('a' * 40); entries = $entries } |
+        [ordered]@{ schemaVersion = 3; candidateCommit = ('a' * 40); entries = $entries } |
             ConvertTo-Json -Depth 20 |
             Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
 
@@ -65,7 +65,7 @@ Describe 'Code Collaboration Standard v1 repository contract' {
                 sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
             }
         })
-        [ordered]@{ schemaVersion = 2; candidateCommit = ('a' * 40); entries = $entries } |
+        [ordered]@{ schemaVersion = 3; candidateCommit = ('a' * 40); entries = $entries } |
             ConvertTo-Json -Depth 20 |
             Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
         Add-Content -LiteralPath (Join-Path $script:SkillRoot 'SKILL.md') -Value 'snapshot export-subst mutation'

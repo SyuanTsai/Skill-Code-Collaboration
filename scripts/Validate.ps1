@@ -154,7 +154,7 @@ function Get-GitEntryModeManifest {
     $startInfo.UseShellExecute = $false
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
-    foreach ($argument in @('-C', $RepositoryRoot, 'ls-tree', '-r', '-z', '--full-tree', '--format=%(objectmode)%x09%(objectname)%x09%(path)', $CandidateCommit, '--', 'skills')) {
+    foreach ($argument in @('-C', $RepositoryRoot, 'ls-tree', '-r', '-z', '--full-tree', '--format=%(objectmode)%x09%(objectname)%x09%(path)', $CandidateCommit)) {
         [void]$startInfo.ArgumentList.Add($argument)
     }
     $process = [Diagnostics.Process]::new()
@@ -184,8 +184,7 @@ function Get-GitEntryModeManifest {
         $objectId = $record.Substring($firstSeparator + 1, $secondSeparator - $firstSeparator - 1)
         $path = $record.Substring($secondSeparator + 1)
         $segments = $path.Split('/')
-        if ($mode -cnotmatch '^[0-9]{6}$' -or $segments.Count -lt 3 -or $segments[0] -cne 'skills' -or
-            $segments[1] -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$' -or $segments -contains '' -or
+        if ([IO.Path]::IsPathRooted($path) -or $mode -cnotmatch '^[0-9]{6}$' -or $segments -contains '' -or
             $segments -contains '.' -or $segments -contains '..' -or $path.Contains('\') -or
             $path.Contains(':') -or $path -cmatch '[\x00-\x1f\x7f]' -or $objectId -cnotmatch '^[0-9a-f]{40}$') {
             throw "Git tree inventory returned an unsafe entry '$path' with mode '$mode'."
@@ -193,7 +192,7 @@ function Get-GitEntryModeManifest {
         $entries += [ordered]@{ path = $path; mode = $mode; sha256 = Get-GitBlobSha256 -GitPath $GitPath -RepositoryRoot $RepositoryRoot -ObjectId $objectId }
     }
     if ($entries.Count -eq 0) { throw 'Git tree inventory did not contain any canonical Skill entries.' }
-    return [ordered]@{ schemaVersion = 2; candidateCommit = $CandidateCommit; entries = $entries }
+    return [ordered]@{ schemaVersion = 3; candidateCommit = $CandidateCommit; entries = $entries }
 }
 
 function Assert-Sha256 {
@@ -378,7 +377,8 @@ param(
     [string] $SourceRepository,
     [string] $SourceRevision,
     [string] $ArchiveSha256,
-    [string] $GitEntryModeManifestPath,
+    [Parameter(Mandatory = $true)][string] $GitEntryModeManifestPath,
+    [Parameter(Mandatory = $true)][string] $GitEntryModeManifestSha256,
     [string] $SemanticRequired = 'false'
 )
 Set-StrictMode -Version Latest
@@ -497,6 +497,91 @@ function Read-Json {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "$Context is missing: $Path" }
     $text = [IO.File]::ReadAllText($Path, [Text.UTF8Encoding]::new($false, $true))
     return ConvertFrom-StrictJsonText -Text $text -Context $Context -ArrayPropertyPaths $ArrayPropertyPaths
+}
+function Read-SnapshotBlobManifest {
+    param(
+        [Parameter(Mandatory = $true)][string] $Path,
+        [string] $ExpectedCommit
+    )
+    $manifest = Read-Json -Path $Path -Context 'candidate Git entry manifest'
+    $manifestProperties = @($manifest.PSObject.Properties | ForEach-Object { [string]$_.Name })
+    if ($manifestProperties.Count -ne 3 -or $manifestProperties -cnotcontains 'schemaVersion' -or
+        $manifestProperties -cnotcontains 'candidateCommit' -or $manifestProperties -cnotcontains 'entries') {
+        throw 'Candidate Git entry manifest has an invalid property set.'
+    }
+    if (($manifest.schemaVersion -isnot [int] -and $manifest.schemaVersion -isnot [long]) -or [int64]$manifest.schemaVersion -ne 3) {
+        throw 'Candidate Git entry manifest schemaVersion must be integer 3.'
+    }
+    if ($manifest.candidateCommit -isnot [string] -or [string]$manifest.candidateCommit -cnotmatch '^[0-9a-f]{40}$') {
+        throw 'Candidate Git entry manifest candidateCommit must be a lowercase full Git object ID.'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedCommit) -and [string]$manifest.candidateCommit -cne $ExpectedCommit) {
+        throw 'Candidate Git entry manifest is not bound to the requested candidate commit.'
+    }
+    if ($manifest.entries -isnot [array] -or @($manifest.entries).Count -eq 0) {
+        throw 'Candidate Git entry manifest entries must be a non-empty array.'
+    }
+    $entries = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
+    foreach ($entry in @($manifest.entries)) {
+        $properties = @($entry.PSObject.Properties | ForEach-Object { [string]$_.Name })
+        if ($properties.Count -ne 3 -or $properties -cnotcontains 'path' -or $properties -cnotcontains 'mode' -or $properties -cnotcontains 'sha256') {
+            throw 'Candidate Git entry manifest entry has an invalid property set.'
+        }
+        if ($entry.path -isnot [string] -or $entry.mode -isnot [string] -or $entry.sha256 -isnot [string]) {
+            throw 'Candidate Git entry manifest entries must contain string path, mode, and sha256 values.'
+        }
+        $pathValue = [string]$entry.path
+        $segments = $pathValue.Split('/')
+        if ([IO.Path]::IsPathRooted($pathValue) -or $segments -contains '' -or $segments -contains '.' -or $segments -contains '..' -or
+            $pathValue.Contains('\') -or $pathValue.Contains(':') -or $pathValue -cmatch '[\x00-\x1f\x7f]') {
+            throw "Candidate Git entry manifest contains an unsafe path '$pathValue'."
+        }
+        $modeValue = [string]$entry.mode
+        if ($modeValue -cnotmatch '^[0-9]{6}$') { throw "Candidate Git entry manifest contains invalid mode '$modeValue'." }
+        $sha256Value = [string]$entry.sha256
+        if ($sha256Value -cnotmatch '^[0-9a-f]{64}$') { throw "Candidate Git entry manifest contains invalid blob sha256 for '$pathValue'." }
+        if (-not $entries.TryAdd($pathValue, [pscustomobject][ordered]@{ mode = $modeValue; sha256 = $sha256Value })) {
+            throw "Candidate Git entry manifest contains duplicate path '$pathValue'."
+        }
+    }
+    return $entries
+}
+function Assert-CandidateSnapshotMatchesManifest {
+    param(
+        [Parameter(Mandatory = $true)][string] $CandidateRoot,
+        [Parameter(Mandatory = $true)][Collections.Generic.Dictionary[string, object]] $Manifest
+    )
+    $root = [IO.Path]::GetFullPath($CandidateRoot)
+    $files = [Collections.Generic.Dictionary[string, IO.FileInfo]]::new([StringComparer]::Ordinal)
+    foreach ($item in @(Get-ChildItem -LiteralPath $root -Recurse -Force)) {
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Candidate snapshot contains a reparse point: $($item.FullName)"
+        }
+        if ($item.PSIsContainer) { continue }
+        if ($item -isnot [IO.FileInfo]) { throw "Candidate snapshot contains a non-regular entry: $($item.FullName)" }
+        $relative = [IO.Path]::GetRelativePath($root, $item.FullName).Replace([IO.Path]::DirectorySeparatorChar, '/')
+        $segments = $relative.Split('/')
+        if ([IO.Path]::IsPathRooted($relative) -or $segments -contains '' -or $segments -contains '.' -or $segments -contains '..' -or
+            $relative.Contains('\') -or $relative.Contains(':') -or $relative -cmatch '[\x00-\x1f\x7f]') {
+            throw "Candidate snapshot contains an unsafe inventory path '$relative'."
+        }
+        if (-not $files.TryAdd($relative, $item)) { throw "Candidate snapshot contains duplicate inventory path '$relative'." }
+    }
+    if ($files.Count -ne $Manifest.Count) { throw 'Candidate snapshot inventory does not match the committed Git entry manifest.' }
+    foreach ($file in $files.GetEnumerator()) {
+        if (-not $Manifest.ContainsKey($file.Key)) { throw "Candidate snapshot contains an unlisted file '$($file.Key)'." }
+        $actualSha256 = Get-FileSha256 -Path $file.Value.FullName
+        $expectedSha256 = [string]$Manifest[$file.Key].sha256
+        if ($actualSha256 -cne $expectedSha256) {
+            throw "Candidate snapshot file '$($file.Key)' does not match its committed Git blob digest."
+        }
+    }
+    foreach ($entry in $Manifest.GetEnumerator()) {
+        $candidatePath = [IO.Path]::GetFullPath((Join-Path $root ($entry.Key -replace '/', [IO.Path]::DirectorySeparatorChar)))
+        if (-not (Test-PathWithin -Path $candidatePath -Root $root) -or -not (Test-Path -LiteralPath $candidatePath -PathType Leaf)) {
+            throw "Candidate snapshot is missing committed Git entry '$($entry.Key)'."
+        }
+    }
 }
 function Test-PathEqual {
     param([Parameter(Mandatory = $true)][string] $Left, [Parameter(Mandatory = $true)][string] $Right)
@@ -850,6 +935,9 @@ try {
     $activeSkills = @(Get-ActiveSkills)
     $candidateId = [string]$env:STANDARD_VALIDATION_CANDIDATE_ID
     if ([string]::IsNullOrWhiteSpace($candidateId)) { throw 'Central runner did not provide a candidate identity.' }
+    Assert-FileIdentity -Path $GitEntryModeManifestPath -Sha256 $GitEntryModeManifestSha256 -Context 'candidate Git entry manifest'
+    $snapshotManifest = Read-SnapshotBlobManifest -Path $GitEntryModeManifestPath -ExpectedCommit $SourceRevision
+    Assert-CandidateSnapshotMatchesManifest -CandidateRoot $candidateRoot -Manifest $snapshotManifest
 
     switch ($Mode) {
         'package-adapter' {
@@ -1066,6 +1154,7 @@ try {
     $candidateGitEntryModeManifestPath = Join-Path $runRoot 'candidate-git-entry-modes.json'
     $candidateGitEntryModeManifest = Get-GitEntryModeManifest -GitPath $gitPath -RepositoryRoot $repoRoot -CandidateCommit $candidateCommit
     Write-Utf8NoBom -Path $candidateGitEntryModeManifestPath -Text ($candidateGitEntryModeManifest | ConvertTo-Json -Depth 20)
+    $candidateGitEntryModeManifestSha256 = Get-FileSha256 -Path $candidateGitEntryModeManifestPath
 
     $candidateArchivePath = Join-Path $runRoot 'candidate.zip'
     & $gitPath -C $repoRoot archive --format=zip "--prefix=candidate-$candidateCommit/" "--output=$candidateArchivePath" $candidateCommit
@@ -1183,7 +1272,7 @@ try {
     foreach ($changedPath in $changedPaths) {
         if ([string]$changedPath -like 'skills/*') { $semanticRequired = $true; break }
     }
-    $commonArguments = @('-NoProfile', '-NonInteractive', '-File', $childRunnerPath, '-ToolchainPath', $toolchainPath, '-ToolchainSha256', $toolchainSha256, '-SourceRepository', $script:SourceRepository, '-SourceRevision', $candidateCommit, '-ArchiveSha256', $candidateArchiveSha256, '-GitEntryModeManifestPath', $candidateGitEntryModeManifestPath)
+    $commonArguments = @('-NoProfile', '-NonInteractive', '-File', $childRunnerPath, '-ToolchainPath', $toolchainPath, '-ToolchainSha256', $toolchainSha256, '-SourceRepository', $script:SourceRepository, '-SourceRevision', $candidateCommit, '-ArchiveSha256', $candidateArchiveSha256, '-GitEntryModeManifestPath', $candidateGitEntryModeManifestPath, '-GitEntryModeManifestSha256', $candidateGitEntryModeManifestSha256)
     $adapter = [ordered]@{
         schemaVersion = 1
         adapter = 'standard-validation-adapter-v1'

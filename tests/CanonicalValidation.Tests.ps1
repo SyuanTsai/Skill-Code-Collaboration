@@ -96,9 +96,10 @@ Describe 'Canonical Standard v1 validation adapter' {
         # Scenario: ZIP extraction changes a committed symlink into an ordinary file.
         # Purpose: keep snapshot validation bound to the candidate commit's original Git entry types.
         $script:Validator | Should -Match 'Get-GitEntryModeManifest'
-        $script:Validator | Should -Match "ls-tree.*--format=%\(objectmode\)%x09%\(objectname\)%x09%\(path\)"
+        $script:Validator | Should -Match 'ls-tree.*--format=.*objectmode.*objectname.*path'
         $script:Validator | Should -Match 'Get-GitBlobSha256'
         $script:Validator | Should -Match 'sha256 = Get-GitBlobSha256'
+        $script:Validator | Should -Match 'candidate Git entry manifest'
         $script:Validator | Should -Match 'candidate-git-entry-modes\.json'
         $script:Validator | Should -Match '& \$validatorPath -RepositoryRoot \$candidateRoot -OutputPath \$reportPath -ReadOnlySnapshot -GitEntryModeManifestPath \$GitEntryModeManifestPath \*> \$null'
         $script:Validator | Should -Match '\[string\] \$GitEntryModeManifestPath'
@@ -109,8 +110,10 @@ Describe 'Canonical Standard v1 validation adapter' {
         # Scenario: git archive export-subst rewrites a committed placeholder before extraction.
         # Purpose: prevent rewritten snapshot bytes from becoming trusted integrity evidence.
         $script:RepositoryValidator | Should -Match 'filesystem content is not bound to its committed Git blob'
-        $script:Validator | Should -Match 'schemaVersion = 2; candidateCommit = \$CandidateCommit; entries = \$entries'
+        $script:Validator | Should -Match 'schemaVersion = 3; candidateCommit = \$CandidateCommit; entries = \$entries'
         $script:RepositoryValidator | Should -Match "Expected @\('path', 'mode', 'sha256'\)"
+        $script:Validator | Should -Match 'Assert-CandidateSnapshotMatchesManifest'
+        $script:Validator | Should -Match 'GitEntryModeManifestSha256'
     }
 
     It 'validates raw SkillSpector arrays before deserialization' {
