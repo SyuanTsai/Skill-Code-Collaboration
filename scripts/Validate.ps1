@@ -304,6 +304,11 @@ function Assert-AuthorityConfig {
     Assert-ExactPropertySet -Value $Config.authority -Expected @('repository', 'commit', 'archiveUrl', 'archiveSha256', 'files') -Context 'config/standard-v1.json authority'
     $schemaVersionType = if ($null -eq $Config.schemaVersion) { [TypeCode]::Empty } else { [Convert]::GetTypeCode($Config.schemaVersion) }
     $integerTypeCodes = @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::UInt16, [TypeCode]::UInt32, [TypeCode]::UInt64, [TypeCode]::Int16, [TypeCode]::Int32, [TypeCode]::Int64)
+    if ($Config.standardVersion -isnot [string] -or $Config.authority.repository -isnot [string] -or
+        $Config.authority.commit -isnot [string] -or $Config.authority.archiveUrl -isnot [string] -or
+        $Config.authority.archiveSha256 -isnot [string]) {
+        throw 'config/standard-v1.json authority identity fields must be scalar strings.'
+    }
     if ($schemaVersionType -notin $integerTypeCodes -or [int64]$Config.schemaVersion -ne 1 -or $Config.standardVersion -cne 'v1' -or
         $Config.authority.repository -cne $script:AuthorityRepository -or
         $Config.authority.commit -cne $script:AuthorityCommit -or

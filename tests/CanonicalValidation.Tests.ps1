@@ -116,6 +116,15 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match 'GitEntryModeManifestSha256'
     }
 
+    It 'requires scalar authority identity fields before comparison' {
+        # Scenario: an authority identity field is encoded as a singleton JSON array.
+        # Purpose: prevent PowerShell collection comparison from accepting schema-invalid authority metadata.
+        $script:Validator | Should -Match '\$Config\.standardVersion -isnot \[string\]'
+        $script:Validator | Should -Match '\$Config\.authority\.repository -isnot \[string\]'
+        $script:Validator | Should -Match '\$Config\.authority\.commit -isnot \[string\]'
+        $script:Validator | Should -Match 'authority identity fields must be scalar strings'
+    }
+
     It 'validates raw SkillSpector arrays before deserialization' {
         # Scenario: a SkillSpector report returns a null or schema-drifted issues value.
         # Purpose: distinguish a valid empty JSON array from a null report field after PowerShell deserialization.
