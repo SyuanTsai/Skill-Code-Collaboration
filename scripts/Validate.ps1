@@ -1124,8 +1124,20 @@ try {
 
     $semanticRequired = $unbased
     $changeDetectionBase = if ($unbased) { $script:EmptyTreeObject } else { $baseRevision }
-    $changedPaths = @(& $gitPath -C $repoRoot diff --find-renames=100% --name-only $changeDetectionBase $candidateCommit)
+    $changedRecords = @(& $gitPath -C $repoRoot diff --find-renames=100% --name-status $changeDetectionBase $candidateCommit)
     if ($LASTEXITCODE -ne 0) { throw 'Could not determine the immutable candidate change set.' }
+    $changedPaths = @()
+    foreach ($changedRecord in $changedRecords) {
+        $fields = ([string]$changedRecord) -split "`t"
+        if ($fields.Count -lt 2) { throw 'Git change detection returned a malformed status record.' }
+        $status = [string]$fields[0]
+        $pathValues = if ($status -cmatch '^[RC][0-9]+$') {
+            if ($fields.Count -ne 3) { throw 'Git change detection returned a malformed rename or copy record.' }
+            @($fields[1], $fields[2])
+        }
+        else { @($fields[1]) }
+        foreach ($pathValue in $pathValues) { $changedPaths += [string]$pathValue }
+    }
     foreach ($changedPath in $changedPaths) {
         if ([string]$changedPath -like 'skills/*') { $semanticRequired = $true; break }
     }

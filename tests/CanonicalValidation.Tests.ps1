@@ -222,7 +222,9 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Not -Match 'IsNullOrWhiteSpace\(\$BaseCommit\).*HEAD\^'
         $script:Validator | Should -Match '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
         $script:Validator | Should -Match '\$semanticRequired = \$unbased'
-        $script:Validator | Should -Match '\$changedPaths = @\(& \$gitPath -C \$repoRoot diff --find-renames=100% --name-only \$changeDetectionBase \$candidateCommit\)'
+        $script:Validator | Should -Match '\$changedRecords = @\(& \$gitPath -C \$repoRoot diff --find-renames=100% --name-status \$changeDetectionBase \$candidateCommit\)'
+        $script:Validator | Should -Match '\$pathValues = if \(\$status -cmatch ''\^\[RC\]\[0-9\]\+\$''\)'
+        $script:Validator | Should -Match '\$changedPaths \+= \[string\]\$pathValue'
     }
 
     It 'keeps generated roots outside the artifact root when local defaults share the system temp path' {
