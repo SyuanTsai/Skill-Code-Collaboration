@@ -130,6 +130,19 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match '\$results = Get-PropertyValue -Object \$Report -Name ''results'''
     }
 
+    It 'preserves SARIF arrays and validates complete typed package-tool results' {
+        # Scenario: a package tool emits a singleton/non-array SARIF run, an incomplete validator result, or string coverage.
+        # Purpose: reject schema drift before PowerShell normalization or numeric coercion can turn malformed evidence into PASS.
+        $script:Validator | Should -Match '\$runs = Get-PropertyValue -Object \$Report -Name ''runs'''
+        $script:Validator | Should -Match 'skill-tools SARIF runs must be an array'
+        $script:Validator | Should -Match '-ArrayPropertyPaths @\(''runs''\)'
+        $script:Validator | Should -Match '\$categoryValue = Get-PropertyValue -Object \$result -Name ''category'''
+        $script:Validator | Should -Match '\$messageValue = Get-PropertyValue -Object \$result -Name ''message'''
+        $script:Validator | Should -Match 'result is missing a required string field'
+        $script:Validator | Should -Match '\$coverageType = if'
+        $script:Validator | Should -Match '\[TypeCode\]::Double'
+    }
+
     It 'normalizes a singleton active Skill inventory before child comparisons' {
         # Scenario: a source repository contains exactly one active Skill.
         # Purpose: keep cross-platform PowerShell child validation from treating the Skill ID as a scalar string.

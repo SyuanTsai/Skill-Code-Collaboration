@@ -585,13 +585,21 @@ function Assert-SkillValidatorReport {
     }
     $findings = @()
     foreach ($result in $results) {
-        $level = [string](Get-Property -Object $result -Name 'level' -Context 'skill-validator result').ToLowerInvariant()
+        $levelValue = Get-PropertyValue -Object $result -Name 'level' -Context 'skill-validator result'
+        $categoryValue = Get-PropertyValue -Object $result -Name 'category' -Context 'skill-validator result'
+        $messageValue = Get-PropertyValue -Object $result -Name 'message' -Context 'skill-validator result'
+        if ($levelValue -isnot [string] -or [string]::IsNullOrWhiteSpace($levelValue) -or
+            $categoryValue -isnot [string] -or [string]::IsNullOrWhiteSpace($categoryValue) -or
+            $messageValue -isnot [string] -or [string]::IsNullOrWhiteSpace($messageValue)) {
+            throw "skill-validator result is missing a required string field for '$SkillId'."
+        }
+        $level = ([string]$levelValue).ToLowerInvariant()
         if ($level -notin @('pass', 'info')) { throw "skill-validator returned a blocking or malformed result for '$SkillId'." }
         if ($null -ne $result.PSObject.Properties['file']) {
             [void](Resolve-ReportedFilePath -Value $result.file -SkillRoot $SkillRoot -ExpectedPaths $Inventory -Context 'skill-validator result file')
         }
         if ($level -eq 'info') {
-            $findings += [ordered]@{ severity = 'informational'; fingerprint = Get-TextSha256 -Text ($result | ConvertTo-Json -Depth 20 -Compress); ruleId = [string]$result.category; message = [string]$result.message; path = if ($null -ne $result.PSObject.Properties['file']) { [string]$result.file } else { '' }; skillId = $SkillId }
+            $findings += [ordered]@{ severity = 'informational'; fingerprint = Get-TextSha256 -Text ($result | ConvertTo-Json -Depth 20 -Compress); ruleId = [string]$categoryValue; message = [string]$messageValue; path = if ($null -ne $result.PSObject.Properties['file']) { [string]$result.file } else { '' }; skillId = $SkillId }
         }
     }
     return ,$findings
@@ -599,7 +607,10 @@ function Assert-SkillValidatorReport {
 function Assert-SkillToolsReport {
     param([Parameter(Mandatory = $true)] $Report, [Parameter(Mandatory = $true)][string] $SkillRoot, [Parameter(Mandatory = $true)][string[]] $Inventory, [Parameter(Mandatory = $true)][string] $SkillId)
     $version = [string](Get-Property -Object $Report -Name 'version' -Context 'skill-tools SARIF')
-    $runs = @(Get-Property -Object $Report -Name 'runs' -Context 'skill-tools SARIF')
+    $runs = Get-PropertyValue -Object $Report -Name 'runs' -Context 'skill-tools SARIF'
+    if ($null -eq $runs) { $runs = @() }
+    elseif ($runs -isnot [array]) { throw "skill-tools SARIF runs must be an array for '$SkillId'." }
+    else { $runs = @($runs) }
     if ($version -cne '2.1.0' -or $runs.Count -ne 1) { throw "skill-tools did not produce SARIF 2.1.0 for '$SkillId'." }
     $run = $runs[0]
     $driver = Get-Property -Object (Get-Property -Object $run -Name 'tool' -Context 'skill-tools SARIF run') -Name 'driver' -Context 'skill-tools SARIF tool'
@@ -642,13 +653,16 @@ function Assert-SkillSpectorReport {
     )
     $execution = Get-Property -Object $Report -Name 'execution_successful' -Context 'SkillSpector report'
     $completeness = Get-Property -Object $Report -Name 'analysis_completeness' -Context 'SkillSpector report'
+    $coveragePercent = Get-PropertyValue -Object $completeness -Name 'coverage_percent' -Context 'SkillSpector completeness'
+    $coverageType = if ($null -eq $coveragePercent) { [TypeCode]::Empty } else { [Convert]::GetTypeCode($coveragePercent) }
     if ($execution -isnot [bool] -or -not $execution -or
         (Get-Property -Object $completeness -Name 'execution_successful' -Context 'SkillSpector completeness') -isnot [bool] -or
         -not (Get-Property -Object $completeness -Name 'execution_successful' -Context 'SkillSpector completeness') -or
         (Get-Property -Object $completeness -Name 'is_complete' -Context 'SkillSpector completeness') -isnot [bool] -or
         -not (Get-Property -Object $completeness -Name 'is_complete' -Context 'SkillSpector completeness') -or
         [string](Get-Property -Object $completeness -Name 'status' -Context 'SkillSpector completeness') -cne 'complete' -or
-        [double](Get-Property -Object $completeness -Name 'coverage_percent' -Context 'SkillSpector completeness') -ne 100) {
+        $coverageType -notin @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::UInt16, [TypeCode]::UInt32, [TypeCode]::UInt64, [TypeCode]::Int16, [TypeCode]::Int32, [TypeCode]::Int64, [TypeCode]::Single, [TypeCode]::Double, [TypeCode]::Decimal) -or
+        [double]$coveragePercent -ne 100) {
         throw "SkillSpector did not prove complete static analysis for '$SkillId'."
     }
     foreach ($name in @('ledger_exceptions', 'scope_exclusions', 'limitations')) {
@@ -716,7 +730,7 @@ try {
             $inventory = Get-InventoryPaths -SkillRoot $skillRoot
             Assert-FileIdentity -Path ([string]$toolchain.skillToolsNodePath) -Sha256 ([string]$toolchain.skillToolsNodeSha256) -Context 'skill-tools Node runtime'
             Assert-FileIdentity -Path ([string]$toolchain.skillToolsEntryPointPath) -Sha256 ([string]$toolchain.skillToolsEntryPointSha256) -Context 'skill-tools entry point'
-            $report = Invoke-NativeJson -Command ([string]$toolchain.skillToolsNodePath) -Arguments @([string]$toolchain.skillToolsEntryPointPath, 'check', $skillRoot, '--format', 'sarif', '--fail-on', 'warning', '--min-score', '91') -Context "skill-tools '$skillId'"
+            $report = Invoke-NativeJson -Command ([string]$toolchain.skillToolsNodePath) -Arguments @([string]$toolchain.skillToolsEntryPointPath, 'check', $skillRoot, '--format', 'sarif', '--fail-on', 'warning', '--min-score', '91') -Context "skill-tools '$skillId'" -ArrayPropertyPaths @('runs')
             $findings = Assert-SkillToolsReport -Report $report -SkillRoot $skillRoot -Inventory $inventory -SkillId $skillId
             New-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ skillId = $skillId; skillInventorySha256 = [string]$env:STANDARD_VALIDATION_SKILL_INVENTORY_SHA256; semanticRequired = $false }
         }
