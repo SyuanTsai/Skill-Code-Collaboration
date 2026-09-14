@@ -358,32 +358,87 @@ function Get-Property {
     if ($null -eq $Object -or $null -eq $Object.PSObject.Properties[$Name]) { throw "$Context is missing '$Name'." }
     return $Object.PSObject.Properties[$Name].Value
 }
-function Read-Json {
-    param([Parameter(Mandatory = $true)][string] $Path, [Parameter(Mandatory = $true)][string] $Context)
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "$Context is missing: $Path" }
-    try { return (Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 100) }
-    catch { throw "$Context is not valid JSON: $($_.Exception.Message)" }
+function Get-PropertyValue {
+    param([Parameter(Mandatory = $true)] $Object, [Parameter(Mandatory = $true)][string] $Name, [Parameter(Mandatory = $true)][string] $Context)
+    if ($null -eq $Object -or $null -eq $Object.PSObject.Properties[$Name]) { throw "$Context is missing '$Name'." }
+    return ,$Object.PSObject.Properties[$Name].Value
 }
-function Assert-JsonArrayProperty {
+function Assert-NoDuplicateJsonProperties {
     param(
-        [Parameter(Mandatory = $true)][string] $Path,
-        [Parameter(Mandatory = $true)][string] $PropertyName,
+        [Parameter(Mandatory = $true)][System.Text.Json.JsonElement] $Element,
         [Parameter(Mandatory = $true)][string] $Context
     )
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "$Context is missing: $Path" }
-    $document = $null
-    try {
-        $text = [IO.File]::ReadAllText($Path, [Text.UTF8Encoding]::new($false, $true))
-        $document = [System.Text.Json.JsonDocument]::Parse($text)
-        $property = $document.RootElement.GetProperty($PropertyName)
-        if ($property.ValueKind -ne [System.Text.Json.JsonValueKind]::Array) {
-            throw "$Context property '$PropertyName' must be a JSON array."
+    if ($Element.ValueKind -eq [System.Text.Json.JsonValueKind]::Object) {
+        $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($property in $Element.EnumerateObject()) {
+            if (-not $names.Add($property.Name)) { throw "$Context contains duplicate JSON property '$($property.Name)'." }
+            Assert-NoDuplicateJsonProperties -Element $property.Value -Context "$Context.$($property.Name)"
         }
     }
-    catch { throw "$Context does not contain a valid JSON array property '$PropertyName': $($_.Exception.Message)" }
+    elseif ($Element.ValueKind -eq [System.Text.Json.JsonValueKind]::Array) {
+        $index = 0
+        foreach ($item in $Element.EnumerateArray()) {
+            Assert-NoDuplicateJsonProperties -Element $item -Context "$Context[$index]"
+            $index++
+        }
+    }
+}
+function Get-JsonPropertyElement {
+    param(
+        [Parameter(Mandatory = $true)][System.Text.Json.JsonElement] $Root,
+        [Parameter(Mandatory = $true)][string] $PropertyPath,
+        [Parameter(Mandatory = $true)][string] $Context
+    )
+    $current = $Root
+    foreach ($name in $PropertyPath.Split('.')) {
+        if ($current.ValueKind -ne [System.Text.Json.JsonValueKind]::Object) { throw "$Context property path '$PropertyPath' is not an object path." }
+        try { $current = $current.GetProperty($name) }
+        catch { throw "$Context is missing JSON property '$PropertyPath'." }
+    }
+    return $current
+}
+function Assert-JsonText {
+    param(
+        [Parameter(Mandatory = $true)][string] $Text,
+        [Parameter(Mandatory = $true)][string] $Context,
+        [string[]] $ArrayPropertyPaths = @()
+    )
+    $document = $null
+    try {
+        $document = [System.Text.Json.JsonDocument]::Parse($Text)
+        Assert-NoDuplicateJsonProperties -Element $document.RootElement -Context $Context
+        foreach ($propertyPath in @($ArrayPropertyPaths)) {
+            if ([string]::IsNullOrWhiteSpace($propertyPath)) { continue }
+            $property = Get-JsonPropertyElement -Root $document.RootElement -PropertyPath $propertyPath -Context $Context
+            if ($property.ValueKind -ne [System.Text.Json.JsonValueKind]::Array) {
+                throw "$Context property '$propertyPath' must be a JSON array."
+            }
+        }
+    }
+    catch { throw "$Context is not valid unambiguous UTF-8 JSON: $($_.Exception.Message)" }
     finally {
         if ($null -ne $document) { $document.Dispose() }
     }
+}
+function ConvertFrom-StrictJsonText {
+    param(
+        [Parameter(Mandatory = $true)][string] $Text,
+        [Parameter(Mandatory = $true)][string] $Context,
+        [string[]] $ArrayPropertyPaths = @()
+    )
+    Assert-JsonText -Text $Text -Context $Context -ArrayPropertyPaths $ArrayPropertyPaths
+    try { return ($Text | ConvertFrom-Json -Depth 100) }
+    catch { throw "$Context could not be materialized: $($_.Exception.Message)" }
+}
+function Read-Json {
+    param(
+        [Parameter(Mandatory = $true)][string] $Path,
+        [Parameter(Mandatory = $true)][string] $Context,
+        [string[]] $ArrayPropertyPaths = @()
+    )
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "$Context is missing: $Path" }
+    $text = [IO.File]::ReadAllText($Path, [Text.UTF8Encoding]::new($false, $true))
+    return ConvertFrom-StrictJsonText -Text $text -Context $Context -ArrayPropertyPaths $ArrayPropertyPaths
 }
 function Test-PathEqual {
     param([Parameter(Mandatory = $true)][string] $Left, [Parameter(Mandatory = $true)][string] $Right)
@@ -494,7 +549,12 @@ function New-Envelope {
     exit 0
 }
 function Invoke-NativeJson {
-    param([Parameter(Mandatory = $true)][string] $Command, [Parameter(Mandatory = $true)][string[]] $Arguments, [Parameter(Mandatory = $true)][string] $Context)
+    param(
+        [Parameter(Mandatory = $true)][string] $Command,
+        [Parameter(Mandatory = $true)][string[]] $Arguments,
+        [Parameter(Mandatory = $true)][string] $Context,
+        [string[]] $ArrayPropertyPaths = @()
+    )
     $stderrPath = Join-Path (Get-Location) (([guid]::NewGuid().ToString('N')) + '.stderr')
     try {
         $lines = @(& $Command @Arguments 2> $stderrPath)
@@ -503,7 +563,7 @@ function Invoke-NativeJson {
         if ($exitCode -ne 0) { throw "$Context returned exit code $exitCode. $stderr" }
         $json = ($lines -join "`n").Trim()
         if ([string]::IsNullOrWhiteSpace($json)) { throw "$Context produced no JSON output." }
-        return ($json | ConvertFrom-Json -Depth 100)
+        return ConvertFrom-StrictJsonText -Text $json -Context $Context -ArrayPropertyPaths $ArrayPropertyPaths
     }
     finally {
         if (Test-Path -LiteralPath $stderrPath) { Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue }
@@ -515,7 +575,10 @@ function Assert-SkillValidatorReport {
     $passed = Get-Property -Object $Report -Name 'passed' -Context 'skill-validator report'
     $errors = Get-Property -Object $Report -Name 'errors' -Context 'skill-validator report'
     $warnings = Get-Property -Object $Report -Name 'warnings' -Context 'skill-validator report'
-    $results = @(Get-Property -Object $Report -Name 'results' -Context 'skill-validator report')
+    $results = Get-PropertyValue -Object $Report -Name 'results' -Context 'skill-validator report'
+    if ($null -eq $results) { $results = @() }
+    elseif ($results -isnot [array]) { throw "skill-validator results must be an array for '$SkillId'." }
+    else { $results = @($results) }
     if (-not (Test-PathEqual -Left $skillDirectory -Right $SkillRoot) -or $passed -isnot [bool] -or -not $passed -or
         [int64]$errors -ne 0 -or [int64]$warnings -ne 0 -or $results.Count -eq 0) {
         throw "skill-validator did not produce a clean candidate-bound report for '$SkillId'."
@@ -570,7 +633,13 @@ function Assert-SkillToolsReport {
     return ,$findings
 }
 function Assert-SkillSpectorReport {
-    param([Parameter(Mandatory = $true)] $Report, [Parameter(Mandatory = $true)][string] $SkillRoot, [Parameter(Mandatory = $true)][string] $SkillId, [Parameter(Mandatory = $true)][string[]] $Inventory)
+    param(
+        [Parameter(Mandatory = $true)] $Report,
+        [Parameter(Mandatory = $true)][string] $SkillRoot,
+        [Parameter(Mandatory = $true)][string] $SkillId,
+        [Parameter(Mandatory = $true)][string[]] $Inventory,
+        [string] $Stage = 'skillspector-static'
+    )
     $execution = Get-Property -Object $Report -Name 'execution_successful' -Context 'SkillSpector report'
     $completeness = Get-Property -Object $Report -Name 'analysis_completeness' -Context 'SkillSpector report'
     if ($execution -isnot [bool] -or -not $execution -or
@@ -583,7 +652,11 @@ function Assert-SkillSpectorReport {
         throw "SkillSpector did not prove complete static analysis for '$SkillId'."
     }
     foreach ($name in @('ledger_exceptions', 'scope_exclusions', 'limitations')) {
-        if (@(Get-Property -Object $completeness -Name $name -Context 'SkillSpector completeness').Count -ne 0) { throw "SkillSpector reported incomplete '$name' evidence for '$SkillId'." }
+        $items = Get-PropertyValue -Object $completeness -Name $name -Context 'SkillSpector completeness'
+        if ($null -eq $items) { $items = @() }
+        elseif ($items -isnot [array]) { throw "SkillSpector completeness '$name' must be an array for '$SkillId'." }
+        else { $items = @($items) }
+        if ($items.Count -ne 0) { throw "SkillSpector reported incomplete '$name' evidence for '$SkillId'." }
     }
     $skill = Get-Property -Object $Report -Name 'skill' -Context 'SkillSpector report'
     if ([string](Get-Property -Object $skill -Name 'name' -Context 'SkillSpector skill identity') -cne $SkillId -or
@@ -597,14 +670,14 @@ function Assert-SkillSpectorReport {
         $path = [string](Get-Property -Object $component -Name 'path' -Context 'SkillSpector component')
         if (-not ($Inventory -ccontains $path) -or -not $observed.Add($path)) { throw "SkillSpector did not cover the exact inventory for '$SkillId'." }
     }
-    # Validate the raw JSON property before PowerShell deserialization; some hosts
-    # materialize a valid empty JSON array as $null.
-    $issues = Get-Property -Object $Report -Name 'issues' -Context 'SkillSpector report'
+    # Raw JSON array paths are validated before this function; preserve the
+    # deserialized property identity so singleton arrays remain distinguishable.
+    $issues = Get-PropertyValue -Object $Report -Name 'issues' -Context 'SkillSpector report'
     if ($null -eq $issues) { $issues = @() }
     elseif ($issues -isnot [array]) { throw "SkillSpector report issues must be an array for '$SkillId'." }
     else { $issues = @($issues) }
     $findings = @()
-    foreach ($issue in $issues) { $findings += New-Finding -Issue $issue -SkillId $SkillId -Stage 'skillspector-static' }
+    foreach ($issue in $issues) { $findings += New-Finding -Issue $issue -SkillId $SkillId -Stage $Stage }
     return ,$findings
 }
 
@@ -633,7 +706,7 @@ try {
             $skillRoot = Get-SkillRoot -SkillId $skillId
             $inventory = Get-InventoryPaths -SkillRoot $skillRoot
             Assert-FileIdentity -Path ([string]$toolchain.skillValidatorPath) -Sha256 ([string]$toolchain.skillValidatorSha256) -Context 'skill-validator executable'
-            $report = Invoke-NativeJson -Command ([string]$toolchain.skillValidatorPath) -Arguments @('-o', 'json', 'validate', 'structure', '--allow-dirs=agents', $skillRoot) -Context "skill-validator '$skillId'"
+            $report = Invoke-NativeJson -Command ([string]$toolchain.skillValidatorPath) -Arguments @('-o', 'json', 'validate', 'structure', '--allow-dirs=agents', $skillRoot) -Context "skill-validator '$skillId'" -ArrayPropertyPaths @('results')
             $findings = Assert-SkillValidatorReport -Report $report -SkillRoot $skillRoot -Inventory $inventory -SkillId $skillId
             New-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ skillId = $skillId; skillInventorySha256 = [string]$env:STANDARD_VALIDATION_SKILL_INVENTORY_SHA256; semanticRequired = $false }
         }
@@ -649,18 +722,39 @@ try {
         }
         'static' {
             Assert-FileIdentity -Path ([string]$toolchain.skillSpectorPath) -Sha256 ([string]$toolchain.skillSpectorSha256) -Context 'SkillSpector executable'
+            $skillspectorArrayPropertyPaths = @(
+                'components',
+                'issues',
+                'analysis_completeness.ledger_exceptions',
+                'analysis_completeness.scope_exclusions',
+                'analysis_completeness.limitations'
+            )
             $findings = @()
             foreach ($skillId in $activeSkills) {
                 $skillRoot = Get-SkillRoot -SkillId $skillId
                 $inventory = Get-InventoryPaths -SkillRoot $skillRoot
                 $reportPath = Join-Path (Get-Location) ("skillspector-$skillId.json")
                 & ([string]$toolchain.skillSpectorPath) scan $skillRoot --no-llm --format json --output $reportPath | Out-Null
-                Assert-JsonArrayProperty -Path $reportPath -PropertyName 'issues' -Context "SkillSpector report for '$skillId'"
-                $report = Read-Json -Path $reportPath -Context "SkillSpector report for '$skillId'"
+                if ($LASTEXITCODE -ne 0) { throw "SkillSpector static scan failed for '$skillId' with exit code $LASTEXITCODE." }
+                $report = Read-Json -Path $reportPath -Context "SkillSpector report for '$skillId'" -ArrayPropertyPaths $skillspectorArrayPropertyPaths
                 $findings += Assert-SkillSpectorReport -Report $report -SkillRoot $skillRoot -SkillId $skillId -Inventory $inventory
             }
-            $semantic = ($SemanticRequired -ceq 'true') -or $findings.Count -gt 0
-            New-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ scannerIdentity = 'SkillSpector'; analyzerCompleteness = 'complete'; semanticRequired = $semantic }
+            $semanticTriggered = ($SemanticRequired -ceq 'true') -or $findings.Count -gt 0
+            $semanticFindings = @()
+            if ($semanticTriggered) {
+                foreach ($skillId in $activeSkills) {
+                    $skillRoot = Get-SkillRoot -SkillId $skillId
+                    $inventory = Get-InventoryPaths -SkillRoot $skillRoot
+                    $semanticReportPath = Join-Path (Get-Location) ("skillspector-semantic-$skillId.json")
+                    & ([string]$toolchain.skillSpectorPath) scan $skillRoot --format json --output $semanticReportPath | Out-Null
+                    if ($LASTEXITCODE -ne 0) { throw "SkillSpector semantic scan failed for '$skillId' with exit code $LASTEXITCODE." }
+                    $semanticReport = Read-Json -Path $semanticReportPath -Context "SkillSpector semantic report for '$skillId'" -ArrayPropertyPaths $skillspectorArrayPropertyPaths
+                    $semanticFindings += Assert-SkillSpectorReport -Report $semanticReport -SkillRoot $skillRoot -SkillId $skillId -Inventory $inventory -Stage 'conditional-semantic-scan'
+                }
+            }
+            $findings += $semanticFindings
+            $semanticStatus = if ($semanticTriggered) { 'passed' } else { 'not-run' }
+            New-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ scannerIdentity = 'SkillSpector'; analyzerCompleteness = 'complete'; semanticRequired = $semanticTriggered; semanticScan = [ordered]@{ triggered = $semanticTriggered; status = $semanticStatus; findingCount = @($semanticFindings).Count } }
         }
         'repository-knowledge' {
             $validatorPath = Join-Path $candidateRoot 'scripts/Test-Repository.ps1'

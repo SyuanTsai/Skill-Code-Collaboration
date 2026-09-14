@@ -78,7 +78,8 @@ Describe 'Canonical Standard v1 validation adapter' {
         # Scenario: a validator returns more than one result or a PowerShell singleton array.
         # Purpose: validate each report item without scalar/collection ambiguity.
         $script:Validator | Should -Match 'return \$Object\.PSObject\.Properties\[\$Name\]\.Value'
-        $script:Validator | Should -Not -Match 'return ,\$Object\.PSObject\.Properties\[\$Name\]\.Value'
+        $script:Validator | Should -Match 'function Get-PropertyValue'
+        $script:Validator | Should -Match 'return ,\$Object\.PSObject\.Properties\[\$Name\]\.Value'
         $script:Validator | Should -Match 'foreach \(\$result in \$results\)'
     }
 
@@ -101,14 +102,32 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match "'-GitEntryModeManifestPath', \`$candidateGitEntryModeManifestPath"
     }
 
-    It 'validates the raw SkillSpector issue array before deserialization' {
+    It 'validates raw SkillSpector arrays before deserialization' {
         # Scenario: a SkillSpector report returns a null or schema-drifted issues value.
         # Purpose: distinguish a valid empty JSON array from a null report field after PowerShell deserialization.
-        $script:Validator | Should -Match 'function Assert-JsonArrayProperty'
-        $script:Validator | Should -Match 'Assert-JsonArrayProperty -Path \$reportPath -PropertyName ''issues'''
+        $script:Validator | Should -Match 'function Assert-JsonText'
         $script:Validator | Should -Match '\.ValueKind -ne \[System\.Text\.Json\.JsonValueKind\]::Array'
-        $script:Validator | Should -Match '\$issues = Get-Property -Object \$Report -Name ''issues'' -Context ''SkillSpector report'''
+        $script:Validator | Should -Match '-ArrayPropertyPaths \$skillspectorArrayPropertyPaths'
+        $script:Validator | Should -Match '\$issues = Get-PropertyValue -Object \$Report -Name ''issues'' -Context ''SkillSpector report'''
         $script:Validator | Should -Match '\$issues\s+-isnot\s+\[array\]'
+    }
+
+    It 'executes and validates conditional semantic SkillSpector analysis' {
+        # Scenario: a Skill change or static Finding requires the semantic pass.
+        # Purpose: ensure SemanticRequired triggers a real non-static scan before the envelope is emitted.
+        $script:Validator | Should -Match '\$semanticTriggered = \(\$SemanticRequired -ceq ''true''\) -or \$findings\.Count -gt 0'
+        $script:Validator | Should -Match 'scan \$skillRoot --format json --output \$semanticReportPath'
+        $script:Validator | Should -Match 'Assert-SkillSpectorReport -Report \$semanticReport .* -Stage ''conditional-semantic-scan'''
+        $script:Validator | Should -Match 'semanticScan = \[ordered\]@'
+    }
+
+    It 'rejects ambiguous JSON and scalar skill-validator collections' {
+        # Scenario: a resolved package validator emits duplicate properties or a non-array results value.
+        # Purpose: prevent lossy ConvertFrom-Json materialization from turning malformed evidence into PASS.
+        $script:Validator | Should -Match 'function Assert-NoDuplicateJsonProperties'
+        $script:Validator | Should -Match 'Assert-NoDuplicateJsonProperties -Element \$document.RootElement'
+        $script:Validator | Should -Match '-ArrayPropertyPaths @\(''results''\)'
+        $script:Validator | Should -Match '\$results = Get-PropertyValue -Object \$Report -Name ''results'''
     }
 
     It 'normalizes a singleton active Skill inventory before child comparisons' {

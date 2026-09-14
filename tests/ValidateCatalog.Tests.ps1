@@ -124,6 +124,25 @@ Describe 'Code Collaboration profile catalog contract' {
         { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot -OutputPath (Join-Path $script:FixtureRoot ("artifacts/{0}.json" -f [guid]::NewGuid().ToString('N'))) } | Should -Throw '*select exactly the established Copilot Skill*'
     }
 
+    It 'keeps the Copilot Skill out of every default profile' {
+        # Scenario: another default profile includes the established Copilot Skill with reciprocal metadata.
+        # Purpose: prevent default consumers from receiving a compatibility-sensitive opt-in Skill indirectly.
+        $catalogPath = Join-Path $script:FixtureRoot 'catalog/profiles.json'
+        $catalog = Get-Content -LiteralPath $catalogPath -Raw | ConvertFrom-Json
+        $copilot = @($catalog.profiles | Where-Object id -eq 'copilot')[0]
+        $defaultProfile = $copilot | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        $defaultProfile.id = 'default-fixture'
+        $defaultProfile.description = 'Default fixture profile.'
+        $defaultProfile.default = $true
+        $defaultProfile.includes = @($script:SourceSkillId)
+        $defaultProfile.excludes = @()
+        $catalog.profiles = @($catalog.profiles + $defaultProfile)
+        $skill = @($catalog.skills | Where-Object id -eq $script:SourceSkillId)[0]
+        $skill.profiles = @($skill.profiles + 'default-fixture' | Sort-Object)
+        $catalog | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $catalogPath -Encoding utf8NoBom
+        { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot -OutputPath (Join-Path $script:FixtureRoot ("artifacts/{0}.json" -f [guid]::NewGuid().ToString('N'))) } | Should -Throw '*must not be included in a default profile*'
+    }
+
     It 'rejects a catalog whose Skill path has a case or identity drift' {
         # Scenario: catalog metadata points at a different or differently cased package path.
         # Purpose: keep stable Skill ID, source path, and filesystem identity exact.
