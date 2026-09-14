@@ -106,11 +106,11 @@ $sourceSkillIds = @(Get-SortedSkillIds -Values $source.skills -Context 'catalog/
 
 $skillsRoot = Join-Path $repoRoot 'skills'
 Assert-True (Test-Path -LiteralPath $skillsRoot -PathType Container) 'Canonical skills/ source root is missing.'
-$actualSkillIds = @(
+[string[]]$actualSkillIds = @(
     Get-ChildItem -LiteralPath $skillsRoot -Directory -Force |
-        ForEach-Object { [string]$_.Name } |
-        Sort-Object
+        ForEach-Object { [string]$_.Name }
 )
+[Array]::Sort($actualSkillIds, [StringComparer]::Ordinal)
 Assert-True (($actualSkillIds -join "`n") -ceq ($sourceSkillIds -join "`n")) 'skills/ directories must exactly match source inventory.'
 
 $catalog = Read-StrictJson -Path (Join-Path $repoRoot 'catalog/profiles.json') -Context 'catalog/profiles.json'

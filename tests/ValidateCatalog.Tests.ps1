@@ -73,6 +73,14 @@ Describe 'Code Collaboration profile catalog contract' {
         { Get-Content -LiteralPath $outputPath -Raw | ConvertFrom-Json } | Should -Not -Throw
     }
 
+    It 'uses ordinal sorting for the filesystem Skill inventory' {
+        # Scenario: valid Skill IDs differ under culture-sensitive and ordinal sorting.
+        # Purpose: keep filesystem discovery aligned with the canonical source inventory contract.
+        $validator = Get-Content -LiteralPath $script:CatalogValidatorPath -Raw
+        $validator | Should -Match '\[Array\]::Sort\(\$actualSkillIds, \[StringComparer\]::Ordinal\)'
+        $validator | Should -Not -Match '\|\s*Sort-Object'
+    }
+
     It 'rejects a catalog whose Skill path has a case or identity drift' {
         # Scenario: catalog metadata points at a different or differently cased package path.
         # Purpose: keep stable Skill ID, source path, and filesystem identity exact.
