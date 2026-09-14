@@ -324,6 +324,9 @@ function Assert-AuthorityConfig {
     for ($index = 0; $index -lt $expectedPaths.Count; $index++) {
         $file = @($Config.authority.files)[$index]
         Assert-ExactPropertySet -Value $file -Expected @('path', 'sha256') -Context 'config/standard-v1.json authority file'
+        if ($file.path -isnot [string] -or $file.sha256 -isnot [string]) {
+            throw "config/standard-v1.json authority file at index $index must contain scalar string path and sha256 values."
+        }
         if ([string]$file.path -cne [string]$expectedPaths[$index] -or
             [string]$file.sha256 -cne [string]$script:AuthorityFiles[$expectedPaths[$index]]) {
             throw "config/standard-v1.json authority file identity mismatch at index $index."

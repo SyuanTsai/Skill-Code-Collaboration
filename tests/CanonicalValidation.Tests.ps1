@@ -125,6 +125,13 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match 'authority identity fields must be scalar strings'
     }
 
+    It 'requires scalar authority file identity fields before comparison' {
+        # Scenario: an authority file path or digest is encoded as a singleton JSON array.
+        # Purpose: prevent explicit string casts from accepting schema-invalid file inventory entries.
+        $script:Validator | Should -Match '\$file\.path -isnot \[string\] -or \$file\.sha256 -isnot \[string\]'
+        $script:Validator | Should -Match 'authority file at index \$index must contain scalar string path and sha256 values'
+    }
+
     It 'validates raw SkillSpector arrays before deserialization' {
         # Scenario: a SkillSpector report returns a null or schema-drifted issues value.
         # Purpose: distinguish a valid empty JSON array from a null report field after PowerShell deserialization.
