@@ -383,19 +383,35 @@ function Assert-NoDuplicateJsonProperties {
         }
     }
 }
-function Get-JsonPropertyElement {
+function Assert-JsonArrayPropertyPath {
     param(
         [Parameter(Mandatory = $true)][System.Text.Json.JsonElement] $Root,
         [Parameter(Mandatory = $true)][string] $PropertyPath,
         [Parameter(Mandatory = $true)][string] $Context
     )
-    $current = $Root
-    foreach ($name in $PropertyPath.Split('.')) {
-        if ($current.ValueKind -ne [System.Text.Json.JsonValueKind]::Object) { throw "$Context property path '$PropertyPath' is not an object path." }
-        try { $current = $current.GetProperty($name) }
-        catch { throw "$Context is missing JSON property '$PropertyPath'." }
+    $segments = @($PropertyPath.Split('.'))
+    $current = [Collections.Generic.List[System.Text.Json.JsonElement]]::new()
+    [void]$current.Add($Root)
+    for ($index = 0; $index -lt $segments.Count; $index++) {
+        $segment = $segments[$index]
+        $expand = $segment.EndsWith('[]')
+        $name = if ($expand) { $segment.Substring(0, $segment.Length - 2) } else { $segment }
+        if ([string]::IsNullOrWhiteSpace($name)) { throw "$Context has an invalid JSON array property path '$PropertyPath'." }
+        $next = [Collections.Generic.List[System.Text.Json.JsonElement]]::new()
+        foreach ($element in $current) {
+            if ($element.ValueKind -ne [System.Text.Json.JsonValueKind]::Object) { throw "$Context property path '$PropertyPath' is not an object path." }
+            try { $property = $element.GetProperty($name) }
+            catch { throw "$Context is missing JSON property '$PropertyPath'." }
+            if (($expand -or $index -eq $segments.Count - 1) -and $property.ValueKind -ne [System.Text.Json.JsonValueKind]::Array) {
+                throw "$Context property '$PropertyPath' must be a JSON array."
+            }
+            if ($expand) {
+                foreach ($item in $property.EnumerateArray()) { [void]$next.Add($item) }
+            }
+            else { [void]$next.Add($property) }
+        }
+        $current = $next
     }
-    return $current
 }
 function Assert-JsonText {
     param(
@@ -409,10 +425,7 @@ function Assert-JsonText {
         Assert-NoDuplicateJsonProperties -Element $document.RootElement -Context $Context
         foreach ($propertyPath in @($ArrayPropertyPaths)) {
             if ([string]::IsNullOrWhiteSpace($propertyPath)) { continue }
-            $property = Get-JsonPropertyElement -Root $document.RootElement -PropertyPath $propertyPath -Context $Context
-            if ($property.ValueKind -ne [System.Text.Json.JsonValueKind]::Array) {
-                throw "$Context property '$propertyPath' must be a JSON array."
-            }
+            Assert-JsonArrayPropertyPath -Root $document.RootElement -PropertyPath $propertyPath -Context $Context
         }
     }
     catch { throw "$Context is not valid unambiguous UTF-8 JSON: $($_.Exception.Message)" }
@@ -573,8 +586,14 @@ function Assert-SkillValidatorReport {
     param([Parameter(Mandatory = $true)] $Report, [Parameter(Mandatory = $true)][string] $SkillRoot, [Parameter(Mandatory = $true)][string[]] $Inventory, [Parameter(Mandatory = $true)][string] $SkillId)
     $skillDirectory = [string](Get-Property -Object $Report -Name 'skill_dir' -Context 'skill-validator report')
     $passed = Get-Property -Object $Report -Name 'passed' -Context 'skill-validator report'
-    $errors = Get-Property -Object $Report -Name 'errors' -Context 'skill-validator report'
-    $warnings = Get-Property -Object $Report -Name 'warnings' -Context 'skill-validator report'
+    $errors = Get-PropertyValue -Object $Report -Name 'errors' -Context 'skill-validator report'
+    $warnings = Get-PropertyValue -Object $Report -Name 'warnings' -Context 'skill-validator report'
+    $integerTypeCodes = @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::UInt16, [TypeCode]::UInt32, [TypeCode]::UInt64, [TypeCode]::Int16, [TypeCode]::Int32, [TypeCode]::Int64)
+    $errorsType = if ($null -eq $errors) { [TypeCode]::Empty } else { [Convert]::GetTypeCode($errors) }
+    $warningsType = if ($null -eq $warnings) { [TypeCode]::Empty } else { [Convert]::GetTypeCode($warnings) }
+    if ($errorsType -notin $integerTypeCodes -or $warningsType -notin $integerTypeCodes) {
+        throw "skill-validator report counters must be JSON integers for '$SkillId'."
+    }
     $results = Get-PropertyValue -Object $Report -Name 'results' -Context 'skill-validator report'
     if ($null -eq $results) { $results = @() }
     elseif ($results -isnot [array]) { throw "skill-validator results must be an array for '$SkillId'." }
@@ -615,8 +634,14 @@ function Assert-SkillToolsReport {
     $run = $runs[0]
     $driver = Get-Property -Object (Get-Property -Object $run -Name 'tool' -Context 'skill-tools SARIF run') -Name 'driver' -Context 'skill-tools SARIF tool'
     $driverName = [string](Get-Property -Object $driver -Name 'name' -Context 'skill-tools SARIF driver')
-    $rules = @(Get-Property -Object $driver -Name 'rules' -Context 'skill-tools SARIF driver')
-    $results = @(Get-Property -Object $run -Name 'results' -Context 'skill-tools SARIF run')
+    $rules = Get-PropertyValue -Object $driver -Name 'rules' -Context 'skill-tools SARIF driver'
+    if ($null -eq $rules) { $rules = @() }
+    elseif ($rules -isnot [array]) { throw "skill-tools SARIF rules must be an array for '$SkillId'." }
+    else { $rules = @($rules) }
+    $results = Get-PropertyValue -Object $run -Name 'results' -Context 'skill-tools SARIF run'
+    if ($null -eq $results) { $results = @() }
+    elseif ($results -isnot [array]) { throw "skill-tools SARIF results must be an array for '$SkillId'." }
+    else { $results = @($results) }
     if ($driverName -cne 'skill-tools') { throw "skill-tools SARIF driver identity is invalid for '$SkillId'." }
     $ruleById = @{}
     foreach ($rule in $rules) { $ruleById[[string](Get-Property -Object $rule -Name 'id' -Context 'skill-tools SARIF rule')] = $rule }
@@ -630,7 +655,10 @@ function Assert-SkillToolsReport {
         if ($level -notin @('none', 'note', 'warning', 'error')) { throw "skill-tools SARIF level is malformed for '$SkillId'." }
         if ($level -in @('warning', 'error')) { throw "skill-tools SARIF contains a blocking result for '$SkillId'." }
         $message = Get-Property -Object $result -Name 'message' -Context 'skill-tools SARIF result'
-        $locations = @(Get-Property -Object $result -Name 'locations' -Context 'skill-tools SARIF result')
+        $locations = Get-PropertyValue -Object $result -Name 'locations' -Context 'skill-tools SARIF result'
+        if ($null -eq $locations) { $locations = @() }
+        elseif ($locations -isnot [array]) { throw "skill-tools SARIF locations must be an array for '$SkillId'." }
+        else { $locations = @($locations) }
         if ([string]::IsNullOrWhiteSpace([string](Get-Property -Object $message -Name 'text' -Context 'skill-tools SARIF message')) -or $locations.Count -eq 0) { throw "skill-tools SARIF lacks candidate-bound evidence for '$SkillId'." }
         foreach ($location in $locations) {
             $physical = Get-Property -Object $location -Name 'physicalLocation' -Context 'skill-tools SARIF location'
@@ -730,7 +758,7 @@ try {
             $inventory = Get-InventoryPaths -SkillRoot $skillRoot
             Assert-FileIdentity -Path ([string]$toolchain.skillToolsNodePath) -Sha256 ([string]$toolchain.skillToolsNodeSha256) -Context 'skill-tools Node runtime'
             Assert-FileIdentity -Path ([string]$toolchain.skillToolsEntryPointPath) -Sha256 ([string]$toolchain.skillToolsEntryPointSha256) -Context 'skill-tools entry point'
-            $report = Invoke-NativeJson -Command ([string]$toolchain.skillToolsNodePath) -Arguments @([string]$toolchain.skillToolsEntryPointPath, 'check', $skillRoot, '--format', 'sarif', '--fail-on', 'warning', '--min-score', '91') -Context "skill-tools '$skillId'" -ArrayPropertyPaths @('runs')
+            $report = Invoke-NativeJson -Command ([string]$toolchain.skillToolsNodePath) -Arguments @([string]$toolchain.skillToolsEntryPointPath, 'check', $skillRoot, '--format', 'sarif', '--fail-on', 'warning', '--min-score', '91') -Context "skill-tools '$skillId'" -ArrayPropertyPaths @('runs', 'runs[].tool.driver.rules', 'runs[].results', 'runs[].results[].locations')
             $findings = Assert-SkillToolsReport -Report $report -SkillRoot $skillRoot -Inventory $inventory -SkillId $skillId
             New-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ skillId = $skillId; skillInventorySha256 = [string]$env:STANDARD_VALIDATION_SKILL_INVENTORY_SHA256; semanticRequired = $false }
         }

@@ -135,12 +135,17 @@ Describe 'Canonical Standard v1 validation adapter' {
         # Purpose: reject schema drift before PowerShell normalization or numeric coercion can turn malformed evidence into PASS.
         $script:Validator | Should -Match '\$runs = Get-PropertyValue -Object \$Report -Name ''runs'''
         $script:Validator | Should -Match 'skill-tools SARIF runs must be an array'
-        $script:Validator | Should -Match '-ArrayPropertyPaths @\(''runs''\)'
+        $script:Validator | Should -Match '-ArrayPropertyPaths @\(''runs'', ''runs\[\]\.tool\.driver\.rules'''
         $script:Validator | Should -Match '\$categoryValue = Get-PropertyValue -Object \$result -Name ''category'''
         $script:Validator | Should -Match '\$messageValue = Get-PropertyValue -Object \$result -Name ''message'''
         $script:Validator | Should -Match 'result is missing a required string field'
+        $script:Validator | Should -Match 'skill-validator report counters must be JSON integers'
         $script:Validator | Should -Match '\$coverageType = if'
         $script:Validator | Should -Match '\[TypeCode\]::Double'
+        $script:Validator | Should -Match 'function Assert-JsonArrayPropertyPath'
+        $script:Validator | Should -Match 'runs\[\]\.results\[\]\.locations'
+        $script:Validator | Should -Match '\$rules = Get-PropertyValue -Object \$driver -Name ''rules'''
+        $script:Validator | Should -Match '\$locations = Get-PropertyValue -Object \$result -Name ''locations'''
     }
 
     It 'normalizes a singleton active Skill inventory before child comparisons' {
