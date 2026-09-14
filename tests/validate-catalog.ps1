@@ -102,7 +102,7 @@ Assert-True ($source.schemaVersion -eq 2) 'catalog/source.json schemaVersion mus
 Assert-True ([string]$source.sourceId -ceq 'code-collaboration') 'catalog/source.json sourceId must be code-collaboration.'
 Assert-True ([string]$source.repository -ceq 'https://github.com/SyuanTsai/Skill-Code-Collaboration.git') 'catalog/source.json repository is invalid.'
 Assert-True ([string]$source.skillsRoot -ceq 'skills') 'catalog/source.json skillsRoot must be skills.'
-$sourceSkillIds = Get-SortedSkillIds -Values $source.skills -Context 'catalog/source.json skills'
+$sourceSkillIds = @(Get-SortedSkillIds -Values $source.skills -Context 'catalog/source.json skills')
 
 $skillsRoot = Join-Path $repoRoot 'skills'
 Assert-True (Test-Path -LiteralPath $skillsRoot -PathType Container) 'Canonical skills/ source root is missing.'
