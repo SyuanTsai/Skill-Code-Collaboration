@@ -161,7 +161,8 @@ foreach ($skill in $catalogSkills) { $catalogSkillById[[string]$skill.id] = $ski
 $copilotSkillId = 'write-copilot-implementation-prompt'
 $copilotSkill = $catalogSkillById[$copilotSkillId]
 Assert-True ($null -ne $copilotSkill) 'The established Copilot Skill is required.'
-Assert-True (@($copilotProfile.includes) -ccontains $copilotSkillId) 'Copilot profile must select the established Copilot Skill.'
+$copilotIncludes = @($copilotProfile.includes)
+Assert-True ($copilotIncludes.Count -eq 1 -and $copilotIncludes[0] -ceq $copilotSkillId) 'Copilot profile must select exactly the established Copilot Skill.'
 Assert-True (@($copilotSkill.compatibility.requiredCapabilities).Count -eq 0 -and @($copilotSkill.compatibility.anyOfCapabilities).Count -eq 0) 'Copilot Skill must remain independently available.'
 foreach ($profile in $profiles) {
     foreach ($skillId in @($profile.includes)) {

@@ -30,9 +30,8 @@ Describe 'Code Collaboration profile catalog contract' {
         $newSkill = $existingSkill | ConvertTo-Json -Depth 20 | ConvertFrom-Json
         $newSkill.id = $newSkillId
         $newSkill.source.path = "skills/$newSkillId"
+        $newSkill.profiles = @()
         $catalog.skills = @($catalog.skills + $newSkill | Sort-Object -Property id)
-        $profile = @($catalog.profiles | Where-Object id -eq 'copilot')[0]
-        $profile.includes = @($profile.includes + $newSkillId | Sort-Object)
         $catalog | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $catalogPath -Encoding utf8NoBOM
         }
     }
@@ -109,6 +108,20 @@ Describe 'Code Collaboration profile catalog contract' {
         $catalog.profiles[0].id = 'renamed-profile'
         $catalog | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $catalogPath -Encoding utf8NoBOM
         { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot -OutputPath (Join-Path $script:FixtureRoot ("artifacts/{0}.json" -f [guid]::NewGuid().ToString('N'))) } | Should -Throw '*established copilot profile is required*'
+    }
+
+    It 'keeps the established Copilot profile restricted to its Skill' {
+        # Scenario: a catalog adds another valid Skill to the compatibility-sensitive Copilot profile.
+        # Purpose: preserve the documented exact opt-in membership instead of allowing containment-only drift.
+        & $script:AddSafeCatalogSkillFixture -Root $script:FixtureRoot
+        $catalogPath = Join-Path $script:FixtureRoot 'catalog/profiles.json'
+        $catalog = Get-Content -LiteralPath $catalogPath -Raw | ConvertFrom-Json
+        $profile = @($catalog.profiles | Where-Object id -eq 'copilot')[0]
+        $profile.includes = @($profile.includes + 'safe-fixture-skill' | Sort-Object)
+        $safeSkill = @($catalog.skills | Where-Object id -eq 'safe-fixture-skill')[0]
+        $safeSkill.profiles = @('copilot')
+        $catalog | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $catalogPath -Encoding utf8NoBOM
+        { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot -OutputPath (Join-Path $script:FixtureRoot ("artifacts/{0}.json" -f [guid]::NewGuid().ToString('N'))) } | Should -Throw '*select exactly the established Copilot Skill*'
     }
 
     It 'rejects a catalog whose Skill path has a case or identity drift' {

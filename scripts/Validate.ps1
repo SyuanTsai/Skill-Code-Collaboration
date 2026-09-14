@@ -576,7 +576,9 @@ function Assert-SkillSpectorReport {
         $path = [string](Get-Property -Object $component -Name 'path' -Context 'SkillSpector component')
         if (-not ($Inventory -ccontains $path) -or -not $observed.Add($path)) { throw "SkillSpector did not cover the exact inventory for '$SkillId'." }
     }
-    $issues = @(Get-Property -Object $Report -Name 'issues' -Context 'SkillSpector report')
+    $issues = Get-Property -Object $Report -Name 'issues' -Context 'SkillSpector report'
+    if ($issues -isnot [array]) { throw "SkillSpector report issues must be an array for '$SkillId'." }
+    $issues = @($issues)
     $findings = @()
     foreach ($issue in $issues) { $findings += New-Finding -Issue $issue -SkillId $SkillId -Stage 'skillspector-static' }
     return ,$findings
