@@ -617,6 +617,13 @@ function Assert-SkillValidatorReport {
         if ($null -ne $result.PSObject.Properties['file']) {
             [void](Resolve-ReportedFilePath -Value $result.file -SkillRoot $SkillRoot -ExpectedPaths $Inventory -Context 'skill-validator result file')
         }
+        if ($null -ne $result.PSObject.Properties['line']) {
+            $lineValue = Get-PropertyValue -Object $result -Name 'line' -Context 'skill-validator result'
+            $lineType = if ($null -eq $lineValue) { [TypeCode]::Empty } else { [Convert]::GetTypeCode($lineValue) }
+            if ($lineType -notin $integerTypeCodes -or [int64]$lineValue -le 0) {
+                throw "skill-validator result line must be a positive JSON integer for '$SkillId'."
+            }
+        }
         if ($level -eq 'info') {
             $findings += [ordered]@{ severity = 'informational'; fingerprint = Get-TextSha256 -Text ($result | ConvertTo-Json -Depth 20 -Compress); ruleId = [string]$categoryValue; message = [string]$messageValue; path = if ($null -ne $result.PSObject.Properties['file']) { [string]$result.file } else { '' }; skillId = $SkillId }
         }
@@ -643,11 +650,18 @@ function Assert-SkillToolsReport {
     elseif ($results -isnot [array]) { throw "skill-tools SARIF results must be an array for '$SkillId'." }
     else { $results = @($results) }
     if ($driverName -cne 'skill-tools') { throw "skill-tools SARIF driver identity is invalid for '$SkillId'." }
-    $ruleById = @{}
-    foreach ($rule in $rules) { $ruleById[[string](Get-Property -Object $rule -Name 'id' -Context 'skill-tools SARIF rule')] = $rule }
+    $ruleById = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
+    foreach ($rule in $rules) {
+        $ruleIdValue = Get-PropertyValue -Object $rule -Name 'id' -Context 'skill-tools SARIF rule'
+        if ($ruleIdValue -isnot [string] -or [string]::IsNullOrWhiteSpace($ruleIdValue)) { throw "skill-tools SARIF rule ID must be a non-empty string for '$SkillId'." }
+        if ($ruleById.ContainsKey([string]$ruleIdValue)) { throw "skill-tools SARIF contains a duplicate rule ID for '$SkillId'." }
+        $ruleById.Add([string]$ruleIdValue, $rule)
+    }
     $findings = @()
     foreach ($result in $results) {
-        $ruleId = [string](Get-Property -Object $result -Name 'ruleId' -Context 'skill-tools SARIF result')
+        $ruleIdValue = Get-PropertyValue -Object $result -Name 'ruleId' -Context 'skill-tools SARIF result'
+        if ($ruleIdValue -isnot [string] -or [string]::IsNullOrWhiteSpace($ruleIdValue)) { throw "skill-tools SARIF result ruleId must be a non-empty string for '$SkillId'." }
+        $ruleId = [string]$ruleIdValue
         if (-not $ruleById.ContainsKey($ruleId)) { throw "skill-tools SARIF references an unknown rule for '$SkillId'." }
         $level = if ($null -ne $result.PSObject.Properties['level']) { [string]$result.level } else {
             [string](Get-Property -Object (Get-Property -Object $ruleById[$ruleId] -Name 'defaultConfiguration' -Context 'skill-tools SARIF rule') -Name 'level' -Context 'skill-tools SARIF rule default')

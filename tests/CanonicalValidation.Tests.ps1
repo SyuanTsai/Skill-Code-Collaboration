@@ -140,12 +140,15 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match '\$messageValue = Get-PropertyValue -Object \$result -Name ''message'''
         $script:Validator | Should -Match 'result is missing a required string field'
         $script:Validator | Should -Match 'skill-validator report counters must be JSON integers'
+        $script:Validator | Should -Match 'skill-validator result line must be a positive JSON integer'
         $script:Validator | Should -Match '\$coverageType = if'
         $script:Validator | Should -Match '\[TypeCode\]::Double'
         $script:Validator | Should -Match 'function Assert-JsonArrayPropertyPath'
         $script:Validator | Should -Match 'runs\[\]\.results\[\]\.locations'
         $script:Validator | Should -Match '\$rules = Get-PropertyValue -Object \$driver -Name ''rules'''
         $script:Validator | Should -Match '\$locations = Get-PropertyValue -Object \$result -Name ''locations'''
+        $script:Validator | Should -Match '\[Collections\.Generic\.Dictionary\[string, object\]\]::new\(\[StringComparer\]::Ordinal\)'
+        $script:Validator | Should -Match 'skill-tools SARIF contains a duplicate rule ID'
     }
 
     It 'normalizes a singleton active Skill inventory before child comparisons' {
