@@ -266,12 +266,14 @@ function Assert-AuthorityConfig {
 
     Assert-ExactPropertySet -Value $Config -Expected @('schemaVersion', 'standardVersion', 'authority') -Context 'config/standard-v1.json'
     Assert-ExactPropertySet -Value $Config.authority -Expected @('repository', 'commit', 'archiveUrl', 'archiveSha256', 'files') -Context 'config/standard-v1.json authority'
-    if ($Config.schemaVersion -ne 1 -or $Config.standardVersion -cne 'v1' -or
+    $schemaVersionType = if ($null -eq $Config.schemaVersion) { [TypeCode]::Empty } else { [Convert]::GetTypeCode($Config.schemaVersion) }
+    $integerTypeCodes = @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::UInt16, [TypeCode]::UInt32, [TypeCode]::UInt64, [TypeCode]::Int16, [TypeCode]::Int32, [TypeCode]::Int64)
+    if ($schemaVersionType -notin $integerTypeCodes -or [int64]$Config.schemaVersion -ne 1 -or $Config.standardVersion -cne 'v1' -or
         $Config.authority.repository -cne $script:AuthorityRepository -or
         $Config.authority.commit -cne $script:AuthorityCommit -or
         $Config.authority.archiveUrl -cne "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/$($script:AuthorityCommit)" -or
         $Config.authority.archiveSha256 -cne $script:AuthorityArchiveSha256) {
-        throw 'config/standard-v1.json is not bound to the exact approved P02 authority snapshot.'
+        throw 'config/standard-v1.json schemaVersion must be integer 1 and remain bound to the exact approved P02 authority snapshot.'
     }
     Assert-Sha256 -Value ([string]$Config.authority.archiveSha256) -Context 'Authority archive identity'
     if ($Config.authority.files -isnot [array] -or @($Config.authority.files).Count -ne $script:AuthorityFiles.Count) {
@@ -1082,8 +1084,10 @@ try {
         if ([string]$receipt.toolName -cne $toolName -or [string]$receipt.channel -cne 'latest-stable' -or $receipt.frozenForRun -ne $true -or
             [string]::IsNullOrWhiteSpace([string]$receipt.resolvedVersion) -or [string]::IsNullOrWhiteSpace([string]$receipt.resolvedIdentity)) { throw "$toolName resolver receipt is not an exact frozen latest-stable identity." }
         $receipts[$toolName] = $receipt
+        if ($toolName -ceq 'skillspector') {
+            Remove-Item -LiteralPath 'Env:GITHUB_TOKEN', 'Env:GH_TOKEN' -Force -ErrorAction SilentlyContinue
+        }
     }
-    Remove-Item -LiteralPath 'Env:GITHUB_TOKEN', 'Env:GH_TOKEN' -Force -ErrorAction SilentlyContinue
 
     $toolchain = [ordered]@{
         upstreamAdapterValidatorPath = [IO.Path]::GetFullPath($upstreamAdapterPath)

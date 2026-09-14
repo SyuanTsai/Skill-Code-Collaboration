@@ -154,6 +154,9 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match '\$statusValue = Get-ScalarProperty -Object \$completeness -Name ''status'''
         $script:Validator | Should -Match '\$statusValue = Get-ScalarProperty -Object \$report -Name ''status'''
         $script:Validator | Should -Match 'scalar JSON value'
+        $script:Validator | Should -Match '\$schemaVersionType = if'
+        $script:Validator | Should -Match 'schemaVersion must be integer 1'
+        $script:Validator | Should -Match 'if \(\$toolName -ceq ''skillspector''\) \{\s+Remove-Item -LiteralPath ''Env:GITHUB_TOKEN'', ''Env:GH_TOKEN'''
     }
 
     It 'normalizes a singleton active Skill inventory before child comparisons' {
