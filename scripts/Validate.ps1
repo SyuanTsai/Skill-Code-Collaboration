@@ -875,6 +875,9 @@ catch {
 }
 '@
 
+$script:ValidationExitCode = 1
+$script:ExternalCleanupRoots = @()
+
 try {
     $repoRoot = if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
         [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
@@ -936,11 +939,11 @@ try {
     if ([string]::IsNullOrWhiteSpace($externalRootParent)) { throw 'Could not allocate a writable external run-root parent outside ArtifactsRoot.' }
     $trustedRoot = Join-Path $externalRootParent "skcv1-tools-$runId"
     $candidateExtractRoot = Join-Path $externalRootParent "skcv1-candidate-$runId"
-    if ((Test-Path -LiteralPath $trustedRoot) -or (Test-Path -LiteralPath $candidateExtractRoot)) { throw 'Run-owned temporary root unexpectedly exists.' }
+    $resolvedToolsRoot = Join-Path $externalRootParent "skcv1-resolved-tools-$runId"
+    if ((Test-Path -LiteralPath $trustedRoot) -or (Test-Path -LiteralPath $candidateExtractRoot) -or (Test-Path -LiteralPath $resolvedToolsRoot)) { throw 'Run-owned temporary root unexpectedly exists.' }
+    $script:ExternalCleanupRoots = @($trustedRoot, $candidateExtractRoot, $resolvedToolsRoot)
     [void](New-Item -ItemType Directory -Path $trustedRoot -Force)
     [void](New-Item -ItemType Directory -Path $candidateExtractRoot -Force)
-    $resolvedToolsRoot = Join-Path $externalRootParent "skcv1-resolved-tools-$runId"
-    if (Test-Path -LiteralPath $resolvedToolsRoot) { throw 'Run-owned resolved-tools path unexpectedly exists.' }
     [void](New-Item -ItemType Directory -Path $resolvedToolsRoot -Force)
     Assert-OutsideRoot -Path $trustedRoot -Root $repoRoot -Context 'Trusted tool root'
     Assert-OutsideRoot -Path $trustedRoot -Root $artifactsRootPath -Context 'Trusted tool root'
@@ -1103,8 +1106,21 @@ try {
             Write-Warning "Could not print canonical child diagnostics: $($_.Exception.Message)"
         }
     }
-    exit $centralExitCode
+    $script:ValidationExitCode = $centralExitCode
 }
 catch {
     throw
 }
+finally {
+    foreach ($cleanupRoot in @($script:ExternalCleanupRoots)) {
+        if ([string]::IsNullOrWhiteSpace([string]$cleanupRoot) -or -not (Test-Path -LiteralPath $cleanupRoot)) { continue }
+        try {
+            Remove-Item -LiteralPath $cleanupRoot -Recurse -Force -ErrorAction Stop
+        }
+        catch {
+            $script:ValidationExitCode = 1
+            [Console]::Error.WriteLine("Could not remove run-owned temporary root '$cleanupRoot': $($_.Exception.Message)")
+        }
+    }
+}
+if ($script:ValidationExitCode -ne 0) { exit $script:ValidationExitCode }

@@ -230,6 +230,15 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match 'LocalApplicationData'
     }
 
+    It 'cleans run-owned external roots after validation' {
+        # Scenario: a persistent workstation or self-hosted runner executes validation repeatedly.
+        # Purpose: reclaim the run-specific tool, candidate, and resolved-tool roots after success or failure.
+        $script:Validator | Should -Match '\$script:ExternalCleanupRoots = @\(\$trustedRoot, \$candidateExtractRoot, \$resolvedToolsRoot\)'
+        $script:Validator | Should -Match 'Remove-Item -LiteralPath \$cleanupRoot -Recurse -Force'
+        $script:Validator | Should -Match '\$script:ValidationExitCode = \$centralExitCode'
+        $script:Validator | Should -Match '(?s)catch \{\s+throw\s+\}\s+finally \{.*ExternalCleanupRoots'
+    }
+
     It 'keeps generated adapter and evidence roots outside the candidate' {
         # Scenario: an output path or temporary tool root is redirected into the candidate repository.
         # Purpose: prevent evidence and resolved tools from changing the immutable candidate.
