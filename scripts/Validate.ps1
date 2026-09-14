@@ -1113,8 +1113,11 @@ try {
         [pscustomobject]@{ path = $toolchain.skillSpectorPath; sha = $toolchain.skillSpectorSha256; name = 'SkillSpector' },
         [pscustomobject]@{ path = $toolchain.pesterModulePath; sha = $toolchain.pesterModuleSha256; name = 'Pester' }
     )) {
+        $toolPath = [IO.Path]::GetFullPath([string]$entry.path)
+        [void](Assert-PathWithinRoot -Path $toolPath -Root $resolvedToolsRoot -Context "$($entry.name) receipt path")
+        Assert-NoReparseAncestors -Path $toolPath -Context "$($entry.name) receipt path"
         Assert-Sha256 -Value ([string]$entry.sha) -Context "$($entry.name) receipt hash"
-        if ((Get-FileSha256 -Path ([string]$entry.path)) -cne [string]$entry.sha) { throw "$($entry.name) changed after resolver completion." }
+        if ((Get-FileSha256 -Path $toolPath) -cne [string]$entry.sha) { throw "$($entry.name) changed after resolver completion." }
     }
     $toolchainPath = Join-Path $trustedRoot 'toolchain.json'
     Write-Utf8NoBom -Path $toolchainPath -Text (($toolchain | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
