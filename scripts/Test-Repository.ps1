@@ -5,7 +5,9 @@
 [CmdletBinding()]
 param(
     [string] $RepositoryRoot,
-    [string] $OutputPath
+    [string] $OutputPath,
+    [switch] $ReadOnlySnapshot,
+    [string] $GitEntryModeManifestPath
 )
 
 Set-StrictMode -Version Latest
@@ -75,6 +77,49 @@ function Read-StrictJson {
     catch {
         throw "JSON cannot be materialized at '$Path': $($_.Exception.Message)"
     }
+}
+
+function Read-GitEntryModeManifest {
+    param([Parameter(Mandatory = $true)][string] $Path)
+
+    $manifest = Read-StrictJson -Path $Path
+    Assert-ExactPropertySet -Value $manifest -Expected @('schemaVersion', 'candidateCommit', 'entries') -Context 'Git entry mode manifest'
+    if (($manifest.schemaVersion -isnot [int] -and $manifest.schemaVersion -isnot [long]) -or [int64]$manifest.schemaVersion -ne 3) {
+        throw 'Git entry mode manifest schemaVersion must be integer 3.'
+    }
+    if ($manifest.candidateCommit -isnot [string] -or [string]$manifest.candidateCommit -cnotmatch '^[0-9a-f]{40}$') {
+        throw 'Git entry mode manifest candidateCommit must be a lowercase full Git object ID.'
+    }
+    if ($manifest.entries -isnot [array] -or @($manifest.entries).Count -eq 0) {
+        throw 'Git entry mode manifest entries must be a non-empty array.'
+    }
+
+    $modes = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
+    foreach ($entry in @($manifest.entries)) {
+        Assert-ExactPropertySet -Value $entry -Expected @('path', 'mode', 'sha256') -Context 'Git entry mode manifest entry'
+        if ($entry.path -isnot [string] -or $entry.mode -isnot [string] -or $entry.sha256 -isnot [string]) {
+            throw 'Git entry mode manifest entries must contain string path, mode, and sha256 values.'
+        }
+        $pathValue = [string]$entry.path
+        $segments = $pathValue.Split('/')
+        if ([IO.Path]::IsPathRooted($pathValue) -or $segments -contains '' -or $segments -contains '.' -or $segments -contains '..' -or
+            $pathValue.Contains('\') -or $pathValue.Contains(':') -or
+            $pathValue -cmatch '[\x00-\x1f\x7f]') {
+            throw "Git entry mode manifest contains an unsafe path '$pathValue'."
+        }
+        $modeValue = [string]$entry.mode
+        if ($modeValue -cnotmatch '^[0-9]{6}$') {
+            throw "Git entry mode manifest contains invalid mode '$modeValue' for '$pathValue'."
+        }
+        $sha256Value = [string]$entry.sha256
+        if ($sha256Value -cnotmatch '^[0-9a-f]{64}$') {
+            throw "Git entry mode manifest contains invalid blob sha256 for '$pathValue'."
+        }
+        if (-not $modes.TryAdd($pathValue, [pscustomobject][ordered]@{ mode = $modeValue; sha256 = $sha256Value })) {
+            throw "Git entry mode manifest contains duplicate path '$pathValue'."
+        }
+    }
+    return $modes
 }
 
 function Get-UnicodeScalarCount {
@@ -339,7 +384,9 @@ function Read-OpenAiMetadata {
 function Get-ContentInventory {
     param(
         [Parameter(Mandatory = $true)][string] $RepositoryRoot,
-        [Parameter(Mandatory = $true)][string] $SkillId
+        [Parameter(Mandatory = $true)][string] $SkillId,
+        [switch] $ReadOnlySnapshot,
+        [Collections.Generic.Dictionary[string, object]] $SnapshotGitEntryModes
     )
 
     $skillRoot = [IO.Path]::GetFullPath((Join-Path $RepositoryRoot "skills/$SkillId"))
@@ -382,6 +429,53 @@ function Get-ContentInventory {
         $foldedPaths[$folded] = $relative
     }
     if ($pathToFile.Count -eq 0) { throw "Skill '$SkillId' has an empty package inventory." }
+
+    if ($ReadOnlySnapshot) {
+        if ($null -eq $SnapshotGitEntryModes) {
+            throw "Skill '$SkillId' read-only snapshot validation requires a Git entry mode manifest."
+        }
+        $prefix = "skills/$SkillId/"
+        $expectedPaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($entry in $SnapshotGitEntryModes.GetEnumerator()) {
+            if ($entry.Key.StartsWith($prefix, [StringComparison]::Ordinal)) {
+                if ([string]$entry.Value.mode -cnotin @('100644', '100755')) {
+                    throw "Skill '$SkillId' contains non-regular Git entry '$($entry.Key)' with mode '$($entry.Value.mode)'."
+                }
+                [void]$expectedPaths.Add($entry.Key.Substring($prefix.Length))
+            }
+        }
+        if ($expectedPaths.Count -ne $pathToFile.Count) {
+            throw "Skill '$SkillId' filesystem inventory does not match the Git entry mode manifest."
+        }
+        foreach ($path in $pathToFile.Keys) {
+            if (-not $expectedPaths.Contains($path)) {
+                throw "Skill '$SkillId' filesystem inventory is missing Git entry mode '$path'."
+            }
+        }
+        [string[]]$sortedPaths = @($pathToFile.Keys)
+        [Array]::Sort($sortedPaths, [StringComparer]::Ordinal)
+        $files = @()
+        $canonical = [Text.StringBuilder]::new()
+        foreach ($path in $sortedPaths) {
+            $manifestPath = "skills/$SkillId/$path"
+            if (-not $SnapshotGitEntryModes.ContainsKey($manifestPath)) {
+                throw "Skill '$SkillId' filesystem inventory is missing Git blob identity '$path'."
+            }
+            $sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $pathToFile[$path].FullName).Hash.ToLowerInvariant()
+            $expectedSha256 = [string]$SnapshotGitEntryModes[$manifestPath].sha256
+            if ($sha256 -cne $expectedSha256) {
+                throw "Skill '$SkillId' filesystem content is not bound to its committed Git blob '$path'."
+            }
+            $files += [pscustomobject][ordered]@{ path = $path; sha256 = $sha256 }
+            [void]$canonical.Append($path).Append("`t").Append($sha256).Append("`n")
+        }
+        $hasher = [Security.Cryptography.SHA256]::Create()
+        try {
+            $contentSha256 = ([BitConverter]::ToString($hasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($canonical.ToString()))) -replace '-', '').ToLowerInvariant()
+        }
+        finally { $hasher.Dispose() }
+        return [pscustomobject][ordered]@{ skillId = $SkillId; contentSha256 = $contentSha256; files = $files }
+    }
 
     $git = Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1
     $tracked = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::Ordinal)
@@ -436,6 +530,14 @@ $repoRoot = if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
 }
 else { [IO.Path]::GetFullPath($RepositoryRoot) }
 
+$snapshotGitEntryModes = $null
+if ($ReadOnlySnapshot) {
+    if ([string]::IsNullOrWhiteSpace($GitEntryModeManifestPath)) {
+        throw 'Read-only snapshot validation requires GitEntryModeManifestPath.'
+    }
+    $snapshotGitEntryModes = Read-GitEntryModeManifest -Path ([IO.Path]::GetFullPath($GitEntryModeManifestPath))
+}
+
 $sourcePath = Join-Path $repoRoot 'catalog/source.json'
 $inventory = Read-StrictJson -Path $sourcePath
 Assert-ExactPropertySet -Value $inventory -Expected @('schemaVersion', 'sourceId', 'repository', 'skillsRoot', 'skills') -Context 'catalog/source.json'
@@ -459,50 +561,6 @@ if (Test-Path -LiteralPath (Join-Path $repoRoot 'catalog/skills-catalog.json')) 
 }
 if (Test-Path -LiteralPath (Join-Path $repoRoot '.agents/skills')) {
     throw 'Legacy .agents/skills source root must not coexist with canonical skills/.'
-}
-
-$adapter = Read-StrictJson -Path (Join-Path $repoRoot 'config/standard-v1.json')
-Assert-ExactPropertySet -Value $adapter -Expected @('schemaVersion', 'standardVersion', 'authority', 'deviations') -Context 'config/standard-v1.json'
-Assert-ExactPropertySet -Value $adapter.authority -Expected @('repository', 'commit', 'archiveUrl', 'archiveSha256', 'files') -Context 'config/standard-v1.json authority'
-if (($adapter.schemaVersion -isnot [int] -and $adapter.schemaVersion -isnot [long]) -or [int64]$adapter.schemaVersion -ne 1 -or
-    $adapter.standardVersion -isnot [string] -or $adapter.standardVersion -cne 'v1' -or
-    $adapter.deviations -isnot [string] -or $adapter.deviations -cne 'None') {
-    throw 'config/standard-v1.json identity or deviation contract is invalid.'
-}
-if ($adapter.authority.repository -isnot [string] -or $adapter.authority.repository -cne 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git' -or
-    $adapter.authority.commit -isnot [string] -or $adapter.authority.commit -cnotmatch '^[0-9a-f]{40}$' -or
-    $adapter.authority.archiveUrl -isnot [string] -or
-    $adapter.authority.archiveUrl -cne "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/$($adapter.authority.commit)" -or
-    $adapter.authority.archiveSha256 -isnot [string] -or $adapter.authority.archiveSha256 -cnotmatch '^[0-9a-f]{64}$') {
-    throw 'config/standard-v1.json authority binding is invalid.'
-}
-$requiredAuthorityPaths = @(
-    'docs/standards/README.md',
-    'docs/standards/managed-skill-lifecycle.md',
-    'docs/standards/schemas/managed-skill-lifecycle-v1.schema.json',
-    'docs/standards/schemas/openai-agent-metadata.schema.json',
-    'docs/standards/schemas/source-inventory-v2.schema.json',
-    'docs/standards/schemas/validation-security-gate-v1.schema.json',
-    'docs/standards/skill-repository-review-matrix.md',
-    'docs/standards/skill-repository-standard.md',
-    'docs/standards/upstream-interoperability.md',
-    'docs/standards/validation-security-gate.json',
-    'docs/standards/validation-toolchain.json',
-    'scripts/Invoke-StandardAuthorityGate.ps1',
-    'scripts/Resolve-PythonWheelClosure.py',
-    'scripts/Resolve-StandardValidationTool.ps1'
-)
-if ($adapter.authority.files -isnot [array] -or @($adapter.authority.files).Count -ne $requiredAuthorityPaths.Count) {
-    throw 'config/standard-v1.json authority file inventory is incomplete.'
-}
-$authorityPaths = @()
-foreach ($file in @($adapter.authority.files)) {
-    Assert-ExactPropertySet -Value $file -Expected @('path', 'sha256') -Context 'config/standard-v1.json authority file'
-    if ($file.path -isnot [string] -or $requiredAuthorityPaths -cnotcontains $file.path -or $authorityPaths -ccontains $file.path -or
-        $file.sha256 -isnot [string] -or $file.sha256 -cnotmatch '^[0-9a-f]{64}$') {
-        throw 'config/standard-v1.json authority file binding is invalid.'
-    }
-    $authorityPaths += [string]$file.path
 }
 
 $skillIds = @($inventory.skills | ForEach-Object {
@@ -550,7 +608,7 @@ foreach ($skillId in $skillIds) {
     }
     [void](Read-SkillFrontmatter -Path $skillFile -ExpectedSkillId $skillId)
     [void](Read-OpenAiMetadata -Path $metadataFile -ExpectedSkillId $skillId)
-    $packages += Get-ContentInventory -RepositoryRoot $repoRoot -SkillId $skillId
+    $packages += Get-ContentInventory -RepositoryRoot $repoRoot -SkillId $skillId -ReadOnlySnapshot:$ReadOnlySnapshot -SnapshotGitEntryModes $snapshotGitEntryModes
 }
 
 $result = [pscustomobject][ordered]@{

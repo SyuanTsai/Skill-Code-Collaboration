@@ -48,7 +48,7 @@ Direct paths are stable within a pinned version:
 
 - `skills/write-copilot-implementation-prompt`
 
-Consumers should resolve a release tag to an immutable commit SHA and persist that SHA plus a reproducible repository content hash. `scripts/Get-SourcePin.ps1` produces the pin metadata used for that purpose.
+Consumers should resolve a release tag to an immutable commit SHA and persist that SHA plus a reproducible repository content hash. The source-pin metadata helper produces the pin evidence used for that purpose.
 
 ## Validation
 
@@ -58,7 +58,7 @@ Run from the repository root:
 pwsh -File ./scripts/Validate.ps1
 ```
 
-The GitHub Actions workflow runs the canonical Standard v1 validation for pull requests and pushes. Component scripts are not additional public validation gates. Use `scripts/Get-SourcePin.ps1 -Ref HEAD` separately when producing source-pin metadata.
+The GitHub Actions workflow runs the canonical Standard v1 validation for pull requests and pushes. Component scripts are not additional public validation gates. Generate source-pin metadata separately when producing release evidence.
 
 ## Versioning and rollback
 

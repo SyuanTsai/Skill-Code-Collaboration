@@ -31,6 +31,49 @@ Describe 'Code Collaboration Standard v1 repository contract' {
         $first.skills[0].contentSha256 | Should -Match '^[0-9a-f]{64}$'
     }
 
+    It 'requires a Git entry mode manifest for read-only snapshots' {
+        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot -ReadOnlySnapshot } | Should -Throw '*requires GitEntryModeManifestPath*'
+    }
+
+    It 'rejects a read-only snapshot whose Git manifest contains a symlink entry' {
+        # Scenario: archive extraction materializes a committed symlink as an ordinary file.
+        # Purpose: preserve the original Git entry-type gate across snapshot validation.
+        $manifestPath = Join-Path $script:FixtureRoot 'git-entry-modes.json'
+        $entries = @(Get-ChildItem -LiteralPath (Join-Path $script:FixtureRoot 'skills') -Recurse -File | ForEach-Object {
+            [ordered]@{
+                path = [IO.Path]::GetRelativePath($script:FixtureRoot, $_.FullName).Replace([IO.Path]::DirectorySeparatorChar, '/')
+                mode = '100644'
+                sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+            }
+        })
+        $entries[0].mode = '120000'
+        [ordered]@{ schemaVersion = 3; candidateCommit = ('a' * 40); entries = $entries } |
+            ConvertTo-Json -Depth 20 |
+            Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
+
+        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot -ReadOnlySnapshot -GitEntryModeManifestPath $manifestPath } | Should -Throw '*non-regular Git entry*'
+    }
+
+    It 'rejects read-only snapshot bytes that do not match committed Git blob digests' {
+        # Scenario: git archive export-subst rewrites a committed Skill file before extraction.
+        # Purpose: ensure snapshot evidence remains bound to the original committed blob bytes.
+        $manifestPath = Join-Path $script:FixtureRoot 'git-entry-modes.json'
+        $entries = @(Get-ChildItem -LiteralPath (Join-Path $script:FixtureRoot 'skills') -Recurse -File | ForEach-Object {
+            [ordered]@{
+                path = [IO.Path]::GetRelativePath($script:FixtureRoot, $_.FullName).Replace([IO.Path]::DirectorySeparatorChar, '/')
+                mode = '100644'
+                sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+            }
+        })
+        [ordered]@{ schemaVersion = 3; candidateCommit = ('a' * 40); entries = $entries } |
+            ConvertTo-Json -Depth 20 |
+            Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
+        Add-Content -LiteralPath (Join-Path $script:SkillRoot 'SKILL.md') -Value 'snapshot export-subst mutation'
+
+        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot -ReadOnlySnapshot -GitEntryModeManifestPath $manifestPath } |
+            Should -Throw '*committed Git blob*'
+    }
+
     It 'rejects an unlisted Skill directory' {
         New-Item -ItemType Directory -Path (Join-Path $script:FixtureRoot 'skills/unlisted-skill') | Out-Null
         { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*inventory does not exactly match*'
@@ -63,12 +106,43 @@ Describe 'Code Collaboration Standard v1 repository contract' {
         { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*duplicate JSON property*'
     }
 
-    It 'rejects a repository-local security policy fork' {
-        $adapterPath = Join-Path $script:FixtureRoot 'config/standard-v1.json'
-        $adapter = Get-Content -LiteralPath $adapterPath -Raw | ConvertFrom-Json
-        $adapter | Add-Member -NotePropertyName security -NotePropertyValue ([pscustomobject]@{ blockSeverities = @('critical', 'high') })
-        $adapter | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $adapterPath -Encoding utf8NoBOM
-        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*invalid property set*'
+    It 'accepts a second declared Skill with a safe package and metadata fixture' {
+        # Scenario: a future release adds one valid Skill to the canonical source inventory.
+        # Purpose: prove the integrity validator is inventory-driven instead of hard-coded to one package.
+        $newSkillId = 'safe-fixture-skill'
+        $newSkillRoot = Join-Path $script:FixtureRoot "skills/$newSkillId"
+        Copy-Item -LiteralPath $script:SkillRoot -Destination $newSkillRoot -Recurse
+        foreach ($path in @('SKILL.md', 'agents/openai.yaml')) {
+            $file = Join-Path $newSkillRoot $path
+            $text = Get-Content -LiteralPath $file -Raw
+            $text = $text.Replace($script:SkillId, $newSkillId)
+            Set-Content -LiteralPath $file -Value $text -Encoding utf8NoBOM -NoNewline
+        }
+        $sourcePath = Join-Path $script:FixtureRoot 'catalog/source.json'
+        $source = Get-Content -LiteralPath $sourcePath -Raw | ConvertFrom-Json
+        $source.skills = @($source.skills + $newSkillId | Sort-Object)
+        $source | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $sourcePath -Encoding utf8NoBOM
+        & $script:GitPath -C $script:FixtureRoot add -- catalog/source.json "skills/$newSkillId"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not stage the safe Skill fixture.' }
+
+        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Not -Throw
+    }
+
+    It 'rejects a declared Skill whose metadata file is missing' {
+        # Scenario: source inventory declares a package but agents/openai.yaml is omitted.
+        # Purpose: preserve the per-package metadata contract for every active Skill.
+        Remove-Item -LiteralPath (Join-Path $script:SkillRoot 'agents/openai.yaml')
+        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*missing*openai.yaml*'
+    }
+
+    It 'rejects a duplicate Skill ID in the source inventory' {
+        # Scenario: a malformed source inventory repeats one stable Skill ID.
+        # Purpose: fail closed before package cardinality or tool receipts can become ambiguous.
+        $sourcePath = Join-Path $script:FixtureRoot 'catalog/source.json'
+        $source = Get-Content -LiteralPath $sourcePath -Raw | ConvertFrom-Json
+        $source.skills = @($source.skills + $script:SkillId)
+        $source | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $sourcePath -Encoding utf8NoBOM
+        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*Duplicate Skill ID*'
     }
 
     It 'rejects an unsorted source inventory' {
