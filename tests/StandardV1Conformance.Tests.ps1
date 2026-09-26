@@ -23,7 +23,9 @@ Describe 'Code Collaboration Standard v1 conformance' {
         @($source.skills) | Should -Be @('write-copilot-implementation-prompt')
     }
 
-    It 'pins the exact P02 authority bundle without a local security policy' {
+    # Scenario: The Code config is read from the extracted candidate.
+    # Purpose: Keep the e69 authority bundle complete without adding local security policy.
+    It 'UnitT10_pins_exact_authority_without_local_security_policy' {
         # Scenario: a consumer pins an earlier or partial Standard v1 snapshot.
         # Purpose: require the same immutable authority bundle used by the merged P02/P03/P04 implementations.
         $adapter = Get-Content -LiteralPath $script:AdapterPath -Raw | ConvertFrom-Json -Depth 20
@@ -31,9 +33,9 @@ Describe 'Code Collaboration Standard v1 conformance' {
         $adapter.schemaVersion | Should -Be 1
         $adapter.standardVersion | Should -Be 'v1'
         $adapter.authority.repository | Should -Be 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-        $adapter.authority.commit | Should -Be 'a403abdf038a3346d775431a6908a71cc3d35a5b'
-        $adapter.authority.archiveSha256 | Should -Be '17154929fadfa63487263db1efcb78f4948195af9c11c25a66432eff3411b2d3'
-        @($adapter.authority.files).Count | Should -Be 23
+        $adapter.authority.commit | Should -Be 'e69c453888db93e2d2697ea7f0b11df13cd1b8d2'
+        $adapter.authority.archiveSha256 | Should -Be '5d2cbab098b86c4310b713cbc17ce00e5b08a53cffe37ce98f16a9f2244c29f5'
+        @($adapter.authority.files).Count | Should -Be 26
         @($adapter.PSObject.Properties.Name) | Should -Not -Contain 'security'
         @($adapter.PSObject.Properties.Name) | Should -Not -Contain 'deviations'
     }
