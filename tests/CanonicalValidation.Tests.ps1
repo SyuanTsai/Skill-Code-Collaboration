@@ -8,36 +8,41 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:RepositoryValidator = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Test-Repository.ps1') -Raw
         $script:Adapter = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'config/standard-v1.json') -Raw |
             ConvertFrom-Json -Depth 20
-        $script:ExpectedAuthorityCommit = 'a403abdf038a3346d775431a6908a71cc3d35a5b'
-        $script:ExpectedAuthorityArchiveSha256 = '17154929fadfa63487263db1efcb78f4948195af9c11c25a66432eff3411b2d3'
+        $script:ExpectedAuthorityCommit = 'e69c453888db93e2d2697ea7f0b11df13cd1b8d2'
+        $script:ExpectedAuthorityArchiveSha256 = '5d2cbab098b86c4310b713cbc17ce00e5b08a53cffe37ce98f16a9f2244c29f5'
         $script:ExpectedAuthorityFiles = [ordered]@{
             'docs/standards/README.md' = '5e1ddd737d26a5ec1ff1ebd08e158376ddaf1ea21008bb987fc7f51376923f7c'
             'docs/standards/managed-skill-lifecycle.md' = '70950cf8bdd02819efae6f6e06ac5be1da3e70f809c23e3c6f8d3b217797416c'
             'docs/standards/schemas/managed-skill-lifecycle-v1.schema.json' = '9a7f4c02588d2b88194e953a41766a72a9426fa89d4c3781c5750dcc22d35863'
             'docs/standards/schemas/openai-agent-metadata.schema.json' = '23c1aaee28a54fea1946a61d6122a2097906ffa5bdd66c8014fc6b1625c9062a'
             'docs/standards/schemas/source-inventory-v2.schema.json' = '084550944b4141ab5535f58fb6e99730a5c34b56103f6b59fd5a352679caa98e'
-            'docs/standards/schemas/validation-security-gate-v1.schema.json' = '56979baa08f3ec5534e3a17f925d53e69accd4cdc500872e92ca56b694044ea6'
-            'docs/standards/skill-repository-review-matrix.md' = 'c345ad3ec32d1941df5c5757ce96b4430c0223b3f8ed99f2a4de7dc9923410f2'
-            'docs/standards/skill-repository-standard.md' = '78a72aa8214acd5a5e202df34bbb20f8cfd841ab3d181de10645a777267cfd5d'
+            'docs/standards/schemas/validation-security-gate-v1.schema.json' = '32aee32858cdb0f8fa7b01462af05ad2300cb247cd2e3ca769fa36ed1ac205a9'
+            'docs/standards/skill-repository-review-matrix.md' = '315204afe428bb51cab5e815b2c40f6d0cbd55c81a3532ad59b686ae5e4c166c'
+            'docs/standards/skill-repository-standard.md' = 'c85562f017a09b4f4daa8dd3a1fcbd1d34714eb711ed9c011642247c8d3be61e'
             'docs/standards/upstream-interoperability.md' = '9c544fbfb6b77a589514f1926aa1488882e932786a303a42ce6c6c9b2ba80c7e'
-            'docs/standards/validation-security-gate.json' = 'e303e8c3d484012022f5c4da694c3fe21ff02395b0b9b7e973a4234d4182f485'
-            'docs/standards/validation-toolchain.json' = '5925dcb1aea1e545b9787a29825e7a0cc03a04c777cd68ab44c9bdd7482ff579'
-            'scripts/Invoke-StandardAuthorityGate.ps1' = 'c98d3f1b181ba0e7d3894729a8f1636984407c20454a27e0e383799c2f90425f'
+            'docs/standards/validation-security-gate.json' = '2d4ac30449981083d3f3eab850789e7115684f9dfecad48234bc91ffb678e674'
+            'docs/standards/validation-toolchain.json' = '1dddbf4c5736e22e56f6ecb298542f41d39e116ab00ca24ad18beb7a3eab40ed'
+            'scripts/Invoke-StandardAuthorityGate.ps1' = 'e5e8050df56dd60af7d9eec04fda2e05e331fded18bc69257431c2a11f39a9e9'
             'scripts/Resolve-PythonWheelClosure.py' = '7fa1511a3e3ba257c6d9e37f929f68e5684184a3a2756a3f9e765ccc6e69d208'
-            'scripts/Resolve-StandardValidationTool.ps1' = '3744bc4549612e5997361315a8fd5e1ea803ade26052cf4eaf2ccdc1776fcf6e'
-            'docs/standards/schemas/standard-validation-adapter-v1.schema.json' = '1b45052712450d40df278937d381018b9ce2ded2cbf42845db65f8028e56df44'
-            'docs/standards/schemas/standard-validation-evidence-v1.schema.json' = '24d8b0f29f9bddd8af1bee02943fb46c72ca5d4a874727cb107ff68a39af12b9'
-            'docs/standards/standard-validation-contract-v1.json' = '2b3d6da1c97c5542a9761445da9de5f101ada53e83cb1f17ee90c8b0d4929356'
+            'scripts/Resolve-StandardValidationTool.ps1' = '3bdda55964acb92fb32d06ffdbf6f98c9397b1857a88271c398b3f28e4bd6295'
+            'docs/standards/schemas/standard-validation-adapter-v1.schema.json' = '11aa88fc25716d748bd4f514f1a44f02390ad1745dd5a5c5beee07f642fd5639'
+            'docs/standards/schemas/standard-validation-evidence-v1.schema.json' = '8ed4a9d7158273d7a1e9d898acf07f57e9170822cb7cbb70f1e2eec7195867ee'
+            'docs/standards/standard-validation-contract-v1.json' = '014e82d2db4f3a95be53f5120460790fc613f32b13d06f4e43f4a41dd89f53ee'
+            'docs/standards/pr12-source-merge-adoption.json' = '4c5262f2a11d228195230c15fa4faaf9614af6b59f110e5d9c08f242ce809175'
             'docs/standards/trust-anchors/human-approval-public-key.xml' = '1e46153b72d02f3ce2fb26becd449df4f1590d8e5cb441b1954006a5602bbd9b'
             'docs/standards/trust-anchors/trusted-supervisor-public-key.xml' = '4d550851f43405920156f40c9fc648d99a69dd73efc200f6968d8a837e7fbf27'
-            'scripts/Invoke-StandardValidation.ps1' = '3cee28379d5612e4592f1755d8732e6b869018402b7d82efacd89fa10bcafd57'
+            'scripts/Invoke-StandardValidation.ps1' = '8f6ce80bbe3447d83f1222877f0e3ff17aa8d45888892e62ea50dc7ec6047dc2'
+            'docs/standards/schemas/standard-semantic-consent-evidence-v2.schema.json' = '109091979d0a47e2035d3d8b20963fcdb85680e5da737bf1f27121608115d430'
+            'scripts/StandardSemanticBridge.psm1' = 'daf90f703898cc56fc3310e1eec462bafa6552edcac0de4f08a3cd4b9f63a429'
             'docs/standards/schemas/upstream-adapter-v1.schema.json' = '3cff6246463188a91cc54c6a46315a949314767a759c6214e5b28e4db95ac8d7'
             'docs/standards/upstream-adapter.json' = 'c4f5133b24841bb9c66182dc3d5a027596f864ec28e410d47249a67b3b97ad31'
-            'scripts/Validate-UpstreamAdapter.ps1' = '7fd3c2c34544b21b769ebfa9238c379e094e022381b7ebe11f3e196e623fd376'
+            'scripts/Validate-UpstreamAdapter.ps1' = '3b6e6474690b1ae9f9486544b68f50ca29b96f5dbe6aa8d6c6cd8570afad500b'
         }
     }
 
-    It 'pins the exact merged P02 authority snapshot without a local deviation policy' {
+    # Scenario: The Code adapter and validator are loaded with the e69 authority inventory.
+    # Purpose: Reject mismatched commit, archive, or required-file hashes before validation.
+    It 'UnitT10_pins_exact_authority_without_local_deviation_policy' {
         # Scenario: a consumer repository changes the authority pin or silently adds a local policy.
         # Purpose: require the complete approved P02 bundle and keep policy ownership in the central authority.
         @($script:Adapter.PSObject.Properties.Name) | Should -Be @('schemaVersion', 'standardVersion', 'authority')
