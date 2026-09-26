@@ -245,6 +245,14 @@ Describe 'Canonical Standard v1 validation adapter' {
         $pesterIndex | Should -BeGreaterThan $catalogIndex
     }
 
+    # Scenario: the Code source builds repository-test adapters for the e69 central runner.
+    # Purpose: keep all three repository-test IDs paired with schema-valid kinds before Stage 1 starts.
+    It 'UnitT20_declares_exact_repository_test_kinds' {
+        $script:Validator | Should -Match "id = 'repository-test-integrity'; kind = 'general';"
+        $script:Validator | Should -Match "id = 'repository-test-catalog'; kind = 'general';"
+        $script:Validator | Should -Match "id = 'repository-test-pester'; kind = 'pester';"
+    }
+
     It 'binds an immutable distinct base ancestor before invoking the central runner' {
         # Scenario: a pull request or push supplies an invalid, equal, or unrelated base revision.
         # Purpose: bind one immutable comparison range before candidate execution.

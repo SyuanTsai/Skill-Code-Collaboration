@@ -1296,9 +1296,9 @@ try {
         skillTools = [ordered]@{ command = $pwshPath; arguments = @($commonArguments + @('-Mode', 'skill-tools')) }
         staticAnalyzer = [ordered]@{ command = $pwshPath; arguments = @($commonArguments + @('-Mode', 'static', '-SemanticRequired', $semanticRequired.ToString().ToLowerInvariant())) }
         repositoryTests = @(
-            [ordered]@{ id = 'repository-test-integrity'; command = $pwshPath; arguments = @($commonArguments + @('-Mode', 'repository-knowledge')) }
-            [ordered]@{ id = 'repository-test-catalog'; command = $pwshPath; arguments = @($commonArguments + @('-Mode', 'repository-catalog')) }
-            [ordered]@{ id = 'repository-test-pester'; command = $pwshPath; arguments = @($commonArguments + @('-Mode', 'repository-pester')) }
+            [ordered]@{ id = 'repository-test-integrity'; kind = 'general'; command = $pwshPath; arguments = @($commonArguments + @('-Mode', 'repository-knowledge')) }
+            [ordered]@{ id = 'repository-test-catalog'; kind = 'general'; command = $pwshPath; arguments = @($commonArguments + @('-Mode', 'repository-catalog')) }
+            [ordered]@{ id = 'repository-test-pester'; kind = 'pester'; command = $pwshPath; arguments = @($commonArguments + @('-Mode', 'repository-pester')) }
         )
     }
     $adapterPath = Join-Path $trustedRoot 'standard-validation-adapter.json'
