@@ -21,8 +21,8 @@ $ErrorActionPreference = 'Stop'
 
 $script:SourceRepository = 'https://github.com/SyuanTsai/Skill-Code-Collaboration.git'
 $script:AuthorityRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-$script:AuthorityCommit = 'e69c453888db93e2d2697ea7f0b11df13cd1b8d2'
-$script:AuthorityArchiveSha256 = '5d2cbab098b86c4310b713cbc17ce00e5b08a53cffe37ce98f16a9f2244c29f5'
+$script:AuthorityCommit = '7c65254d96bd21083ae827e54b9e51afee8ce304'
+$script:AuthorityArchiveSha256 = '093e511b8ca9d2618d74d42a5ed831a54524bb133cba9f310b33e7a107a6ff9d'
 $script:EmptyTreeObject = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 $script:AuthorityFiles = [ordered]@{
     'docs/standards/README.md' = '5e1ddd737d26a5ec1ff1ebd08e158376ddaf1ea21008bb987fc7f51376923f7c'
@@ -45,7 +45,7 @@ $script:AuthorityFiles = [ordered]@{
     'docs/standards/pr12-source-merge-adoption.json' = '4c5262f2a11d228195230c15fa4faaf9614af6b59f110e5d9c08f242ce809175'
     'docs/standards/trust-anchors/human-approval-public-key.xml' = '1e46153b72d02f3ce2fb26becd449df4f1590d8e5cb441b1954006a5602bbd9b'
     'docs/standards/trust-anchors/trusted-supervisor-public-key.xml' = '4d550851f43405920156f40c9fc648d99a69dd73efc200f6968d8a837e7fbf27'
-    'scripts/Invoke-StandardValidation.ps1' = '8f6ce80bbe3447d83f1222877f0e3ff17aa8d45888892e62ea50dc7ec6047dc2'
+    'scripts/Invoke-StandardValidation.ps1' = '9aefa495189a177bd0b429c1274517deaf0519156a05b43ae1ad03e8ace393e1'
     'docs/standards/schemas/standard-semantic-consent-evidence-v2.schema.json' = '109091979d0a47e2035d3d8b20963fcdb85680e5da737bf1f27121608115d430'
     'scripts/StandardSemanticBridge.psm1' = 'daf90f703898cc56fc3310e1eec462bafa6552edcac0de4f08a3cd4b9f63a429'
     'docs/standards/schemas/upstream-adapter-v1.schema.json' = '3cff6246463188a91cc54c6a46315a949314767a759c6214e5b28e4db95ac8d7'
@@ -754,25 +754,8 @@ function Invoke-NativeJson {
 }
 function Assert-SkillValidatorReport {
     param([Parameter(Mandatory = $true)] $Report, [Parameter(Mandatory = $true)][string] $SkillRoot, [Parameter(Mandatory = $true)][string[]] $Inventory, [Parameter(Mandatory = $true)][string] $SkillId)
-    $skillDirectory = Get-ScalarProperty -Object $Report -Name 'skill_dir' -Context 'skill-validator report'
-    $passed = Get-ScalarProperty -Object $Report -Name 'passed' -Context 'skill-validator report'
-    if ($skillDirectory -isnot [string] -or [string]::IsNullOrWhiteSpace($skillDirectory)) { throw "skill-validator skill_dir must be a non-empty string for '$SkillId'." }
-    $errors = Get-PropertyValue -Object $Report -Name 'errors' -Context 'skill-validator report'
-    $warnings = Get-PropertyValue -Object $Report -Name 'warnings' -Context 'skill-validator report'
+    $results = @(Assert-StandardValidationSkillValidatorReport -Report $Report -SkillRoot $SkillRoot -SkillId $SkillId)
     $integerTypeCodes = @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::UInt16, [TypeCode]::UInt32, [TypeCode]::UInt64, [TypeCode]::Int16, [TypeCode]::Int32, [TypeCode]::Int64)
-    $errorsType = if ($null -eq $errors) { [TypeCode]::Empty } else { [Convert]::GetTypeCode($errors) }
-    $warningsType = if ($null -eq $warnings) { [TypeCode]::Empty } else { [Convert]::GetTypeCode($warnings) }
-    if ($errorsType -notin $integerTypeCodes -or $warningsType -notin $integerTypeCodes) {
-        throw "skill-validator report counters must be JSON integers for '$SkillId'."
-    }
-    $results = Get-PropertyValue -Object $Report -Name 'results' -Context 'skill-validator report'
-    if ($null -eq $results) { $results = @() }
-    elseif ($results -isnot [array]) { throw "skill-validator results must be an array for '$SkillId'." }
-    else { $results = @($results) }
-    if (-not (Test-PathEqual -Left $skillDirectory -Right $SkillRoot) -or $passed -isnot [bool] -or -not $passed -or
-        [int64]$errors -ne 0 -or [int64]$warnings -ne 0 -or $results.Count -eq 0) {
-        throw "skill-validator did not produce a clean candidate-bound report for '$SkillId'."
-    }
     $findings = @()
     foreach ($result in $results) {
         $levelValue = Get-PropertyValue -Object $result -Name 'level' -Context 'skill-validator result'
@@ -943,6 +926,30 @@ try {
     $toolchain = Read-Json -Path $ToolchainPath -Context 'run-owned validation toolchain'
     Assert-FileIdentity -Path $ToolchainPath -Sha256 $ToolchainSha256 -Context 'run-owned validation toolchain'
     $candidateRoot = [IO.Path]::GetFullPath([string]$env:STANDARD_VALIDATION_CANDIDATE_ROOT)
+    if ($Mode -eq 'skill-validator') {
+        Assert-FileIdentity -Path ([string]$toolchain.centralRunnerPath) -Sha256 ([string]$toolchain.centralRunnerSha256) -Context 'central validation runner'
+        $sharedReportFunctions = & {
+            param($RunnerPath, $CandidateRoot, $ToolchainPath)
+            . $RunnerPath -DefineFunctionsOnly -CandidateRoot $CandidateRoot -AdapterPath $ToolchainPath `
+                -ArtifactsRoot ([IO.Path]::GetFullPath((Get-Location).Path)) -SourceRepository 'https://example.test' `
+                -SourceRevision ('0' * 40) -BaseRevision ('0' * 40)
+            $exports = @{}
+            foreach ($name in @(
+                'Get-StandardValidationFullPath',
+                'Get-StandardValidationCaseVariant',
+                'Get-StandardValidationPathCaseBehavior',
+                'Get-StandardValidationPathComparison',
+                'Test-StandardValidationSameResolvedPath',
+                'Assert-StandardValidationSkillValidatorReport'
+            )) {
+                $exports[$name] = (Get-Command $name -CommandType Function -ErrorAction Stop).ScriptBlock
+            }
+            return $exports
+        } ([string]$toolchain.centralRunnerPath) $candidateRoot $ToolchainPath
+        foreach ($name in $sharedReportFunctions.Keys) {
+            Set-Item -Path "function:$name" -Value $sharedReportFunctions[$name]
+        }
+    }
     $activeSkills = @(Get-ActiveSkills)
     $candidateId = [string]$env:STANDARD_VALIDATION_CANDIDATE_ID
     if ([string]::IsNullOrWhiteSpace($candidateId)) { throw 'Central runner did not provide a candidate identity.' }
@@ -1227,6 +1234,8 @@ try {
     }
 
     $toolchain = [ordered]@{
+        centralRunnerPath = [IO.Path]::GetFullPath($centralRunnerPath)
+        centralRunnerSha256 = [string]$script:AuthorityFiles['scripts/Invoke-StandardValidation.ps1']
         upstreamAdapterValidatorPath = [IO.Path]::GetFullPath($upstreamAdapterPath)
         upstreamAdapterValidatorSha256 = Get-FileSha256 -Path $upstreamAdapterPath
         upstreamPolicyPath = [IO.Path]::GetFullPath($upstreamPolicyPath)
