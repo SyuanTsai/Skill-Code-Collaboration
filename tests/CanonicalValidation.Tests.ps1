@@ -156,16 +156,16 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match 'semanticScan = \[ordered\]@'
     }
 
-    It 'rejects ambiguous JSON and scalar skill-validator collections' {
+    It 'UnitT30_rejects_ambiguous_JSON_and_delegates_typed_validator_results' {
         # Scenario: a resolved package validator emits duplicate properties or a non-array results value.
         # Purpose: prevent lossy ConvertFrom-Json materialization from turning malformed evidence into PASS.
         $script:Validator | Should -Match 'function Assert-NoDuplicateJsonProperties'
         $script:Validator | Should -Match 'Assert-NoDuplicateJsonProperties -Element \$document.RootElement'
         $script:Validator | Should -Match '-ArrayPropertyPaths @\(''results''\)'
-        $script:Validator | Should -Match '\$results = Get-PropertyValue -Object \$Report -Name ''results'''
+        $script:Validator | Should -Match '\$results = @\(Assert-StandardValidationSkillValidatorReport -Report \$Report -SkillRoot \$SkillRoot -SkillId \$SkillId\)'
     }
 
-    It 'preserves SARIF arrays and validates complete typed package-tool results' {
+    It 'UnitT40_preserves_SARIF_arrays_and_complete_typed_package_tool_results' {
         # Scenario: a package tool emits a singleton/non-array SARIF run, an incomplete validator result, or string coverage.
         # Purpose: reject schema drift before PowerShell normalization or numeric coercion can turn malformed evidence into PASS.
         $script:Validator | Should -Match '\$runs = Get-PropertyValue -Object \$Report -Name ''runs'''
@@ -174,7 +174,7 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match '\$categoryValue = Get-PropertyValue -Object \$result -Name ''category'''
         $script:Validator | Should -Match '\$messageValue = Get-PropertyValue -Object \$result -Name ''message'''
         $script:Validator | Should -Match 'result is missing a required string field'
-        $script:Validator | Should -Match 'skill-validator report counters must be JSON integers'
+        $script:Validator | Should -Match "'Assert-StandardValidationSkillValidatorReport'"
         $script:Validator | Should -Match 'skill-validator result line must be a positive JSON integer'
         $script:Validator | Should -Match '\$coverageType = if'
         $script:Validator | Should -Match '\[TypeCode\]::Double'
