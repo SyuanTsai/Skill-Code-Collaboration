@@ -24,7 +24,7 @@ Describe 'Code Collaboration Standard v1 conformance' {
     }
 
     # Scenario: The Code config is read from the extracted candidate.
-    # Purpose: Keep the e69 authority bundle complete without adding local security policy.
+    # Purpose: Keep the reviewed 8a authority bundle complete without adding local security policy.
     It 'UnitT10_pins_exact_authority_without_local_security_policy' {
         # Scenario: a consumer pins an earlier or partial Standard v1 snapshot.
         # Purpose: require the same immutable authority bundle used by the merged P02/P03/P04 implementations.
@@ -33,8 +33,8 @@ Describe 'Code Collaboration Standard v1 conformance' {
         $adapter.schemaVersion | Should -Be 1
         $adapter.standardVersion | Should -Be 'v1'
         $adapter.authority.repository | Should -Be 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-        $adapter.authority.commit | Should -Be '7c65254d96bd21083ae827e54b9e51afee8ce304'
-        $adapter.authority.archiveSha256 | Should -Be '093e511b8ca9d2618d74d42a5ed831a54524bb133cba9f310b33e7a107a6ff9d'
+        $adapter.authority.commit | Should -Be '8aabd22694a05771f98639f6d726cc9a620eb94b'
+        $adapter.authority.archiveSha256 | Should -Be 'd92df1a8f0aa342970dc9c66a77b6211955b4708de12119cb7f9a360fd265311'
         @($adapter.authority.files).Count | Should -Be 26
         @($adapter.PSObject.Properties.Name) | Should -Not -Contain 'security'
         @($adapter.PSObject.Properties.Name) | Should -Not -Contain 'deviations'

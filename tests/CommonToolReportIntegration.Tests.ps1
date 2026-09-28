@@ -146,11 +146,18 @@ Describe 'Code child uses central package tool report rules' {
         $LASTEXITCODE | Should -Be 1
         ($output -join "`n") | Should -Match 'central validation runner changed or is missing'
     }
-    # Scenario: the unmodified candidate supplies its exact authority config.
+    # Scenario: the reviewed new authority input is supplied to the actual candidate driver guard.
     # Purpose: prove the extracted real driver guard accepts a valid pin before
     # counting its rejection cases as coverage.
     It 'UnitT35_accepts_exact_candidate_authority_config' {
         $config = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'config/standard-v1.json') -Raw | ConvertFrom-Json
+        $config.authority.commit = '8aabd22694a05771f98639f6d726cc9a620eb94b'
+        $config.authority.archiveUrl = 'https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/8aabd22694a05771f98639f6d726cc9a620eb94b'
+        $config.authority.archiveSha256 = 'd92df1a8f0aa342970dc9c66a77b6211955b4708de12119cb7f9a360fd265311'
+        ($config.authority.files | Where-Object path -CEQ 'scripts/Resolve-PythonWheelClosure.py').sha256 = 'd209c973f331fdbb82a4d546bda18b1d485bcd1e446dd446b6d8bc4360b5ce35'
+        ($config.authority.files | Where-Object path -CEQ 'scripts/Resolve-StandardValidationTool.ps1').sha256 = '86540ff07e1b73177d179ae6a9ee2f0fef8029e27286604d68a9a98d0d205ec2'
+        ($config.authority.files | Where-Object path -CEQ 'docs/standards/standard-validation-contract-v1.json').sha256 = '6fa3233e86ec7918aebf1413d41a6d1712f55eb2d1b09262fe18e53ddfbcb8cf'
+        ($config.authority.files | Where-Object path -CEQ 'scripts/Invoke-StandardValidation.ps1').sha256 = 'c127309958226417291b512d633caa2120bbd12a663c98fff1d63106cf5a2677'
         $prefix = $script:validationSource.Substring(0, $script:childMatch.Index)
         & {
             param($DriverPrefix, $CandidateConfig)
@@ -162,11 +169,22 @@ Describe 'Code child uses central package tool report rules' {
     # Scenario: candidate authority config substitutes commit, archive or member identity.
     # Purpose: exercise the driver's actual strict guard without acquiring any tools.
     It 'UnitT40_rejects_wrong_authority_archive_or_member_<Field>' -TestCases @(
-        @{ Field = 'commit' }, @{ Field = 'archiveSha256' }, @{ Field = 'member' }
+        @{ Field = 'commit' }, @{ Field = 'archiveSha256' }, @{ Field = 'member' },
+        @{ Field = 'obsoleteRevision' },
+        @{ Field = 'scripts/Resolve-PythonWheelClosure.py' },
+        @{ Field = 'scripts/Resolve-StandardValidationTool.ps1' },
+        @{ Field = 'docs/standards/standard-validation-contract-v1.json' },
+        @{ Field = 'scripts/Invoke-StandardValidation.ps1' }
     ) {
         param($Field)
         $config = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'config/standard-v1.json') -Raw | ConvertFrom-Json
-        if ($Field -eq 'member') { $config.authority.files[0].sha256 = '0' * 64 }
+        if ($Field -eq 'obsoleteRevision') {
+            $config.authority.commit = '7c65254d96bd21083ae827e54b9e51afee8ce304'
+            $config.authority.archiveUrl = 'https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/7c65254d96bd21083ae827e54b9e51afee8ce304'
+            $config.authority.archiveSha256 = '093e511b8ca9d2618d74d42a5ed831a54524bb133cba9f310b33e7a107a6ff9d'
+        }
+        elseif ($Field.Contains('/')) { ($config.authority.files | Where-Object path -CEQ $Field).sha256 = '0' * 64 }
+        elseif ($Field -eq 'member') { $config.authority.files[0].sha256 = '0' * 64 }
         elseif ($Field -eq 'commit') { $config.authority.commit = '0' * 40 }
         else { $config.authority.archiveSha256 = '0' * 64 }
         $prefix = $script:validationSource.Substring(0, $script:childMatch.Index)
@@ -176,6 +194,6 @@ Describe 'Code child uses central package tool report rules' {
                 . ([scriptblock]::Create($DriverPrefix))
                 Assert-AuthorityConfig -Config $CandidateConfig
             } $prefix $config
-        } | Should -Throw -ExpectedMessage $(if ($Field -eq 'member') { '*authority file identity mismatch*' } else { '*exact approved P02 authority snapshot*' })
+        } | Should -Throw -ExpectedMessage $(if ($Field -eq 'member' -or $Field.Contains('/')) { '*authority file identity mismatch*' } else { '*exact approved P02 authority snapshot*' })
     }
 }
