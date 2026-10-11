@@ -18,6 +18,10 @@ The workflow keeps the approved `actions/setup-go` v7.0.0 action at its full com
 
 It retains the selected, physical source, and materialized paths, the complete inventory, closure digests, and executable identity under `runner.temp/code-collaboration/go-runtime-identity.json` and `go-runtime-inventory.json`. Later validation uses only the materialized `bin` through `GITHUB_PATH` and its root through `GOROOT`.
 
+## Authenticated hosted source acquisition
+
+The workflow grants the built-in `GITHUB_TOKEN` only to the `Prepare source tools once` step while retaining job permission `contents: read`. The protected ff85 resolver uses that token in its GitHub API request headers, then removes authorization headers and `GITHUB_TOKEN`/`GH_TOKEN` from its managed Python and package-manager child environment. The workflow does not set a job-wide token or retain it in validation evidence.
+
 ### Updating the hosted Node/npm runtime
 
 Changing either pinned version requires the same npm lock comparison against the immutable ff85 resolver and lock validator, including the resolved `skill-tools` version/integrity and resulting root dependency shape. Update the version and executable identity together from the official release archive and signed checksum material, then pass the focused workflow regression, exact-head CI, and a fresh complete full-source validation before adopting the change. A passing npm experiment alone does not establish that the hosted gate is ready.

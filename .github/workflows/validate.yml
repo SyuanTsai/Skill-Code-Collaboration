@@ -555,6 +555,7 @@ jobs:
         shell: pwsh
         env:
           SYP154_CANDIDATE_AUTHORITY_ROOT: ${{ github.workspace }}/authority-ff85
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
           $baseRoot = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
