@@ -99,6 +99,42 @@ function Assert-NoDuplicateJsonProperties {
         }
     }
 }
+
+function Convert-JsonElementToPowerShellObject {
+    param([Parameter(Mandatory = $true)][System.Text.Json.JsonElement] $Element)
+
+    switch ($Element.ValueKind) {
+        ([System.Text.Json.JsonValueKind]::Object) {
+            $value = [pscustomobject]@{}
+            $propertyNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+            foreach ($property in $Element.EnumerateObject()) {
+                if ([string]::IsNullOrEmpty($property.Name) -or -not $propertyNames.Add($property.Name)) {
+                    throw "JSON object contains a property name that cannot be represented by a PowerShell object: '$($property.Name)'."
+                }
+                $propertyValue = Convert-JsonElementToPowerShellObject -Element $property.Value
+                $value | Add-Member -MemberType NoteProperty -Name $property.Name -Value $propertyValue -ErrorAction Stop
+            }
+            return $value
+        }
+        ([System.Text.Json.JsonValueKind]::Array) {
+            $items = [Collections.Generic.List[object]]::new()
+            foreach ($item in $Element.EnumerateArray()) {
+                $items.Add((Convert-JsonElementToPowerShellObject -Element $item))
+            }
+            return ,$items.ToArray()
+        }
+        ([System.Text.Json.JsonValueKind]::String) { return $Element.GetString() }
+        ([System.Text.Json.JsonValueKind]::Number) {
+            $numberText = $Element.GetRawText()
+            return ConvertFrom-Json -InputObject $numberText -Depth 100 -ErrorAction Stop
+        }
+        ([System.Text.Json.JsonValueKind]::True) { return $true }
+        ([System.Text.Json.JsonValueKind]::False) { return $false }
+        ([System.Text.Json.JsonValueKind]::Null) { return $null }
+        default { throw "Unsupported JSON value kind '$($Element.ValueKind)' for PowerShell conversion." }
+    }
+}
+
 function Read-JsonFile {
     param(
         [Parameter(Mandatory = $true)][string] $Path,
@@ -109,9 +145,15 @@ function Read-JsonFile {
     try {
         $text = [IO.File]::ReadAllText($Path, [Text.UTF8Encoding]::new($false, $true))
         $document = [System.Text.Json.JsonDocument]::Parse($text)
-        try { Assert-NoDuplicateJsonProperties -Element $document.RootElement -Context $Context }
+        try {
+            Assert-NoDuplicateJsonProperties -Element $document.RootElement -Context $Context
+            $convertFromJson = Get-Command -Name ConvertFrom-Json -CommandType Cmdlet -ErrorAction Stop
+            if ($convertFromJson.Parameters.ContainsKey('DateKind')) {
+                return $text | ConvertFrom-Json -Depth 100 -DateKind String -ErrorAction Stop
+            }
+            return Convert-JsonElementToPowerShellObject -Element $document.RootElement
+        }
         finally { $document.Dispose() }
-        return $text | ConvertFrom-Json -Depth 100
     }
     catch { throw "$Context is not valid unambiguous UTF-8 JSON: $($_.Exception.Message)" }
 }
