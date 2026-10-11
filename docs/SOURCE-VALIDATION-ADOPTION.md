@@ -20,7 +20,7 @@ It retains the selected, physical source, and materialized paths, the complete i
 
 ## Authenticated hosted source acquisition
 
-The workflow grants the built-in `GITHUB_TOKEN` only to the `Prepare source tools once` step while retaining job permission `contents: read`. The protected ff85 resolver uses that token in its GitHub API request headers, then removes authorization headers and `GITHUB_TOKEN`/`GH_TOKEN` from its managed Python and package-manager child environment. The workflow does not set a job-wide token or retain it in validation evidence.
+The workflow grants the built-in `GITHUB_TOKEN` only to the `Prepare source tools once` step while retaining job permission `contents: read`. The protected ff85 resolver uses that token in its GitHub API request headers, then removes authorization headers and `GITHUB_TOKEN`/`GH_TOKEN` from SkillSpector’s managed Python and pip child environment. The workflow does not set a job-wide token or retain it in validation evidence.
 
 ### Updating the hosted Node/npm runtime
 
