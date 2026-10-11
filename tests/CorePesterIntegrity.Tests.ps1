@@ -20,6 +20,10 @@ BeforeAll {
                     $entryName = [string]$payload.path
                     if ($Variant -eq 'case-mismatch' -and $entryName -ceq 'Pester.psd1') { $entryName = 'pester.psd1' }
                     $entry = $zip.CreateEntry($entryName)
+                    if ($entryName -ceq 'Pester.psm1') {
+                        if ($Variant -eq 'unix-regular-file') { $entry.ExternalAttributes = [int]0x81A40000 }
+                        elseif ($Variant -eq 'unix-symlink') { $entry.ExternalAttributes = [int]0xA1FF0000 }
+                    }
                     $target = $entry.Open()
                     try {
                         if ($Variant -eq 'hash-mismatch' -and [string]$payload.path -ceq 'Pester.psm1') {
@@ -55,6 +59,21 @@ BeforeAll {
         }
         finally { $stream.Dispose() }
     }
+
+    function New-IntegrityReparseDirectoryLink {
+        param(
+            [Parameter(Mandatory)][string] $Path,
+            [Parameter(Mandatory)][string] $Target
+        )
+
+        $linkType = if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }
+        [void](New-Item -ItemType $linkType -Path $Path -Target $Target -ErrorAction Stop)
+        $linkItem = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+        if (($linkItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+            throw "The $linkType fixture did not create a reparse-point directory: $Path"
+        }
+        return $linkItem
+    }
 }
 
 Describe 'Consumed Core process bootstrap signal' {
@@ -69,7 +88,9 @@ Describe 'Consumed Core process bootstrap signal' {
         $signal = Join-Path $root 'b-22222222222222222222222222222222.sig'
         [IO.File]::WriteAllText($signal, ('release' + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
         (Get-CorePesterTreeSnapshot -Root $root).Sha256 | Should -Not -Be $before.Sha256
-        Remove-CorePesterConsumedBootstrapSignal -CandidateRoot $root -ReleasePath $signal -BootstrapCommand 'C:/verified/pwsh.exe' -VerifiedPowerShellExecutable 'C:/verified/pwsh.exe'
+        $executableName = if ($IsWindows) { 'pwsh.exe' } else { 'pwsh' }
+        $verifiedExecutable = [IO.Path]::GetFullPath((Join-Path $TestDrive "verified/$executableName"))
+        Remove-CorePesterConsumedBootstrapSignal -CandidateRoot $root -ReleasePath $signal -BootstrapCommand $verifiedExecutable -VerifiedPowerShellExecutable $verifiedExecutable
         Test-Path -LiteralPath $signal | Should -BeFalse
         (Get-CorePesterTreeSnapshot -Root $root).Sha256 | Should -Be $before.Sha256
         [IO.File]::ReadAllText($source) | Should -Be 'tracked source bytes'
@@ -89,8 +110,11 @@ Describe 'Consumed Core process bootstrap signal' {
         $bytes = if ($Variant -eq 'bytes') { 'wrong' } else { 'release' + [Environment]::NewLine }
         if ($Variant -eq 'directory') { [void](New-Item -ItemType Directory -Path $signal) }
         elseif ($Variant -ne 'missing') { [IO.File]::WriteAllText($signal, $bytes, [Text.UTF8Encoding]::new($false)) }
-        $command = if ($Variant -eq 'command') { 'C:/unverified/pwsh.exe' } else { 'C:/verified/pwsh.exe' }
-        { Remove-CorePesterConsumedBootstrapSignal -CandidateRoot $root -ReleasePath $signal -BootstrapCommand $command -VerifiedPowerShellExecutable 'C:/verified/pwsh.exe' } | Should -Throw '*Core Pester bootstrap*'
+        $executableName = if ($IsWindows) { 'pwsh.exe' } else { 'pwsh' }
+        $verifiedExecutable = [IO.Path]::GetFullPath((Join-Path $TestDrive "verified/$executableName"))
+        $unverifiedExecutable = [IO.Path]::GetFullPath((Join-Path $TestDrive "unverified/$executableName"))
+        $command = if ($Variant -eq 'command') { $unverifiedExecutable } else { $verifiedExecutable }
+        { Remove-CorePesterConsumedBootstrapSignal -CandidateRoot $root -ReleasePath $signal -BootstrapCommand $command -VerifiedPowerShellExecutable $verifiedExecutable } | Should -Throw '*Core Pester bootstrap*'
         if ($Variant -ne 'missing') { Test-Path -LiteralPath $signal | Should -BeTrue }
     }
 
@@ -100,11 +124,14 @@ Describe 'Consumed Core process bootstrap signal' {
         $outside = Join-Path $TestDrive 'outside'
         [void](New-Item -ItemType Directory -Path $outside)
         $link = Join-Path $TestDrive 'reparse-candidate'
-        New-Item -ItemType Junction -Path $link -Target $outside -ErrorAction Stop | Out-Null
+        $linkItem = New-IntegrityReparseDirectoryLink -Path $link -Target $outside
+        ($linkItem.Attributes -band [IO.FileAttributes]::ReparsePoint) | Should -Not -Be 0
         $signal = Join-Path $link 'b-22222222222222222222222222222222.sig'
         [IO.File]::WriteAllText($signal, ('release' + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+        $executableName = if ($IsWindows) { 'pwsh.exe' } else { 'pwsh' }
+        $verifiedExecutable = [IO.Path]::GetFullPath((Join-Path $TestDrive "verified/$executableName"))
         try {
-            { Remove-CorePesterConsumedBootstrapSignal -CandidateRoot $link -ReleasePath $signal -BootstrapCommand 'C:/verified/pwsh.exe' -VerifiedPowerShellExecutable 'C:/verified/pwsh.exe' } | Should -Throw '*Core Pester bootstrap*'
+            { Remove-CorePesterConsumedBootstrapSignal -CandidateRoot $link -ReleasePath $signal -BootstrapCommand $verifiedExecutable -VerifiedPowerShellExecutable $verifiedExecutable } | Should -Throw -ExpectedMessage '*non-reparse ancestry*'
             Test-Path -LiteralPath $signal | Should -BeTrue
         }
         finally { Remove-Item -LiteralPath $link -Force }
@@ -176,9 +203,11 @@ Describe 'Verified Pester 6.2.0 module closure' {
         $outsideFile = Join-Path $outsideRoot 'payload.ps1'
         [IO.File]::WriteAllText($outsideFile, 'outside', [Text.UTF8Encoding]::new($false))
         $link = Join-Path $moduleRoot 'linked'
-        New-Item -ItemType Junction -Path $link -Target $outsideRoot -ErrorAction Stop | Out-Null
+        $linkItem = New-IntegrityReparseDirectoryLink -Path $link -Target $outsideRoot
+        ($linkItem.Attributes -band [IO.FileAttributes]::ReparsePoint) | Should -Not -Be 0
         try {
-            (Test-CorePesterClosure -ModuleRoot $moduleRoot -Lock $fixtureLock).Errors | Should -Contain "Pester closure contains a reparse point: $link"
+            $closureResult = Test-CorePesterClosure -ModuleRoot $moduleRoot -Lock $fixtureLock
+            $closureResult.Errors | Should -Contain "Pester closure contains a reparse point: $link"
         }
         finally { Remove-Item -LiteralPath $link -Force -ErrorAction SilentlyContinue }
     }
@@ -193,15 +222,18 @@ Describe 'Verified Pester 6.2.0 module closure' {
         (Test-CorePesterPathBoundary -Path $outside -Boundary $boundary).Errors | Should -Contain 'Path escaped its registered boundary.'
 
         $link = Join-Path $boundary 'redirected'
-        New-Item -ItemType Junction -Path $link -Target $outside -ErrorAction Stop | Out-Null
+        $linkItem = New-IntegrityReparseDirectoryLink -Path $link -Target $outside
+        ($linkItem.Attributes -band [IO.FileAttributes]::ReparsePoint) | Should -Not -Be 0
         try {
             $redirected = Test-CorePesterPathBoundary -Path (Join-Path $link 'Modules/Pester/6.2.0') -Boundary $boundary
             $redirected.IsValid | Should -BeFalse
             @($redirected.Errors | Where-Object { $_ -like 'Path ancestry contains a reparse point:*' }).Count | Should -BeGreaterThan 0
+            $redirected.Errors | Should -Contain "Path ancestry contains a reparse point: $link"
 
             $linkedBoundary = Test-CorePesterPathBoundary -Path (Join-Path $link 'Modules') -Boundary $link
             $linkedBoundary.IsValid | Should -BeFalse
             @($linkedBoundary.Errors | Where-Object { $_ -like 'Path ancestry contains a reparse point:*' }).Count | Should -BeGreaterThan 0
+            $linkedBoundary.Errors | Should -Contain "Path ancestry contains a reparse point: $link"
         }
         finally { Remove-Item -LiteralPath $link -Force -ErrorAction SilentlyContinue }
     }
@@ -293,6 +325,17 @@ Describe 'Verified Pester 6.2.0 module closure' {
         $validPath = Join-Path $TestDrive 'pester-valid.nupkg'
         New-IntegrityPackageFixture -Path $validPath
         (Test-CorePesterPackageArchive -ArchivePath $validPath -Lock $script:closureLock.Value).IsValid | Should -BeTrue
+
+        $unixRegularPath = Join-Path $TestDrive 'pester-unix-regular.nupkg'
+        New-IntegrityPackageFixture -Path $unixRegularPath -Variant 'unix-regular-file'
+        $unixRegular = Test-CorePesterPackageArchive -ArchivePath $unixRegularPath -Lock $script:closureLock.Value
+        $unixRegular.IsValid | Should -BeTrue
+
+        $unixSymlinkPath = Join-Path $TestDrive 'pester-unix-symlink.nupkg'
+        New-IntegrityPackageFixture -Path $unixSymlinkPath -Variant 'unix-symlink'
+        $unixSymlink = Test-CorePesterPackageArchive -ArchivePath $unixSymlinkPath -Lock $script:closureLock.Value
+        $unixSymlink.IsValid | Should -BeFalse
+        $unixSymlink.Errors | Should -Contain 'Pester package archive contains a symbolic link: Pester.psm1'
 
         foreach ($variant in @('extra', 'duplicate', 'unsafe', 'hash-mismatch', 'case-mismatch')) {
             $badPath = Join-Path $TestDrive "pester-$variant.nupkg"

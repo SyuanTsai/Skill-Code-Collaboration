@@ -190,7 +190,8 @@ Describe 'Code child uses central package tool report rules' {
             $moduleRoot = [IO.Path]::GetFullPath([string]$archiveReceipt.authorityRoot)
             $script:authorityGitEntries = $null
         }
-        $script:runnerPath = Join-Path $moduleRoot 'scripts/Invoke-StandardValidation.ps1'
+        $script:moduleRoot = [IO.Path]::GetFullPath($moduleRoot)
+        $script:runnerPath = Join-Path $script:moduleRoot 'scripts/Invoke-StandardValidation.ps1'
         $env:STANDARD_VALIDATION_ACTIVE_SKILLS = 'demo'
         $env:STANDARD_VALIDATION_SKILLS_ROOT = Join-Path $script:testRoot 'candidate/skills'
         $env:STANDARD_VALIDATION_SKILL_ID = 'demo'

@@ -615,7 +615,9 @@ function Test-CorePesterPackageArchive {
             try { Assert-CorePesterSafeRelativePath -Path $name -Context 'Pester package archive entry' }
             catch { $errors.Add($_.Exception.Message); continue }
             if (-not $entrySet.Add($name)) { $errors.Add("Pester package archive has duplicate or case-ambiguous entry: $name"); continue }
-            $unixType = ([uint32]$entry.ExternalAttributes -shr 16) -band 0xF000
+            # ExternalAttributes is signed. Unix file modes commonly set bit 31,
+            # so reinterpret its high word with an arithmetic shift and mask.
+            $unixType = ([int32]$entry.ExternalAttributes -shr 16) -band 0xF000
             if ($unixType -eq 0xA000) { $errors.Add("Pester package archive contains a symbolic link: $name"); continue }
             if (-not $expectedEntries.Contains($name) -or -not $expectedEntriesExact.Contains($name)) { $errors.Add("Pester package archive contains an unclassified or case-mismatched entry: $name"); continue }
             if ($name -ceq 'Pester.nuspec') {
