@@ -17,6 +17,9 @@ $ErrorActionPreference = 'Stop'
 
 $helperPath = Join-Path $PSScriptRoot 'CorePesterIntegrity.psm1'
 Import-Module -Name $helperPath -Force -ErrorAction Stop
+$registeredOwnedRoot = Resolve-CorePesterSetupOwnedRoot -OwnedRoot $OwnedRoot `
+    -NamespacedRoot ([Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_RUN_OWNED_ROOT', 'Process')) `
+    -LegacyRoot ([Environment]::GetEnvironmentVariable('RUN_OWNED_ROOT', 'Process'))
 $lockPath = [IO.Path]::GetFullPath($LockPath)
 $lockRecord = Read-CorePesterClosureLock -LiteralPath $lockPath
 $runtimeExecutable = [IO.Path]::GetFullPath($RuntimeExecutable)
@@ -24,14 +27,9 @@ $actualExecutable = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProc
 if (-not $runtimeExecutable.Equals($actualExecutable, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Pester setup must run under the exact verified PowerShell executable it will populate.'
 }
-$ownedRoot = [IO.Path]::GetFullPath($OwnedRoot)
+$ownedRoot = $registeredOwnedRoot
 $ownedBoundary = Test-CorePesterPathBoundary -Path $ownedRoot -Boundary $ownedRoot
 if (-not $ownedBoundary.IsValid) { throw ('Pester setup evidence root is unsafe: ' + (@($ownedBoundary.Errors) -join '; ')) }
-$registeredOwnedRoot = [Environment]::GetEnvironmentVariable('RUN_OWNED_ROOT', 'Process')
-if ([string]::IsNullOrWhiteSpace($registeredOwnedRoot) -or
-    -not ([IO.Path]::GetFullPath($registeredOwnedRoot)).Equals($ownedRoot, [StringComparison]::OrdinalIgnoreCase)) {
-    throw 'Pester setup root does not match the workflow-registered run-owned root.'
-}
 $destinationModuleRoot = [IO.Path]::GetFullPath($ModuleRoot)
 $destinationBoundary = Test-CorePesterPathBoundary -Path $destinationModuleRoot -Boundary $ownedRoot
 if (-not $destinationBoundary.IsValid) { throw ('Pester module destination is unsafe: ' + (@($destinationBoundary.Errors) -join '; ')) }

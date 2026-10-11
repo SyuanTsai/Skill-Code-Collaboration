@@ -1667,7 +1667,7 @@ function Invoke-CodeSourceToolSetup {
     $moduleRoot = Join-Path $runtimeRoot 'Modules/Pester/6.2.0'
     $moduleManifestPath = Join-Path $moduleRoot 'Pester.psd1'
     $setupReceiptPath = Join-Path $ownedRoot 'pester-setup/setup-receipt.json'
-    $setupEnvironment = @{ RUN_OWNED_ROOT = $ownedRoot }
+    $setupEnvironment = New-CodeSourcePesterSetupEnvironment -OwnedRoot $ownedRoot
     $pesterSetupTimer = [Diagnostics.Stopwatch]::StartNew()
     $pesterSetupArguments = @{
         Command = $powerShell

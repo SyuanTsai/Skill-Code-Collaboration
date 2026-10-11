@@ -455,6 +455,36 @@ Describe 'Protected Standard Core SourceValidation preparation' {
         { Assert-CodeSourceRunRequest -ExecutionMode Run -SourceToolsPath 'C:\temp\source.json' -AdapterVersion 2 -AuthorityCommit 'ff85d5f80fe795b96354e753074b5ce59ad04ecd' } | Should -Throw
     }
 
+    # Scenario: the source-tools setup sender publishes the run-owned Pester root.
+    # Purpose: pass only the environment namespace accepted by the protected Standard runner.
+    It 'UnitT90_emits_only_the_namespaced_Pester_owned_root' {
+        Import-Module -Name $script:DriverPath -Force -ErrorAction Stop
+        Get-Command -Name New-CodeSourcePesterSetupEnvironment -CommandType Function -ErrorAction SilentlyContinue | Should -Not -BeNullOrEmpty
+        $ownedRoot = [IO.Path]::GetFullPath((Join-Path $TestDrive ("source-tools-" + [guid]::NewGuid().ToString('N'))))
+        [void](New-Item -ItemType Directory -Path $ownedRoot -Force)
+        $environment = New-CodeSourcePesterSetupEnvironment -OwnedRoot $ownedRoot
+
+        @($environment.Keys).Count | Should -Be 1
+        @($environment.Keys)[0] | Should -BeExactly 'STANDARD_VALIDATION_RUN_OWNED_ROOT'
+        [string]$environment['STANDARD_VALIDATION_RUN_OWNED_ROOT'] | Should -BeExactly $ownedRoot
+        $environment.Contains('RUN_OWNED_ROOT') | Should -BeFalse
+    }
+
+    # Scenario: setup receives a relative or malformed run-owned root.
+    # Purpose: refuse values that GetFullPath could otherwise resolve against the process directory.
+    It 'UnitT91_rejects_non_fully_qualified_Pester_owned_roots' {
+        Import-Module -Name $script:DriverPath -Force -ErrorAction Stop
+        Get-Command -Name New-CodeSourcePesterSetupEnvironment -CommandType Function -ErrorAction SilentlyContinue | Should -Not -BeNullOrEmpty
+        foreach ($invalidRoot in @('relative-root', '', '   ', [string][char]0)) {
+            { New-CodeSourcePesterSetupEnvironment -OwnedRoot $invalidRoot } | Should -Throw
+        }
+        if ($IsWindows) {
+            foreach ($invalidRoot in @('C:drive-relative-root', '\root-relative')) {
+                { New-CodeSourcePesterSetupEnvironment -OwnedRoot $invalidRoot } | Should -Throw
+            }
+        }
+    }
+
     # Scenario: preparation receives multiple file groups, including runtime and package arrays.
     # Purpose: prove every frozen entry is an individual path/hash record with no nested-array coercion.
     It 'UnitT40_accepts_complete_prepared_metadata_and_flattens_frozen_file_groups' {
