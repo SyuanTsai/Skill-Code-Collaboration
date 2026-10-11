@@ -431,6 +431,136 @@ Describe 'Code child uses central package tool report rules' {
         Get-Command Invoke-StandardValidationProcess -CommandType Function -ErrorAction SilentlyContinue | Should -BeNullOrEmpty
     }
 
+    # Scenario: setup passes its owned root through the same isolated 8a runner used by the production sender.
+    # Purpose: exercise actual sender wiring, prove the namespaced value reaches a child, and keep the old key rejected.
+    It 'InterT17_binds_the_production_setup_sender_to_the_namespaced_owned_root' {
+        $tokens = $null
+        $parseErrors = $null
+        $sourceAst = [Management.Automation.Language.Parser]::ParseInput($script:validationSource, [ref]$tokens, [ref]$parseErrors)
+        $parseErrors.Count | Should -Be 0
+        $setupFunctions = @($sourceAst.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-CodeSourceToolSetup'
+        }, $true))
+        $factoryNodes = @($sourceAst.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'New-CodeSourceStandardValidationModule'
+        }, $true))
+        $dispatcherNodes = @($sourceAst.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-CodeSourceStandardValidationModule'
+        }, $true))
+        $setupFunctions.Count | Should -Be 1
+        $factoryNodes.Count | Should -Be 1
+        $dispatcherNodes.Count | Should -Be 1
+        $setupBody = $setupFunctions[0].Body
+        $assignmentNodes = @($setupBody.FindAll({ param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] }, $true))
+        $senderAssignments = @($assignmentNodes | Where-Object {
+            $_.Left.Extent.Text -ceq '$setupEnvironment' -and
+            $_.Right.Extent.Text -match '(?s)^\s*New-CodeSourcePesterSetupEnvironment\s+-OwnedRoot\s+\$ownedRoot\s*$'
+        })
+        $senderAssignments.Count | Should -Be 1
+
+        $argumentAssignments = @($assignmentNodes | Where-Object {
+            $_.Left.Extent.Text -ceq '$pesterSetupArguments'
+        })
+        $argumentAssignments.Count | Should -Be 1
+        $argumentTables = @($argumentAssignments[0].Right.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.HashtableAst]
+        }, $true))
+        if ($argumentAssignments[0].Right -is [Management.Automation.Language.HashtableAst]) {
+            $argumentTables = @($argumentAssignments[0].Right) + $argumentTables
+        }
+        $argumentTables.Count | Should -BeGreaterThan 0
+        $environmentPairs = @($argumentTables[0].KeyValuePairs | Where-Object { $_.Item1.Extent.Text -ceq 'Environment' })
+        $environmentPairs.Count | Should -Be 1
+        $environmentPairs[0].Item2.Extent.Text | Should -BeExactly '$setupEnvironment'
+        $setupDispatches = @($setupBody.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.CommandAst] -and
+            $node.GetCommandName() -ceq 'Invoke-CodeSourceStandardValidationModule' -and
+            $node.Extent.Text -match '(?s)-Arguments\s+\$pesterSetupArguments(?:\s|$)'
+        }, $true))
+        $setupDispatches.Count | Should -Be 1
+
+        Invoke-Expression $factoryNodes[0].Extent.Text
+        Invoke-Expression $dispatcherNodes[0].Extent.Text
+        $driverModulePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts/StandardSourceDriver.psm1'
+        $driverModule = Import-Module -Name $driverModulePath -Force -PassThru -ErrorAction Stop
+        $ownedRoot = [IO.Path]::GetFullPath((Join-Path $script:testRoot ("source-tools-" + [guid]::NewGuid().ToString('N'))))
+        [void](New-Item -ItemType Directory -Path $ownedRoot -Force)
+        $setupEnvironment = New-CodeSourcePesterSetupEnvironment -OwnedRoot $ownedRoot
+        @($setupEnvironment.Keys).Count | Should -Be 1
+        $setupEnvironment.Contains('STANDARD_VALIDATION_RUN_OWNED_ROOT') | Should -BeTrue
+        [string]$setupEnvironment['STANDARD_VALIDATION_RUN_OWNED_ROOT'] | Should -BeExactly $ownedRoot
+
+        $activeAuthority = (Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'config/standard-v1.json') -Raw | ConvertFrom-Json -Depth 20).authority
+        $runnerToolchain = Get-Content -LiteralPath $script:toolchainPath -Raw | ConvertFrom-Json -Depth 10
+        $runnerContext = [ordered]@{
+            CandidateRoot = Join-Path $script:testRoot 'candidate'
+            AdapterPath = $script:toolchainPath
+            ArtifactsRoot = $script:testRoot
+            OutputPath = Join-Path $script:testRoot 'a029-namespaced-runner-report.json'
+            SourceRepository = 'https://github.com/SyuanTsai/Skill-Code-Collaboration.git'
+            SourceRevision = 'd' * 40
+            BaseRevision = 'e' * 40
+            EventName = 'pull_request'
+            RunId = [guid]::NewGuid().ToString('N')
+            AuthorityRevision = [string]$activeAuthority.commit
+            TimeoutSeconds = 30
+            CancellationPath = Join-Path $script:testRoot 'a029-namespaced-cancel.request'
+            TrustedToolRoot = Split-Path -Parent $script:pwshPath
+        }
+        $module = $null
+        try {
+            $module = New-CodeSourceStandardValidationModule -RunnerPath $script:runnerPath `
+                -RunnerSha256 ([string]$runnerToolchain.centralRunnerSha256) -RunnerArguments $runnerContext
+            $probePath = Join-Path $script:testRoot 'a029-owned-root-probe.ps1'
+            $probeSource = @'
+param([string]$MarkerPath)
+$root = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_RUN_OWNED_ROOT')
+[IO.File]::WriteAllText($MarkerPath, $root)
+[Console]::Out.WriteLine($root)
+'@
+            [IO.File]::WriteAllText($probePath, $probeSource, [Text.UTF8Encoding]::new($false))
+            $markerPath = Join-Path $script:testRoot 'a029-owned-root-probe.marker'
+            $processArguments = @{
+                Command = $script:pwshPath
+                Arguments = [string[]]@('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $probePath, $markerPath)
+                WorkingDirectory = $script:testRoot
+                Environment = $setupEnvironment
+                TimeoutSeconds = 30
+                CancellationPath = $runnerContext.CancellationPath
+            }
+            $positive = Invoke-CodeSourceStandardValidationModule -Module $module `
+                -FunctionName 'Invoke-StandardValidationProcess' -Arguments $processArguments
+            $positive.status | Should -Be 'passed' -Because $positive.stderr
+            $positive.exitCode | Should -Be 0
+            $positive.cleanedUp | Should -BeTrue
+            $positive.stdout.Trim() | Should -BeExactly $ownedRoot
+            [IO.File]::ReadAllText($markerPath) | Should -BeExactly $ownedRoot
+
+            $legacyMarkerPath = Join-Path $script:testRoot 'a029-legacy-root-probe.marker'
+            $legacyArguments = $processArguments.Clone()
+            $legacyArguments.Arguments = [string[]]@('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $probePath, $legacyMarkerPath)
+            $legacyArguments.Environment = @{ RUN_OWNED_ROOT = $ownedRoot }
+            $legacyException = $null
+            try {
+                $null = Invoke-CodeSourceStandardValidationModule -Module $module `
+                    -FunctionName 'Invoke-StandardValidationProcess' -Arguments $legacyArguments
+            }
+            catch { $legacyException = [string]$_.Exception.Message }
+            $legacyException | Should -Match "Validation child environment key 'RUN_OWNED_ROOT' is outside the runner namespace"
+            Test-Path -LiteralPath $legacyMarkerPath -PathType Leaf | Should -BeFalse
+        }
+        finally {
+            if ($null -ne $module) { Remove-Module -ModuleInfo $module -Force -ErrorAction Stop }
+            if ($null -ne $driverModule) { Remove-Module -ModuleInfo $driverModule -Force -ErrorAction Stop }
+        }
+        Get-Command Invoke-StandardValidationProcess -CommandType Function -ErrorAction SilentlyContinue | Should -BeNullOrEmpty
+    }
+
     # Scenario: the same candidate-bound tool returns typed zero counts.
     # Purpose: the shared report rule must allow the normal Code envelope path.
     It 'InterT20_accepts_typed_zero_counts_through_the_real_Code_child' {

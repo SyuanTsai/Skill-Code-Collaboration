@@ -143,6 +143,51 @@ function Get-CorePesterRuntimeModuleRoot {
     return [IO.Path]::GetFullPath((Join-Path $runtimeRoot 'Modules/Pester/6.2.0'))
 }
 
+function Resolve-CorePesterSetupOwnedRoot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string] $OwnedRoot,
+        [AllowNull()][object] $NamespacedRoot,
+        [AllowNull()][object] $LegacyRoot
+    )
+
+    $pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    $canonicalize = {
+        param([object] $Value, [string] $Name)
+        if ($Value -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$Value)) {
+            throw "Pester setup $Name must be a non-empty string when provided."
+        }
+        if (-not [IO.Path]::IsPathFullyQualified([string]$Value)) {
+            throw "Pester setup $Name must be a fully qualified path."
+        }
+        try {
+            return [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath([string]$Value))
+        }
+        catch {
+            throw "Pester setup $Name must be a resolvable fully qualified path."
+        }
+    }
+
+    $canonicalOwnedRoot = & $canonicalize $OwnedRoot 'OwnedRoot'
+    $canonicalNamespacedRoot = $null
+    $canonicalLegacyRoot = $null
+    if ($null -ne $NamespacedRoot) { $canonicalNamespacedRoot = & $canonicalize $NamespacedRoot 'STANDARD_VALIDATION_RUN_OWNED_ROOT' }
+    if ($null -ne $LegacyRoot) { $canonicalLegacyRoot = & $canonicalize $LegacyRoot 'RUN_OWNED_ROOT' }
+    if ($null -eq $canonicalNamespacedRoot -and $null -eq $canonicalLegacyRoot) {
+        throw 'Pester setup requires a registered run-owned root.'
+    }
+    if ($null -ne $canonicalNamespacedRoot -and $null -ne $canonicalLegacyRoot -and
+        -not $canonicalNamespacedRoot.Equals($canonicalLegacyRoot, $pathComparison)) {
+        throw 'Pester setup environment roots conflict after path normalization.'
+    }
+
+    $registeredRoot = if ($null -ne $canonicalNamespacedRoot) { $canonicalNamespacedRoot } else { $canonicalLegacyRoot }
+    if (-not $registeredRoot.Equals($canonicalOwnedRoot, $pathComparison)) {
+        throw 'Pester setup root does not match the registered run-owned root.'
+    }
+    return $registeredRoot
+}
+
 function Test-CorePesterPathBoundary {
     [CmdletBinding()]
     param(
@@ -669,4 +714,4 @@ function Test-CorePesterPackageArchive {
     }
 }
 
-Export-ModuleMember -Function Read-CorePesterClosureLock, Get-CorePesterRuntimeModuleRoot, Test-CorePesterPathBoundary, Test-CorePesterClosure, Test-CorePesterModuleCandidates, Get-CorePesterExpectedLoadedModulePath, Test-CorePesterLoadedModuleIdentity, Get-CorePesterCaseIdentity, ConvertFrom-CorePesterProgressLine, Test-CorePesterCaseIdentityPartition, Test-CorePesterShardUnion, Remove-CorePesterConsumedBootstrapSignal, Get-CorePesterTreeSnapshot, Test-CorePesterPackageArchive
+Export-ModuleMember -Function Read-CorePesterClosureLock, Get-CorePesterRuntimeModuleRoot, Resolve-CorePesterSetupOwnedRoot, Test-CorePesterPathBoundary, Test-CorePesterClosure, Test-CorePesterModuleCandidates, Get-CorePesterExpectedLoadedModulePath, Test-CorePesterLoadedModuleIdentity, Get-CorePesterCaseIdentity, ConvertFrom-CorePesterProgressLine, Test-CorePesterCaseIdentityPartition, Test-CorePesterShardUnion, Remove-CorePesterConsumedBootstrapSignal, Get-CorePesterTreeSnapshot, Test-CorePesterPackageArchive
