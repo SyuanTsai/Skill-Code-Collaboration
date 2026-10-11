@@ -665,6 +665,9 @@ Describe 'Protected Standard Core SourceValidation preparation' {
         $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') -Raw
         $integrationTest = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'tests/CommonToolReportIntegration.Tests.ps1') -Raw
 
+        $workflow | Should -Match ([regex]::Escape('ref: ${{ github.event.pull_request.base.sha || (github.event.before != ''0000000000000000000000000000000000000000'' && github.event.before) || github.sha }}'))
+        $workflow | Should -Match ([regex]::Escape('ref: ${{ github.event.pull_request.head.sha || github.sha }}'))
+        $workflow | Should -Not -Match 'github\.event\.pull_request\.merge_commit_sha'
         $workflow | Should -Match 'Checkout immutable legacy 8a authority fixture'
         $workflow | Should -Match 'ref:\s*8aabd22694a05771f98639f6d726cc9a620eb94b'
         $workflow | Should -Match 'SYP154_CANDIDATE_AUTHORITY_ROOT:\s*\$\{\{\s*github\.workspace\s*\}\}/authority-8a'

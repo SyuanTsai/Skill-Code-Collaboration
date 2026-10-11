@@ -36,7 +36,7 @@ jobs:
       - name: Checkout immutable candidate
         uses: *checkout-action-reference # actions/checkout v7
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: candidate
           fetch-depth: 0
           persist-credentials: false
