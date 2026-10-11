@@ -20,6 +20,10 @@ This repository is versioned independently from any consumer repository. Use Sem
 8. Resolve that tag to its immutable 40-character commit SHA and generate the source content hash again from the tagged commit.
 9. Consumers pin the tag, resolved commit SHA, and content SHA-256; they must not rely on a mutable branch alone.
 
+## Protected source-validation adoption
+
+The protected source-validation route is optional adoption material for a future candidate with the exact approved ff85 authority tuple; it is not part of the current required workflow gate. See [Protected source-validation adoption](SOURCE-VALIDATION-ADOPTION.md) for its commands, timing records, and evidence requirements.
+
 ## Pin invariants
 
 A valid consumer source pin records all of the following:

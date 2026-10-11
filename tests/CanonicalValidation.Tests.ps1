@@ -8,6 +8,34 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:RepositoryValidator = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Test-Repository.ps1') -Raw
         $script:Adapter = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'config/standard-v1.json') -Raw |
             ConvertFrom-Json -Depth 20
+        function Invoke-CanonicalCleanupFinalizer {
+            param(
+                [Parameter(Mandatory = $true)][string] $CleanupRoot,
+                [Parameter(Mandatory = $true)][int] $InitialExitCode
+            )
+
+            $finalizers = [regex]::Matches($script:Validator, '(?ms)^finally\s*\{\r?\n(?<body>.*?)^\}')
+            $cleanupMatch = @($finalizers | Where-Object { $_.Groups['body'].Value.Contains('$script:ExternalCleanupRoots') } | Select-Object -Last 1)
+            $exitMatch = [regex]::Match($script:Validator, '(?m)^if \(\$script:ValidationExitCode -ne 0\) \{ exit \$script:ValidationExitCode \}')
+            if ($cleanupMatch.Count -ne 1 -or -not $exitMatch.Success) { throw 'Canonical cleanup and terminal exit blocks were not found.' }
+
+            $runnerText = @'
+param([Parameter(Mandatory = $true)][string] $CleanupRoot, [Parameter(Mandatory = $true)][int] $InitialExitCode)
+$script:ExternalCleanupRoots = @($CleanupRoot)
+$script:ValidationExitCode = $InitialExitCode
+$script:SourceModeRequested = $true
+$script:SourceCleanupFailed = $false
+try { }
+__FINALIZER__
+__TERMINAL_EXIT__
+'@
+            $runnerText = $runnerText.Replace('__FINALIZER__', [string]$cleanupMatch[0].Value).Replace('__TERMINAL_EXIT__', [string]$exitMatch.Value)
+            $runnerPath = Join-Path $TestDrive 'canonical-cleanup-finalizer.ps1'
+            [IO.File]::WriteAllText($runnerPath, $runnerText, [Text.UTF8Encoding]::new($false))
+            $pwshPath = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+            $output = @(& $pwshPath -NoLogo -NoProfile -NonInteractive -File $runnerPath -CleanupRoot $CleanupRoot -InitialExitCode $InitialExitCode 2>&1)
+            return [pscustomobject]@{ exitCode = [int]$LASTEXITCODE; output = $output }
+        }
         $script:ExpectedAuthorityCommit = '8aabd22694a05771f98639f6d726cc9a620eb94b'
         $script:ExpectedAuthorityArchiveSha256 = 'd92df1a8f0aa342970dc9c66a77b6211955b4708de12119cb7f9a360fd265311'
         $script:ExpectedAuthorityFiles = [ordered]@{
@@ -287,13 +315,25 @@ Describe 'Canonical Standard v1 validation adapter' {
         $script:Validator | Should -Match 'LocalApplicationData'
     }
 
-    It 'cleans run-owned external roots after validation' {
+    It 'UnitT50_executes_cleanup_before_returning_the_validation_exit_code' {
         # Scenario: a persistent workstation or self-hosted runner executes validation repeatedly.
-        # Purpose: reclaim the run-specific tool, candidate, and resolved-tool roots after success or failure.
+        # Purpose: execute the real terminal finally block and prove it removes owned roots on both passing and failing exits.
         $script:Validator | Should -Match '\$script:ExternalCleanupRoots = @\(\$trustedRoot, \$candidateExtractRoot, \$resolvedToolsRoot\)'
         $script:Validator | Should -Match 'Remove-Item -LiteralPath \$cleanupRoot -Recurse -Force'
         $script:Validator | Should -Match '\$script:ValidationExitCode = \$centralExitCode'
-        $script:Validator | Should -Match '(?s)catch \{\s+throw\s+\}\s+finally \{.*ExternalCleanupRoots'
+        $successRoot = Join-Path $TestDrive 'cleanup-success-root'
+        [void](New-Item -ItemType Directory -Path $successRoot -Force)
+        [IO.File]::WriteAllText((Join-Path $successRoot 'owned.txt'), 'owned')
+        $success = Invoke-CanonicalCleanupFinalizer -CleanupRoot $successRoot -InitialExitCode 0
+        $success.exitCode | Should -Be 0
+        Test-Path -LiteralPath $successRoot | Should -BeFalse
+
+        $failureRoot = Join-Path $TestDrive 'cleanup-failure-root'
+        [void](New-Item -ItemType Directory -Path $failureRoot -Force)
+        [IO.File]::WriteAllText((Join-Path $failureRoot 'owned.txt'), 'owned')
+        $failure = Invoke-CanonicalCleanupFinalizer -CleanupRoot $failureRoot -InitialExitCode 20
+        $failure.exitCode | Should -Be 20
+        Test-Path -LiteralPath $failureRoot | Should -BeFalse
     }
 
     It 'keeps generated adapter and evidence roots outside the candidate' {

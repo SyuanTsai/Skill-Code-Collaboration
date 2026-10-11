@@ -60,6 +60,8 @@ pwsh -File ./scripts/Validate.ps1
 
 The GitHub Actions workflow runs the canonical Standard v1 validation for pull requests and pushes. Component scripts are not additional public validation gates. Generate source-pin metadata separately when producing release evidence.
 
+The protected source-validation route is optional adoption material for a future candidate with the exact approved ff85 authority tuple. It does not change the active 8a pin or the current required workflow gate. See [Protected source-validation adoption](docs/SOURCE-VALIDATION-ADOPTION.md) for its explicit preparation and execution commands and evidence requirements.
+
 ## Versioning and rollback
 
 This repository is independently versioned. Release and pin rules are documented in `docs/RELEASE.md`. A consumer can roll back without modifying Skill content by restoring its previous source pin; see `docs/ROLLBACK.md`.
