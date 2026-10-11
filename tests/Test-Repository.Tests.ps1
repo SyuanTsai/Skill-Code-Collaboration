@@ -145,15 +145,23 @@ Describe 'Code Collaboration Standard v1 repository contract' {
         { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*Duplicate Skill ID*'
     }
 
-    It 'rejects an unsorted source inventory' {
+    It 'UnitT10_rejects_an_unsorted_source_inventory' {
+        # Scenario: a synthetic two-Skill fixture lists its valid IDs in descending ordinal order.
+        # Purpose: exercise the ordering guard even while the production catalog contains only one Skill.
+        $newSkillId = 'a-safe-ordering-fixture'
+        $newSkillRoot = Join-Path $script:FixtureRoot "skills/$newSkillId"
+        Copy-Item -LiteralPath $script:SkillRoot -Destination $newSkillRoot -Recurse
+        foreach ($relativePath in @('SKILL.md', 'agents/openai.yaml')) {
+            $fixturePath = Join-Path $newSkillRoot $relativePath
+            $text = Get-Content -LiteralPath $fixturePath -Raw
+            Set-Content -LiteralPath $fixturePath -Value $text.Replace($script:SkillId, $newSkillId) -Encoding utf8NoBOM -NoNewline
+        }
         $sourcePath = Join-Path $script:FixtureRoot 'catalog/source.json'
         $source = Get-Content -LiteralPath $sourcePath -Raw | ConvertFrom-Json
-        if (@($source.skills).Count -lt 2) {
-            Set-ItResult -Skipped -Because 'The repository has only one active Skill, so no ordering inversion can be represented.'
-            return
-        }
-        [array]::Reverse($source.skills)
+        $source.skills = @($script:SkillId, $newSkillId)
         $source | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $sourcePath -Encoding utf8NoBOM
+        & $script:GitPath -C $script:FixtureRoot add -- catalog/source.json "skills/$newSkillId"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not stage the synthetic ordering fixture.' }
         { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*ordinal ascending order*'
     }
 

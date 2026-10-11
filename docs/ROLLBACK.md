@@ -21,3 +21,7 @@ If a released change must be reverted, create a new commit that restores the pre
 ## Safe fallback behavior
 
 Consumers must treat an unavailable or uninstalled Skill as absent. They must not assume a direct `skills/...` path exists merely because a related workflow exists in another source repository.
+
+## Protected source-validation fallback
+
+The source-validation adoption route is opt-in and is not yet a required CI gate. If its preparation or validation fails, retain the setup receipts, raw process output, Core report, stage timing file, completed setup timing file, and source-validation timing file for diagnosis, then continue using the established Standard v1 route with `pwsh -File ./scripts/Validate.ps1` and the active 8a authority pin. Do not reuse a prepared `source-tools.json` after changing the candidate, authority checkout, runtime, or tool closure; create a new run-owned preparation. To roll back an adopted repository change, revert it in a new commit and restore the previous approved authority/source pin through the normal release process.

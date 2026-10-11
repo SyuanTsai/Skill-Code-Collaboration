@@ -8,12 +8,30 @@ Describe 'Code Collaboration Standard v1 conformance' {
         $script:ValidatorPath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
     }
 
-    It 'uses the canonical schema v2 source inventory and source root' {
+    It 'UnitT00_uses_the_canonical_schema_v2_source_inventory_and_source_root' {
         # Scenario: a legacy runtime root or source-owned cross-source catalog is reintroduced.
         # Purpose: keep this repository on the canonical source package topology.
         Test-Path -LiteralPath (Join-Path $script:RepositoryRoot 'skills') -PathType Container | Should -BeTrue
-        $legacyEntries = @(& git -C $script:RepositoryRoot ls-tree -r --name-only HEAD -- '.agents/skills')
-        $legacyEntries.Count | Should -Be 0
+        $git = Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1
+        $gitRootOutput = @(& $git.Path -C $script:RepositoryRoot rev-parse --show-toplevel 2>$null)
+        $gitRootExitCode = $LASTEXITCODE
+        $exactGitRoot = $false
+        if ($gitRootExitCode -eq 0 -and $gitRootOutput.Count -eq 1) {
+            $reportedGitRoot = [IO.Path]::GetFullPath([string]$gitRootOutput[0]).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+            $repositoryRoot = [IO.Path]::GetFullPath($script:RepositoryRoot).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+            $pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+            $exactGitRoot = $reportedGitRoot.Equals($repositoryRoot, $pathComparison)
+        }
+        if ($exactGitRoot) {
+            $trackedAgentEntries = @(& $git.Path -C $script:RepositoryRoot ls-files --cached -- '.agents/skills')
+            if ($LASTEXITCODE -ne 0) { throw 'Could not inspect tracked Agent skill entries at the exact repository root.' }
+            @($trackedAgentEntries | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count | Should -Be 0
+        }
+        else {
+            # Candidate snapshots may be nested below another worktree. Only inspect
+            # their own files; never let an ancestor repository supply inventory.
+            Test-Path -LiteralPath (Join-Path $script:RepositoryRoot '.agents') -PathType Container | Should -BeFalse
+        }
         $source = Get-Content -LiteralPath $script:SourcePath -Raw | ConvertFrom-Json -Depth 20
         @($source.PSObject.Properties.Name) | Should -Be @('schemaVersion','sourceId','repository','skillsRoot','skills')
         $source.schemaVersion | Should -Be 2

@@ -60,6 +60,26 @@ pwsh -File ./scripts/Validate.ps1
 
 The GitHub Actions workflow runs the canonical Standard v1 validation for pull requests and pushes. Component scripts are not additional public validation gates. Generate source-pin metadata separately when producing release evidence.
 
+The protected source-validation preparation path is an explicit adoption command and is not yet a required CI gate. It applies only to a candidate whose `config/standard-v1.json` contains the exact approved ff85 authority tuple. First prepare a fresh run-owned tool closure against the verified ff85 authority checkout, then execute the source check with the same prepared file and an event-base commit:
+
+```powershell
+$sourceTools = Join-Path $env:RUNNER_TEMP 'code-collaboration/source-tools.json'
+$authorityRoot = '<verified ff85 authority Git checkout>'
+$baseCommit = '<immutable event-base commit SHA>'
+
+pwsh -File ./scripts/Validate.ps1 -AdapterVersion 2 -PrepareSourceTools `
+  -SourceToolsPath $sourceTools -AuthorityRepositoryRoot $authorityRoot `
+  -TrustedToolRoot $PSHOME -BaseCommit $baseCommit -TimeoutSeconds 10800
+
+pwsh -File ./scripts/Validate.ps1 -AdapterVersion 2 -SourceValidation `
+  -SourceToolsPath $sourceTools -AuthorityRepositoryRoot $authorityRoot `
+  -TrustedToolRoot $PSHOME -BaseCommit $baseCommit `
+  -ArtifactsRoot (Join-Path $env:RUNNER_TEMP 'code-collaboration/core-v2') `
+  -TimeoutSeconds 10800
+```
+
+Preparation resolves the central validation tools once and stores their receipts, a run-owned PowerShell/Pester closure, the candidate archive and Git entry-mode manifest, and frozen input hashes beside `source-tools.json`. Use a new output path for every preparation. `setup-timing.json` inside the run-owned source-tools directory records stage durations; `source-tools-setup-completed-<runId>.json` beside `source-tools.json` records the completed setup wall time after frozen-file verification; source execution writes `source-validation-timing-<runId>.json` beside the Core artifacts. Together these records include per-tool setup durations, inventory/hash/sort time, setup total, validation time, and setup-to-validation wall time. The 1200-second target is diagnostic evidence only and does not fail a run. Retain the setup timing files and the source validation timing file with the validation report when using this adoption path.
+
 ## Versioning and rollback
 
 This repository is independently versioned. Release and pin rules are documented in `docs/RELEASE.md`. A consumer can roll back without modifying Skill content by restoring its previous source pin; see `docs/ROLLBACK.md`.
