@@ -468,8 +468,8 @@ Describe 'Verified Pester 6.2.0 module closure' {
                 $stdoutTask = $child.StandardOutput.BaseStream.CopyToAsync($stdout)
                 $stderrTask = $child.StandardError.BaseStream.CopyToAsync($stderr)
                 $child.WaitForExit()
-                $stdoutTask.GetAwaiter().GetResult()
-                $stderrTask.GetAwaiter().GetResult()
+                [void]$stdoutTask.GetAwaiter().GetResult()
+                [void]$stderrTask.GetAwaiter().GetResult()
                 return [pscustomobject]@{ ExitCode = $child.ExitCode; Stdout = $stdout.ToArray(); Stderr = $stderr.ToArray() }
             }
             finally {
@@ -483,6 +483,8 @@ Describe 'Verified Pester 6.2.0 module closure' {
         $quotedCommandName = "'" + $commandName.Replace("'", "''") + "'"
         $successScriptPath = Join-Path $TestDrive 'import-warning-success.ps1'
         $successScript = @"
+Set-StrictMode -Version Latest
+`$ErrorActionPreference = 'Stop'
 $($helperNodes[0].Extent.Text)
 Import-CorePesterModuleWithWarningsOnStderr -ManifestPath $quotedModulePath
 if (-not (Get-Command -Name $quotedCommandName -ErrorAction Stop)) { throw 'Warning fixture module command was not imported.' }
@@ -498,6 +500,8 @@ if (-not (Get-Command -Name $quotedCommandName -ErrorAction Stop)) { throw 'Warn
         $quotedFailingModulePath = "'" + $failingModulePath.Replace("'", "''") + "'"
         $failureScriptPath = Join-Path $TestDrive 'import-warning-failure.ps1'
         $failureScript = @"
+Set-StrictMode -Version Latest
+`$ErrorActionPreference = 'Stop'
 $($helperNodes[0].Extent.Text)
 Import-CorePesterModuleWithWarningsOnStderr -ManifestPath $quotedFailingModulePath
 [Console]::Out.WriteLine('unexpected import success')
