@@ -202,12 +202,255 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $versionOutput = @(& go version)
-          if ($LASTEXITCODE -ne 0 -or $versionOutput.Count -ne 1 -or
-              [string]$versionOutput[0] -notmatch '^go version go(?<version>[0-9]+\.[0-9]+\.[0-9]+) [^\s]+/[^\s]+$') {
-            throw "setup-go did not provide one stable Go runtime version. Evidence='$($versionOutput -join ' | ')'"
+          # Materialize the selected runtime before the resolver uses GOROOT.
+          function Get-GoRuntimeRawSha256 {
+            param([Parameter(Mandatory)][string] $Path)
+            $item = Get-Item -Force -LiteralPath $Path -ErrorAction Stop
+            if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw "Go runtime payload must be a regular non-reparse file: $Path"
+            }
+            $algorithm = [Security.Cryptography.SHA256]::Create()
+            $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+            try { $hash = [Convert]::ToHexString($algorithm.ComputeHash($stream)).ToLowerInvariant() }
+            finally { $stream.Dispose(); $algorithm.Dispose() }
+            $after = Get-Item -Force -LiteralPath $Path -ErrorAction Stop
+            if ($after.Length -ne $item.Length -or ($after.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw "Go runtime payload changed while hashing: $Path"
+            }
+            return $hash
           }
-          [IO.File]::AppendAllText($env:GITHUB_ENV, "STANDARD_GO_RUNTIME_VERSION=$($Matches.version)`n", [Text.UTF8Encoding]::new($false))
+
+          function Get-GoRuntimeInventory {
+            param([Parameter(Mandatory)][string] $Root)
+            $rootPath = [IO.Path]::GetFullPath($Root)
+            $rootItem = Get-Item -Force -LiteralPath $rootPath -ErrorAction Stop
+            if (-not $rootItem.PSIsContainer -or ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw "Go runtime inventory root must be a regular non-reparse directory: $rootPath"
+            }
+            $rootPrefix = $rootPath.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+            $pending = [Collections.Generic.Stack[string]]::new()
+            $pending.Push($rootPath)
+            $entryByPath = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+            $fileCount = 0
+            $directoryCount = 0
+            while ($pending.Count -gt 0) {
+              $currentDirectory = $pending.Pop()
+              foreach ($item in @(Get-ChildItem -Force -LiteralPath $currentDirectory -ErrorAction Stop)) {
+                if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                  throw "Go runtime contains a nested reparse point: $($item.FullName)"
+                }
+                $fullPath = [IO.Path]::GetFullPath([string]$item.FullName)
+                if (-not $fullPath.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                  throw "Go runtime inventory entry escaped its physical root: $fullPath"
+                }
+                $relativePath = [IO.Path]::GetRelativePath($rootPath, $fullPath).Replace([char]92, [char]47)
+                $segments = $relativePath.Split('/')
+                if ([string]::IsNullOrWhiteSpace($relativePath) -or [IO.Path]::IsPathRooted($relativePath) -or
+                    $relativePath.Contains([char]92) -or $segments -contains '' -or
+                    $segments -contains '.' -or $segments -contains '..') {
+                  throw "Go runtime contains an unsafe relative path: $relativePath"
+                }
+                if ($item.PSIsContainer) {
+                  $record = [ordered]@{ path = $relativePath; kind = 'directory'; length = 0; sha256 = $null }
+                  $directoryCount++
+                  $pending.Push($fullPath)
+                }
+                else {
+                  $record = [ordered]@{
+                    path = $relativePath
+                    kind = 'file'
+                    length = [long]$item.Length
+                    sha256 = Get-GoRuntimeRawSha256 -Path $fullPath
+                  }
+                  $fileCount++
+                }
+                if (-not $entryByPath.TryAdd($relativePath, [pscustomobject]$record)) {
+                  throw "Go runtime contains a duplicate relative path: $relativePath"
+                }
+              }
+            }
+            $paths = [string[]]@($entryByPath.Keys)
+            [Array]::Sort($paths, [StringComparer]::Ordinal)
+            $records = [Collections.Generic.List[object]]::new()
+            foreach ($path in $paths) { $records.Add($entryByPath[$path]) }
+            $entries = $records.ToArray()
+            $entriesJson = ConvertTo-Json -InputObject $entries -Depth 10 -Compress
+            $entryBytes = [Text.UTF8Encoding]::new($false).GetBytes($entriesJson)
+            $algorithm = [Security.Cryptography.SHA256]::Create()
+            try { $closureSha256 = [Convert]::ToHexString($algorithm.ComputeHash($entryBytes)).ToLowerInvariant() }
+            finally { $algorithm.Dispose() }
+            return [pscustomobject]@{
+              rootPath = $rootPath; entries = $entries; entriesJson = $entriesJson
+              fileCount = $fileCount; directoryCount = $directoryCount; closureSha256 = $closureSha256
+            }
+          }
+
+          function Assert-GoRuntimeDirectoryChain {
+            param([Parameter(Mandatory)][string] $Path)
+            $cursor = [IO.Path]::GetFullPath($Path)
+            while ($true) {
+              $item = Get-Item -Force -LiteralPath $cursor -ErrorAction Stop
+              if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Go runtime destination path must contain only regular non-reparse directories: $cursor"
+              }
+              $pathRoot = [IO.Path]::GetPathRoot($cursor)
+              if ($cursor.Equals($pathRoot, [StringComparison]::OrdinalIgnoreCase)) { break }
+              $parent = [IO.Path]::GetDirectoryName($cursor)
+              if ([string]::IsNullOrWhiteSpace($parent) -or $parent.Equals($cursor, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Could not verify a Go runtime destination ancestor: $cursor"
+              }
+              $cursor = $parent
+            }
+          }
+          if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP) -or [string]::IsNullOrWhiteSpace($env:GITHUB_PATH) -or
+              [string]::IsNullOrWhiteSpace($env:GITHUB_ENV)) {
+            throw 'GitHub runner temporary and environment-file paths are required for Go runtime materialization.'
+          }
+          $goCommand = Get-Command -Name 'go.exe' -CommandType Application -All -ErrorAction Stop | Select-Object -First 1
+          if ($null -eq $goCommand) { throw 'The PATH-first go.exe application was not found.' }
+          $selectedGoPath = [IO.Path]::GetFullPath([string]$goCommand.Source)
+          $selectedBin = [IO.Path]::GetDirectoryName($selectedGoPath)
+          if ([IO.Path]::GetFileName($selectedGoPath) -cne 'go.exe' -or [IO.Path]::GetFileName($selectedBin) -cne 'bin') {
+            throw "PATH-first go.exe is not in its selected runtime bin directory: $selectedGoPath"
+          }
+          $selectedGoRoot = [IO.Path]::GetFullPath([IO.Path]::GetDirectoryName($selectedBin))
+          $selectedRootItem = Get-Item -Force -LiteralPath $selectedGoRoot -ErrorAction Stop
+          if (-not $selectedRootItem.PSIsContainer) { throw "The selected Go runtime root is not a directory: $selectedGoRoot" }
+          $physicalRootItem = $selectedRootItem
+          if (($selectedRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            $physicalRootItem = $selectedRootItem.ResolveLinkTarget($true)
+            if ($null -eq $physicalRootItem -or -not $physicalRootItem.Exists -or -not $physicalRootItem.PSIsContainer) {
+              throw "The selected Go runtime root junction could not be resolved: $selectedGoRoot"
+            }
+          }
+          $physicalSourceRoot = [IO.Path]::GetFullPath([string]$physicalRootItem.FullName)
+          $physicalSourceItem = Get-Item -Force -LiteralPath $physicalSourceRoot -ErrorAction Stop
+          if (-not $physicalSourceItem.PSIsContainer -or ($physicalSourceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "The physical selected Go runtime root is not a regular directory: $physicalSourceRoot"
+          }
+          $sourceGoPath = [IO.Path]::GetFullPath((Join-Path $physicalSourceRoot 'bin/go.exe'))
+          $selectedGoItem = Get-Item -Force -LiteralPath $selectedGoPath -ErrorAction Stop
+          if ($selectedGoItem.PSIsContainer -or ($selectedGoItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "PATH-first go.exe must be a regular non-reparse file: $selectedGoPath"
+          }
+          $selectedGoSha256 = Get-GoRuntimeRawSha256 -Path $selectedGoPath
+          $sourceGoSha256 = Get-GoRuntimeRawSha256 -Path $sourceGoPath
+          if ($selectedGoSha256 -cne $sourceGoSha256) { throw 'The selected and physical-root Go executables have different bytes.' }
+          $versionOutput = @(& $selectedGoPath version)
+          $versionExitCode = $LASTEXITCODE
+          $versionParts = if ($versionOutput.Count -eq 1) { ([string]$versionOutput[0]).Split(' ') } else { @() }
+          if ($versionExitCode -ne 0 -or $versionParts.Count -ne 4 -or $versionParts[0] -cne 'go' -or
+              $versionParts[1] -cne 'version' -or $versionParts[2] -cnotmatch '^go[0-9]+[.][0-9]+[.][0-9]+$' -or
+              $versionParts[3] -cne 'windows/amd64') {
+            throw "setup-go did not provide one stable Windows amd64 Go runtime version. Evidence='$($versionOutput -join ' | ')'; exit=$versionExitCode."
+          }
+          $goVersion = $versionParts[2].Substring(2)
+          $sourceInventory = Get-GoRuntimeInventory -Root $physicalSourceRoot
+          $runnerTemp = [IO.Path]::GetFullPath($env:RUNNER_TEMP)
+          Assert-GoRuntimeDirectoryChain -Path $runnerTemp
+          $materializedRoot = [IO.Path]::GetFullPath((Join-Path $runnerTemp "go-runtime-$([Guid]::NewGuid().ToString('N'))"))
+          if (Test-Path -LiteralPath $materializedRoot) { throw 'The fresh Go runtime destination already exists.' }
+          [void][IO.Directory]::CreateDirectory($materializedRoot)
+          Assert-GoRuntimeDirectoryChain -Path $materializedRoot
+          foreach ($entry in @($sourceInventory.entries | Where-Object { $_.kind -ceq 'directory' })) {
+            $relativePath = [string]$entry.path.Replace('/', [IO.Path]::DirectorySeparatorChar)
+            $destinationDirectory = Join-Path $materializedRoot $relativePath
+            [void][IO.Directory]::CreateDirectory($destinationDirectory)
+            Assert-GoRuntimeDirectoryChain -Path $destinationDirectory
+          }
+          foreach ($entry in @($sourceInventory.entries | Where-Object { $_.kind -ceq 'file' })) {
+            $relativePath = [string]$entry.path.Replace('/', [IO.Path]::DirectorySeparatorChar)
+            $sourcePath = [IO.Path]::GetFullPath((Join-Path $physicalSourceRoot $relativePath))
+            $destinationPath = [IO.Path]::GetFullPath((Join-Path $materializedRoot $relativePath))
+            Assert-GoRuntimeDirectoryChain -Path ([IO.Path]::GetDirectoryName($destinationPath))
+            if (Test-Path -LiteralPath $destinationPath) { throw "A Go runtime destination file already exists: $destinationPath" }
+            [IO.File]::Copy($sourcePath, $destinationPath, $false)
+            $destinationFile = Get-Item -Force -LiteralPath $destinationPath -ErrorAction Stop
+            if ($destinationFile.PSIsContainer -or ($destinationFile.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                [long]$destinationFile.Length -ne [long]$entry.length -or
+                (Get-GoRuntimeRawSha256 -Path $destinationPath) -cne [string]$entry.sha256) {
+              throw "A materialized Go runtime file differs from its source inventory: $($entry.path)"
+            }
+          }
+          $sourceAfterCopy = Get-GoRuntimeInventory -Root $physicalSourceRoot
+          $materializedInventory = Get-GoRuntimeInventory -Root $materializedRoot
+          if ($sourceAfterCopy.entriesJson -cne $sourceInventory.entriesJson -or
+              $materializedInventory.entriesJson -cne $sourceInventory.entriesJson -or
+              $materializedInventory.closureSha256 -cne $sourceInventory.closureSha256) {
+            throw 'The materialized Go runtime does not exactly match the complete selected source closure.'
+          }
+          $materializedGoPath = [IO.Path]::GetFullPath((Join-Path $materializedRoot 'bin/go.exe'))
+          $materializedGoSha256 = Get-GoRuntimeRawSha256 -Path $materializedGoPath
+          if ($materializedGoSha256 -cne $selectedGoSha256) { throw 'The materialized go.exe does not match PATH-first Go.' }
+          $materializedVersionOutput = @(& $materializedGoPath version)
+          $materializedExitCode = $LASTEXITCODE
+          if ($materializedExitCode -ne 0 -or $materializedVersionOutput.Count -ne 1 -or
+              [string]$materializedVersionOutput[0] -cne [string]$versionOutput[0]) {
+            throw "The materialized Go executable reports a different version. Evidence='$($materializedVersionOutput -join ' | ')'; exit=$materializedExitCode."
+          }
+
+          $runRoot = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'code-collaboration'))
+          Assert-GoRuntimeDirectoryChain -Path $runRoot
+          $indexPath = Join-Path $runRoot 'evidence-index.json'
+          $inventoryPath = Join-Path $runRoot 'go-runtime-inventory.json'
+          $identityPath = Join-Path $runRoot 'go-runtime-identity.json'
+          if (-not (Test-Path -LiteralPath $indexPath -PathType Leaf) -or
+              (Test-Path -LiteralPath $inventoryPath) -or (Test-Path -LiteralPath $identityPath)) {
+            throw 'The Go runtime evidence index is missing or Go identity evidence already exists.'
+          }
+          $inventoryDocument = [ordered]@{
+            schemaVersion = 1
+            schema = 'standard-validation-go-runtime-inventory-v1'
+            selectedRoot = $selectedGoRoot
+            physicalSourceRoot = $physicalSourceRoot
+            materializedRoot = $materializedRoot
+            sourceClosureSha256 = $sourceInventory.closureSha256
+            materializedClosureSha256 = $materializedInventory.closureSha256
+            fileCount = $materializedInventory.fileCount
+            directoryCount = $materializedInventory.directoryCount
+            sourceEntries = $sourceInventory.entries
+            materializedEntries = $materializedInventory.entries
+          }
+          $inventoryJson = ($inventoryDocument | ConvertTo-Json -Depth 40 -Compress) + [Environment]::NewLine
+          $inventoryBytes = [Text.UTF8Encoding]::new($false).GetBytes($inventoryJson)
+          $inventoryStream = [IO.File]::Open($inventoryPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+          try { $inventoryStream.Write($inventoryBytes, 0, $inventoryBytes.Length) }
+          finally { $inventoryStream.Dispose() }
+          $inventorySha256 = Get-GoRuntimeRawSha256 -Path $inventoryPath
+          $identityDocument = [ordered]@{
+            schemaVersion = 1
+            schema = 'standard-validation-go-runtime-identity-v1'
+            recordedAtUtc = [DateTime]::UtcNow.ToString('o')
+            selectedGoPath = $selectedGoPath
+            selectedGoRoot = $selectedGoRoot
+            physicalSourceRoot = $physicalSourceRoot
+            materializedRoot = $materializedRoot
+            materializedGoPath = $materializedGoPath
+            versionOutput = [string]$versionOutput[0]
+            version = $goVersion
+            goExecutableSha256 = $materializedGoSha256
+            fileCount = $materializedInventory.fileCount
+            directoryCount = $materializedInventory.directoryCount
+            sourceClosureSha256 = $sourceInventory.closureSha256
+            materializedClosureSha256 = $materializedInventory.closureSha256
+            inventoryPath = $inventoryPath
+            inventorySha256 = $inventorySha256
+          }
+          $identityJson = ($identityDocument | ConvertTo-Json -Depth 20 -Compress) + [Environment]::NewLine
+          $identityBytes = [Text.UTF8Encoding]::new($false).GetBytes($identityJson)
+          $identityStream = [IO.File]::Open($identityPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+          try { $identityStream.Write($identityBytes, 0, $identityBytes.Length) }
+          finally { $identityStream.Dispose() }
+          $evidenceIndex = Get-Content -LiteralPath $indexPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+          if ([int]$evidenceIndex.schemaVersion -ne 1) { throw 'The source-validation evidence index schema is unexpected.' }
+          $evidenceIndex | Add-Member -NotePropertyName goRuntimeIdentityPath -NotePropertyValue $identityPath -Force
+          $evidenceIndex | Add-Member -NotePropertyName goRuntimeIdentitySha256 -NotePropertyValue (Get-GoRuntimeRawSha256 -Path $identityPath) -Force
+          $evidenceIndex | Add-Member -NotePropertyName goRuntimeInventoryPath -NotePropertyValue $inventoryPath -Force
+          $evidenceIndex | Add-Member -NotePropertyName goRuntimeInventorySha256 -NotePropertyValue $inventorySha256 -Force
+          [IO.File]::WriteAllText($indexPath, (($evidenceIndex | ConvertTo-Json -Depth 30 -Compress) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+          [IO.File]::AppendAllText($env:GITHUB_PATH, ([IO.Path]::GetDirectoryName($materializedGoPath) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+          $environmentLines = @("GOROOT=$materializedRoot", "STANDARD_GO_RUNTIME_VERSION=$goVersion") -join [Environment]::NewLine
+          [IO.File]::AppendAllText($env:GITHUB_ENV, ($environmentLines + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
 
       - name: Set up approved Node runtime
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0

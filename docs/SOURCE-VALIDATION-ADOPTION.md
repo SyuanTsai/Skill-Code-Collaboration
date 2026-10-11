@@ -12,6 +12,12 @@ The Windows gate pins its host runtime with `actions/setup-node` v7.1.0 at commi
 
 This host pin addresses npm lock generation while the central resolver continues to select the latest stable `skill-tools` package under its existing policy. A controlled comparison resolved the same `skill-tools@0.4.1` package and SHA-512 integrity with both Node/npm pairs: Node `22.23.3` / npm `10.9.9` produced an additional `standard-validation-npm-work=file:../npm-environment` root dependency that the central lock validator rejected, while Node `24.21.0` / npm `11.19.0` produced a lock accepted by that validator. The hosted failed lock was not retained, so this is a controlled runtime comparison rather than a byte-for-byte replay of that hosted failure.
 
+## Hosted Go runtime
+
+The workflow keeps the approved `actions/setup-go` v7.0.0 action at its full commit SHA with stable release selection, `check-latest: true`, and cache disabled. It resolves the PATH-first `go.exe`, verifies the stable version, and inventories the selected runtime's complete directory and file closure. If the selected runtime root is a junction, the workflow resolves it for read-only access; nested reparse entries fail the step. It copies the complete runtime into a fresh GUID directory directly under `runner.temp`, outside the uploaded `code-collaboration` evidence tree, then compares source and materialized relative paths, lengths, and raw SHA-256 values and rechecks the materialized `go.exe` version and hash. The workflow does not write to the hosted toolcache.
+
+It retains the selected, physical source, and materialized paths, the complete inventory, closure digests, and executable identity under `runner.temp/code-collaboration/go-runtime-identity.json` and `go-runtime-inventory.json`. Later validation uses only the materialized `bin` through `GITHUB_PATH` and its root through `GOROOT`.
+
 ### Updating the hosted Node/npm runtime
 
 Changing either pinned version requires the same npm lock comparison against the immutable ff85 resolver and lock validator, including the resolved `skill-tools` version/integrity and resulting root dependency shape. Update the version and executable identity together from the official release archive and signed checksum material, then pass the focused workflow regression, exact-head CI, and a fresh complete full-source validation before adopting the change. A passing npm experiment alone does not establish that the hosted gate is ready.
