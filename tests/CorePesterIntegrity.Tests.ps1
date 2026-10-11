@@ -76,6 +76,114 @@ BeforeAll {
     }
 }
 
+Describe 'Pester setup owned-root environment compatibility' {
+    # Scenario: setup passes the new namespaced key while the legacy key is absent.
+    # Purpose: consume a fully qualified registered root without relying on string coercion for null values.
+    It 'UnitT90_resolves_a_namespaced_owned_root_with_a_null_legacy_value' {
+        Import-Module -Name (Join-Path $script:repositoryRoot 'scripts/CorePesterIntegrity.psm1') -Force -ErrorAction Stop
+        Get-Command -Name Resolve-CorePesterSetupOwnedRoot -CommandType Function -ErrorAction SilentlyContinue | Should -Not -BeNullOrEmpty
+        $ownedRoot = [IO.Path]::GetFullPath((Join-Path $TestDrive ("source-tools-" + [guid]::NewGuid().ToString('N'))))
+        [void](New-Item -ItemType Directory -Path $ownedRoot -Force)
+
+        Resolve-CorePesterSetupOwnedRoot -OwnedRoot $ownedRoot -NamespacedRoot $ownedRoot -LegacyRoot $null |
+            Should -BeExactly $ownedRoot
+    }
+
+    # Scenario: an older caller supplies only the legacy environment key.
+    # Purpose: keep the documented compatibility path while returning the same canonical root.
+    It 'UnitT91_resolves_a_legacy_owned_root_with_a_null_namespaced_value' {
+        Import-Module -Name (Join-Path $script:repositoryRoot 'scripts/CorePesterIntegrity.psm1') -Force -ErrorAction Stop
+        Get-Command -Name Resolve-CorePesterSetupOwnedRoot -CommandType Function -ErrorAction SilentlyContinue | Should -Not -BeNullOrEmpty
+        $ownedRoot = [IO.Path]::GetFullPath((Join-Path $TestDrive ("source-tools-" + [guid]::NewGuid().ToString('N'))))
+        [void](New-Item -ItemType Directory -Path $ownedRoot -Force)
+
+        Resolve-CorePesterSetupOwnedRoot -OwnedRoot $ownedRoot -NamespacedRoot $null -LegacyRoot $ownedRoot |
+            Should -BeExactly $ownedRoot
+    }
+
+    # Scenario: both accepted environment names carry the same fully qualified value.
+    # Purpose: permit exact dual-key compatibility during an orderly transition.
+    It 'UnitT92_accepts_matching_namespaced_and_legacy_owned_roots' {
+        Import-Module -Name (Join-Path $script:repositoryRoot 'scripts/CorePesterIntegrity.psm1') -Force -ErrorAction Stop
+        Get-Command -Name Resolve-CorePesterSetupOwnedRoot -CommandType Function -ErrorAction SilentlyContinue | Should -Not -BeNullOrEmpty
+        $ownedRoot = [IO.Path]::GetFullPath((Join-Path $TestDrive ("source-tools-" + [guid]::NewGuid().ToString('N'))))
+        [void](New-Item -ItemType Directory -Path $ownedRoot -Force)
+
+        Resolve-CorePesterSetupOwnedRoot -OwnedRoot $ownedRoot -NamespacedRoot $ownedRoot -LegacyRoot $ownedRoot |
+            Should -BeExactly $ownedRoot
+        $segment = Join-Path $ownedRoot 'segment'
+        [void](New-Item -ItemType Directory -Path $segment -Force)
+        $normalizedAlias = Join-Path $segment '..'
+        $resolvedAlias = Resolve-CorePesterSetupOwnedRoot -OwnedRoot $ownedRoot -NamespacedRoot $ownedRoot -LegacyRoot $normalizedAlias
+        $resolvedAlias | Should -BeExactly $ownedRoot
+    }
+
+    # Scenario: the two environment names use paths that differ only in letter casing.
+    # Purpose: apply Windows ordinal-ignore-case and Unix ordinal path comparison rules.
+    It 'UnitT93_compares_owned_roots_using_the_platform_path_rules' {
+        Import-Module -Name (Join-Path $script:repositoryRoot 'scripts/CorePesterIntegrity.psm1') -Force -ErrorAction Stop
+        Get-Command -Name Resolve-CorePesterSetupOwnedRoot -CommandType Function -ErrorAction SilentlyContinue | Should -Not -BeNullOrEmpty
+        $ownedRoot = [IO.Path]::GetFullPath((Join-Path $TestDrive 'PesterOwnedRoot'))
+        $caseVariant = [IO.Path]::GetFullPath((Join-Path $TestDrive 'pesterownedroot'))
+        [void](New-Item -ItemType Directory -Path $ownedRoot -Force)
+        if (-not (Test-Path -LiteralPath $caseVariant -PathType Container)) {
+            [void](New-Item -ItemType Directory -Path $caseVariant -Force)
+        }
+
+        if ($IsWindows) {
+            $resolved = Resolve-CorePesterSetupOwnedRoot -OwnedRoot $ownedRoot -NamespacedRoot $ownedRoot -LegacyRoot $caseVariant
+            [string]::Equals([string]$resolved, $ownedRoot, [StringComparison]::OrdinalIgnoreCase) | Should -BeTrue
+        }
+        else {
+            { Resolve-CorePesterSetupOwnedRoot -OwnedRoot $ownedRoot -NamespacedRoot $ownedRoot -LegacyRoot $caseVariant } |
+                Should -Throw
+        }
+    }
+
+    # Scenario: no environment root, conflicting aliases, or values outside the registered root are supplied.
+    # Purpose: reject missing and ambiguous setup identities instead of guessing which value to trust.
+    It 'UnitT94_rejects_missing_conflicting_and_unregistered_owned_roots' {
+        Import-Module -Name (Join-Path $script:repositoryRoot 'scripts/CorePesterIntegrity.psm1') -Force -ErrorAction Stop
+        Get-Command -Name Resolve-CorePesterSetupOwnedRoot -CommandType Function -ErrorAction SilentlyContinue | Should -Not -BeNullOrEmpty
+        $ownedRoot = [IO.Path]::GetFullPath((Join-Path $TestDrive ("source-tools-" + [guid]::NewGuid().ToString('N'))))
+        $otherRoot = [IO.Path]::GetFullPath((Join-Path $TestDrive ("source-tools-" + [guid]::NewGuid().ToString('N'))))
+        [void](New-Item -ItemType Directory -Path $ownedRoot -Force)
+        [void](New-Item -ItemType Directory -Path $otherRoot -Force)
+
+        { Resolve-CorePesterSetupOwnedRoot -OwnedRoot $ownedRoot -NamespacedRoot $null -LegacyRoot $null } | Should -Throw
+        { Resolve-CorePesterSetupOwnedRoot -OwnedRoot $ownedRoot -NamespacedRoot $ownedRoot -LegacyRoot $otherRoot } | Should -Throw
+        { Resolve-CorePesterSetupOwnedRoot -OwnedRoot $ownedRoot -NamespacedRoot $otherRoot -LegacyRoot $otherRoot } | Should -Throw
+    }
+
+    # Scenario: one malformed environment value is paired with a valid alias.
+    # Purpose: validate every present value independently, including Windows drive-relative and root-relative paths.
+    It 'UnitT95_rejects_invalid_environment_values_even_when_the_other_key_is_valid' {
+        Import-Module -Name (Join-Path $script:repositoryRoot 'scripts/CorePesterIntegrity.psm1') -Force -ErrorAction Stop
+        Get-Command -Name Resolve-CorePesterSetupOwnedRoot -CommandType Function -ErrorAction SilentlyContinue | Should -Not -BeNullOrEmpty
+        $ownedRoot = [IO.Path]::GetFullPath((Join-Path $TestDrive ("source-tools-" + [guid]::NewGuid().ToString('N'))))
+        [void](New-Item -ItemType Directory -Path $ownedRoot -Force)
+        $invalidValues = @(
+            [pscustomobject]@{ Name = 'empty'; Value = '' },
+            [pscustomobject]@{ Name = 'whitespace'; Value = '   ' },
+            [pscustomobject]@{ Name = 'relative'; Value = 'relative-root' },
+            [pscustomobject]@{ Name = 'invalid-path'; Value = [string][char]0 },
+            [pscustomobject]@{ Name = 'non-string'; Value = [pscustomobject]@{ path = $ownedRoot } }
+        )
+        if ($IsWindows) {
+            $invalidValues += [pscustomobject]@{ Name = 'drive-relative'; Value = 'C:relative-root' }
+            $invalidValues += [pscustomobject]@{ Name = 'root-relative'; Value = [IO.Path]::DirectorySeparatorChar + 'root-relative' }
+        }
+
+        foreach ($invalidValue in $invalidValues) {
+            $badRoot = $invalidValue.Value
+            { Resolve-CorePesterSetupOwnedRoot -OwnedRoot $ownedRoot -NamespacedRoot $badRoot -LegacyRoot $ownedRoot } |
+                Should -Throw -Because "namespaced value '$($invalidValue.Name)' must not be masked by the legacy value"
+            { Resolve-CorePesterSetupOwnedRoot -OwnedRoot $ownedRoot -NamespacedRoot $ownedRoot -LegacyRoot $badRoot } |
+                Should -Throw -Because "legacy value '$($invalidValue.Name)' must not be masked by the namespaced value"
+        }
+    }
+}
+
 Describe 'Consumed Core process bootstrap signal' {
     # Scenario: The owned bootstrap has released the child before its snapshot is bound.
     # Purpose: Remove only the exact consumed transport file while hashing every source byte.

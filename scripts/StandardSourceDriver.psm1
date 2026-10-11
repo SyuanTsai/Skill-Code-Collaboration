@@ -138,6 +138,27 @@ function Assert-CodeSourceRunRequest {
     return 'SourceValidation'
 }
 
+function New-CodeSourcePesterSetupEnvironment {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string] $OwnedRoot)
+
+    if ([string]::IsNullOrWhiteSpace($OwnedRoot) -or -not [IO.Path]::IsPathFullyQualified($OwnedRoot)) {
+        throw 'Pester setup root must be a non-empty fully qualified path.'
+    }
+    try {
+        $fullOwnedRoot = [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($OwnedRoot))
+    }
+    catch {
+        throw 'Pester setup root must be a resolvable fully qualified path.'
+    }
+    if ([string]::IsNullOrWhiteSpace($fullOwnedRoot)) {
+        throw 'Pester setup root must be a non-empty fully qualified path.'
+    }
+    return @{
+        STANDARD_VALIDATION_RUN_OWNED_ROOT = $fullOwnedRoot
+    }
+}
+
 function New-CodeSourceFrozenFileInventory {
     [CmdletBinding()]
     param(
@@ -826,4 +847,4 @@ function New-CodeCoreAdapterV2 {
     }
 }
 
-Export-ModuleMember -Function Get-PreparedSourceAuthorityPin, Assert-CodeSourceAuthorityConfig, Assert-CodeSourceRunRequest, New-CodeSourceFrozenFileInventory, Assert-CodeSourceProtectedDispatchFiles, Assert-CodeSourceProtectedRuntimeCopies, Assert-CodeSourcePreparedBindings, Assert-CodeSourceAuthorityToolchain, Assert-CodeSourceReportBinding, New-CodeCoreAdapterV2
+Export-ModuleMember -Function Get-PreparedSourceAuthorityPin, Assert-CodeSourceAuthorityConfig, Assert-CodeSourceRunRequest, New-CodeSourcePesterSetupEnvironment, New-CodeSourceFrozenFileInventory, Assert-CodeSourceProtectedDispatchFiles, Assert-CodeSourceProtectedRuntimeCopies, Assert-CodeSourcePreparedBindings, Assert-CodeSourceAuthorityToolchain, Assert-CodeSourceReportBinding, New-CodeCoreAdapterV2
