@@ -319,7 +319,7 @@ jobs:
           $physicalRootItem = $selectedRootItem
           if (($selectedRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             $physicalRootItem = $selectedRootItem.ResolveLinkTarget($true)
-            if ($null -eq $physicalRootItem -or -not $physicalRootItem.Exists -or -not $physicalRootItem.PSIsContainer) {
+            if ($null -eq $physicalRootItem -or $physicalRootItem -isnot [IO.DirectoryInfo] -or -not $physicalRootItem.Exists) {
               throw "The selected Go runtime root junction could not be resolved: $selectedGoRoot"
             }
           }
@@ -336,6 +336,7 @@ jobs:
           $selectedGoSha256 = Get-GoRuntimeRawSha256 -Path $selectedGoPath
           $sourceGoSha256 = Get-GoRuntimeRawSha256 -Path $sourceGoPath
           if ($selectedGoSha256 -cne $sourceGoSha256) { throw 'The selected and physical-root Go executables have different bytes.' }
+          $env:GOROOT = $physicalSourceRoot
           $versionOutput = @(& $selectedGoPath version)
           $versionExitCode = $LASTEXITCODE
           $versionParts = if ($versionOutput.Count -eq 1) { ([string]$versionOutput[0]).Split(' ') } else { @() }
@@ -382,6 +383,7 @@ jobs:
           $materializedGoPath = [IO.Path]::GetFullPath((Join-Path $materializedRoot 'bin/go.exe'))
           $materializedGoSha256 = Get-GoRuntimeRawSha256 -Path $materializedGoPath
           if ($materializedGoSha256 -cne $selectedGoSha256) { throw 'The materialized go.exe does not match PATH-first Go.' }
+          $env:GOROOT = $materializedRoot
           $materializedVersionOutput = @(& $materializedGoPath version)
           $materializedExitCode = $LASTEXITCODE
           if ($materializedExitCode -ne 0 -or $materializedVersionOutput.Count -ne 1 -or
