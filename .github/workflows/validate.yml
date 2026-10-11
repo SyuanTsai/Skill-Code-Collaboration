@@ -209,6 +209,103 @@ jobs:
           }
           [IO.File]::AppendAllText($env:GITHUB_ENV, "STANDARD_GO_RUNTIME_VERSION=$($Matches.version)`n", [Text.UTF8Encoding]::new($false))
 
+      - name: Set up approved Node runtime
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.21.0'
+          architecture: 'x64'
+          package-manager-cache: false
+
+      - name: Verify resolved Node and npm runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expectedNodeVersion = '24.21.0'
+          $expectedNpmVersion = '11.19.0'
+          $expectedNodeSha256 = 'ba4e6d110e8c1592a1ecd390f6b05f3da124b13871a5be62b341a07a853c6c32'
+          $runRoot = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'code-collaboration'))
+          if (-not (Test-Path -LiteralPath $runRoot -PathType Container)) {
+            throw "The source-validation evidence root is missing: $runRoot"
+          }
+          $identityPath = Join-Path $runRoot 'runtime-identity.json'
+          $indexPath = Join-Path $runRoot 'evidence-index.json'
+          if (Test-Path -LiteralPath $identityPath) { throw 'The Node/npm runtime identity already exists for this job.' }
+          if (-not (Test-Path -LiteralPath $indexPath -PathType Leaf)) { throw 'The source-validation evidence index is missing.' }
+
+          $nodeCommand = Get-Command -Name 'node' -CommandType Application -All -ErrorAction Stop | Select-Object -First 1
+          $npmCommand = Get-Command -Name 'npm.cmd' -CommandType Application -All -ErrorAction Stop | Select-Object -First 1
+          if ($null -eq $nodeCommand -or $null -eq $npmCommand) { throw 'The PATH-first Node or npm application was not found.' }
+          $nodePathValue = if ($null -ne $nodeCommand.PSObject.Properties['Path']) { [string]$nodeCommand.Path } else { [string]$nodeCommand.Source }
+          $npmPathValue = if ($null -ne $npmCommand.PSObject.Properties['Path']) { [string]$npmCommand.Path } else { [string]$npmCommand.Source }
+          $nodePath = [IO.Path]::GetFullPath($nodePathValue)
+          $npmPath = [IO.Path]::GetFullPath($npmPathValue)
+          $runtimeRoot = [IO.Path]::GetDirectoryName($nodePath)
+          $npmRuntimeRoot = [IO.Path]::GetDirectoryName($npmPath)
+          if ([IO.Path]::GetFileName($nodePath) -cne 'node.exe' -or [IO.Path]::GetFileName($npmPath) -cne 'npm.cmd' -or
+              -not $runtimeRoot.Equals($npmRuntimeRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'PATH-first node.exe and npm.cmd must be in the same approved Node runtime root.'
+          }
+
+          $nodeVersionOutput = @(& $nodePath --version)
+          $nodeExitCode = $LASTEXITCODE
+          if ($nodeExitCode -ne 0 -or $nodeVersionOutput.Count -ne 1 -or
+              [string]$nodeVersionOutput[0] -cne "v$expectedNodeVersion") {
+            throw "The PATH-first Node runtime must be v$expectedNodeVersion. Evidence='$($nodeVersionOutput -join ' | ')'; exit=$nodeExitCode."
+          }
+          $npmVersionOutput = @(& $npmPath --version)
+          $npmExitCode = $LASTEXITCODE
+          if ($npmExitCode -ne 0 -or $npmVersionOutput.Count -ne 1 -or
+              [string]$npmVersionOutput[0] -cne $expectedNpmVersion) {
+            throw "The PATH-first npm runtime must be $expectedNpmVersion. Evidence='$($npmVersionOutput -join ' | ')'; exit=$npmExitCode."
+          }
+
+          $npmCliPath = [IO.Path]::GetFullPath((Join-Path $runtimeRoot 'node_modules/npm/bin/npm-cli.js'))
+          $npmPackagePath = [IO.Path]::GetFullPath((Join-Path $runtimeRoot 'node_modules/npm/package.json'))
+          foreach ($path in @($nodePath, $npmPath, $npmCliPath, $npmPackagePath)) {
+            $item = Get-Item -Force -LiteralPath $path -ErrorAction Stop
+            if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw "The approved Node/npm runtime identity must be a regular non-reparse file: $path"
+            }
+          }
+          $npmPackage = Get-Content -LiteralPath $npmPackagePath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+          if ([string]$npmPackage.name -cne 'npm' -or [string]$npmPackage.version -cne $expectedNpmVersion) {
+            throw 'The npm package metadata does not match the approved PATH-first npm version.'
+          }
+          $nodeSha256 = (Get-FileHash -LiteralPath $nodePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($nodeSha256 -cne $expectedNodeSha256) { throw 'The PATH-first Node executable does not match the approved official SHA-256.' }
+
+          $runtimeIdentity = [ordered]@{
+            schemaVersion = 1
+            recordedAtUtc = [DateTime]::UtcNow.ToString('o')
+            runtimeRoot = $runtimeRoot
+            nodePath = $nodePath
+            nodeVersion = [string]$nodeVersionOutput[0]
+            nodeSha256 = $nodeSha256
+            npmCommand = 'npm.cmd'
+            npmPath = $npmPath
+            npmVersion = [string]$npmVersionOutput[0]
+            npmPackageVersion = [string]$npmPackage.version
+            npmCliPath = $npmCliPath
+            npmPackageJsonPath = $npmPackagePath
+            files = [ordered]@{
+              node = [ordered]@{ path = $nodePath; sha256 = $nodeSha256 }
+              npmCommand = [ordered]@{ path = $npmPath; sha256 = (Get-FileHash -LiteralPath $npmPath -Algorithm SHA256).Hash.ToLowerInvariant() }
+              npmCli = [ordered]@{ path = $npmCliPath; sha256 = (Get-FileHash -LiteralPath $npmCliPath -Algorithm SHA256).Hash.ToLowerInvariant() }
+              npmPackageJson = [ordered]@{ path = $npmPackagePath; sha256 = (Get-FileHash -LiteralPath $npmPackagePath -Algorithm SHA256).Hash.ToLowerInvariant() }
+            }
+          }
+          $identityJson = ($runtimeIdentity | ConvertTo-Json -Depth 20 -Compress) + "`n"
+          $identityBytes = [Text.UTF8Encoding]::new($false).GetBytes($identityJson)
+          $identityStream = [IO.File]::Open($identityPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+          try { $identityStream.Write($identityBytes, 0, $identityBytes.Length) }
+          finally { $identityStream.Dispose() }
+
+          $evidenceIndex = Get-Content -LiteralPath $indexPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+          if ([int]$evidenceIndex.schemaVersion -ne 1) { throw 'The source-validation evidence index schema is unexpected.' }
+          $evidenceIndex | Add-Member -NotePropertyName runtimeIdentityPath -NotePropertyValue $identityPath -Force
+          $evidenceIndex | Add-Member -NotePropertyName runtimeIdentitySha256 -NotePropertyValue (Get-FileHash -LiteralPath $identityPath -Algorithm SHA256).Hash.ToLowerInvariant() -Force
+          [IO.File]::WriteAllText($indexPath, (($evidenceIndex | ConvertTo-Json -Depth 20 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+
       - name: Prepare source tools once
         shell: pwsh
         env:

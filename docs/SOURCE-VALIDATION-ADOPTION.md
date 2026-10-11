@@ -6,6 +6,18 @@ SPDX-License-Identifier: Apache-2.0
 
 The required Windows CI gate runs protected full-source validation for the active `config/standard-v1.json` ff85 authority tuple and its complete 32-file closure. The workflow checks out the immutable event-base driver, clean candidate, and verified ff85 authority Git tree separately, then performs one fresh run-owned setup followed by full source validation with the same prepared `source-tools.json`. The legacy unqualified `Validate.ps1` route remains available as a historical regression path; it is not a substitute for the required gate.
 
+## Hosted Node/npm runtime
+
+The Windows gate pins its host runtime with `actions/setup-node` v7.1.0 at commit `949feb2413d6458794dcd2491c4babbbce0c15c1`, using Node `24.21.0` on `x64`. It disables setup-node's package-manager cache and does not configure a registry or mirror. Before native tool preparation, the workflow verifies the PATH-first `node.exe` and `npm.cmd`, requires both paths to share one runtime root, checks Node `v24.21.0`, npm `11.19.0`, and npm package metadata, and checks the Node executable against the official SHA-256 `ba4e6d110e8c1592a1ecd390f6b05f3da124b13871a5be62b341a07a853c6c32`. It writes the selected paths, versions, and raw SHA-256 values for `node.exe`, `npm.cmd`, `npm-cli.js`, and npm's `package.json` to `runner.temp/code-collaboration/runtime-identity.json`, which is retained with the resolver receipts. The [official Node.js v24.21.0 release archive](https://nodejs.org/en/download/archive/v24.21.0) lists npm `11.19.0`; its [official SHA-256 manifest](https://nodejs.org/download/release/v24.21.0/SHASUMS256.txt) records `158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541` for `node-v24.21.0-win-x64.zip` and the executable hash above for `win-x64/node.exe`.
+
+This host pin addresses npm lock generation while the central resolver continues to select the latest stable `skill-tools` package under its existing policy. A controlled comparison resolved the same `skill-tools@0.4.1` package and SHA-512 integrity with both Node/npm pairs: Node `22.23.3` / npm `10.9.9` produced an additional `standard-validation-npm-work=file:../npm-environment` root dependency that the central lock validator rejected, while Node `24.21.0` / npm `11.19.0` produced a lock accepted by that validator. The hosted failed lock was not retained, so this is a controlled runtime comparison rather than a byte-for-byte replay of that hosted failure.
+
+### Updating the hosted Node/npm runtime
+
+Changing either pinned version requires the same npm lock comparison against the immutable ff85 resolver and lock validator, including the resolved `skill-tools` version/integrity and resulting root dependency shape. Update the version and executable identity together from the official release archive and signed checksum material, then pass the focused workflow regression, exact-head CI, and a fresh complete full-source validation before adopting the change. A passing npm experiment alone does not establish that the hosted gate is ready.
+
+## Local full-source validation
+
 Use the verified ff85 authority Git checkout and an immutable event-base commit. Check out that base separately as the trusted driver, with its Git HEAD equal to the base commit. The candidate is a separate clean Git checkout containing the active approved ff85 authority configuration. Both checkouts must preserve the committed bytes; on Windows, use `core.autocrlf=false` and `core.eol=lf` before checkout. Prepare a fresh run-owned tool closure once, then execute source validation with that same prepared file:
 
 ```powershell
