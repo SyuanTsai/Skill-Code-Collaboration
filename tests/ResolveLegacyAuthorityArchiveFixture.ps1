@@ -68,16 +68,35 @@ if (-not (Test-Path -LiteralPath $toolchainFullPath -PathType Leaf) -or (Get-Fil
     throw 'Legacy archive fixture toolchain path or SHA-256 differs from its CLI binding.'
 }
 
-$configPath = Join-Path $root 'config/standard-v1.json'
-$config = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -Depth 30 -ErrorAction Stop
-$authority = $config.authority
+$validatePath = Join-Path $root 'scripts/Validate.ps1'
+$validateSource = Get-Content -LiteralPath $validatePath -Raw -Encoding UTF8 -ErrorAction Stop
+$commitMatch = [regex]::Match($validateSource, "(?m)^\`$script:AuthorityCommit\s*=\s*'(?<value>[0-9a-f]{40})'\s*$")
+$archiveMatch = [regex]::Match($validateSource, "(?m)^\`$script:AuthorityArchiveSha256\s*=\s*'(?<value>[0-9a-f]{64})'\s*$")
+$filesBlock = [regex]::Match($validateSource, '(?ms)^\$script:AuthorityFiles\s*=\s*\[ordered\]@\{\r?\n(?<body>.*?)^\}')
+if (-not $commitMatch.Success -or -not $archiveMatch.Success -or -not $filesBlock.Success) {
+    throw 'Protected Validate.ps1 does not expose the independent legacy authority tuple and dictionary.'
+}
+$legacyFiles = [ordered]@{}
+$fileMatches = [regex]::Matches($filesBlock.Groups['body'].Value, '(?m)^\s*''(?<path>[^'']+)''\s*=\s*''(?<sha>[0-9a-f]{64})''\s*$')
+foreach ($fileMatch in $fileMatches) {
+    $relative = $fileMatch.Groups['path'].Value
+    if ($legacyFiles.Contains($relative)) { throw 'Protected Validate.ps1 legacy authority dictionary repeats a path.' }
+    $legacyFiles[$relative] = $fileMatch.Groups['sha'].Value
+}
+$authority = [pscustomobject]@{
+    repository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
+    commit = $commitMatch.Groups['value'].Value
+    archiveUrl = "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/$($commitMatch.Groups['value'].Value)"
+    archiveSha256 = $archiveMatch.Groups['value'].Value
+    files = @($legacyFiles.GetEnumerator() | ForEach-Object { [pscustomobject]@{ path = [string]$_.Key; sha256 = [string]$_.Value } })
+}
 $expectedCommit = '8aabd22694a05771f98639f6d726cc9a620eb94b'
 $expectedArchiveSha256 = 'd92df1a8f0aa342970dc9c66a77b6211955b4708de12119cb7f9a360fd265311'
 $expectedRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
 if ([string]$authority.repository -cne $expectedRepository -or [string]$authority.commit -cne $expectedCommit -or
     [string]$authority.archiveUrl -cne "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/$expectedCommit" -or
     [string]$authority.archiveSha256 -cne $expectedArchiveSha256 -or $authority.files -isnot [array] -or @($authority.files).Count -ne 26) {
-    throw 'Legacy archive fixture requires the exact active 8a repository, commit, archive digest and 26-file closure.'
+    throw 'Legacy archive fixture requires the exact protected 8a repository, commit, archive digest and 26-file closure.'
 }
 
 $entries = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)

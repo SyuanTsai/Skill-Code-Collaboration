@@ -10,19 +10,20 @@ This repository is versioned independently from any consumer repository. Use Sem
 
 ## Release checklist
 
-1. Run `pwsh -File ./scripts/Validate.ps1` as the single public entry point for the complete Standard v1 gate.
-2. The repository contract diagnostic and profile catalog regression suite remain internal components, not additional release commands.
-3. Run the source-pin metadata helper for the candidate ref and retain the reported commit and content SHA-256 in release evidence.
-4. Confirm `catalog/profiles.json` exposes only the intended Skills and profiles.
-5. Confirm the Copilot profile selects only `write-copilot-implementation-prompt`.
-6. Merge the release commit to `main`.
-7. Create an annotated release tag matching `VERSION`, for example `v0.1.0`.
-8. Resolve that tag to its immutable 40-character commit SHA and generate the source content hash again from the tagged commit.
-9. Consumers pin the tag, resolved commit SHA, and content SHA-256; they must not rely on a mutable branch alone.
+1. Pass the required Windows `canonical-validation` workflow, which runs protected full-source validation from the immutable event-base driver against the candidate and verified ff85/32 authority checkout.
+2. For a local release preflight, invoke `scripts/Validate.ps1` through the trusted event-base driver with `-PrepareSourceTools` once, then `-SourceValidation` using the same fresh `source-tools.json`, clean candidate, and verified authority checkout. Use `-TimeoutSeconds 10800`; the 1200-second target remains diagnostic only.
+3. The repository contract diagnostic and profile catalog regression suite remain internal components, not additional release commands.
+4. Run the source-pin metadata helper for the candidate ref and retain the reported commit and content SHA-256 in release evidence.
+5. Confirm `catalog/profiles.json` exposes only the intended Skills and profiles.
+6. Confirm the Copilot profile selects only `write-copilot-implementation-prompt`.
+7. Merge the release commit to `main`.
+8. Create an annotated release tag matching `VERSION`, for example `v0.1.0`.
+9. Resolve that tag to its immutable 40-character commit SHA and generate the source content hash again from the tagged commit.
+10. Consumers pin the tag, resolved commit SHA, and content SHA-256; they must not rely on a mutable branch alone.
 
-## Protected source-validation adoption
+## Required protected full-source gate
 
-The protected source-validation route is optional adoption material for a future candidate with the exact approved ff85 authority tuple; it is not part of the current required workflow gate. See [Protected source-validation adoption](SOURCE-VALIDATION-ADOPTION.md) for its commands, timing records, and evidence requirements.
+The active `config/standard-v1.json` authority is the exact ff85 commit, archive digest, and ordered 32-file closure. The required workflow prepares one fresh run-owned tool closure and uses it for the full Core source validation. It uploads the Core report, Pester case inventory, native raw outputs, resolver receipts, and timing evidence while omitting the bulky installed runtime/tool payloads. See [Protected full-source validation](SOURCE-VALIDATION-ADOPTION.md) for the exact commands, timing records, and evidence requirements.
 
 ## Pin invariants
 

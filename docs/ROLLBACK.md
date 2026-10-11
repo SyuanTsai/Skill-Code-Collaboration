@@ -22,6 +22,8 @@ If a released change must be reverted, create a new commit that restores the pre
 
 Consumers must treat an unavailable or uninstalled Skill as absent. They must not assume a direct `skills/...` path exists merely because a related workflow exists in another source repository.
 
-## Protected source-validation fallback
+## Protected full-source gate rollback
 
-The source-validation adoption route is opt-in and is not yet a required CI gate. If its preparation or validation fails, retain the setup receipts, raw process output, Core report, stage timing file, completed setup timing file, and source-validation timing file for diagnosis, then continue using the established Standard v1 route with `pwsh -File ./scripts/Validate.ps1` and the active 8a authority pin. Do not reuse a prepared `source-tools.json` after changing the candidate, authority checkout, runtime, or tool closure; create a new run-owned preparation. To roll back an adopted repository change, revert it in a new commit and restore the previous approved authority/source pin through the normal release process.
+The current required CI gate is the protected full-source route with the active ff85/32 authority tuple. If preparation or validation fails, retain the setup receipts, raw process output, Core report, Pester case inventory, stage timing file, completed setup timing file, and source-validation timing file; the required check must remain failed until a reviewed fix passes. Do not reuse a prepared `source-tools.json` after changing the candidate, authority checkout, runtime, or tool closure; create a fresh run-owned preparation.
+
+To roll the repository back to the previous 8a behavior, revert the Phase B activation in a new reviewed commit so the active config and CI route are restored together. Do not treat the unqualified `pwsh -File ./scripts/Validate.ps1` legacy route as a successful substitute for the current required gate. Release tags remain immutable.

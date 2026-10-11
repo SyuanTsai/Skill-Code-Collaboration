@@ -24,10 +24,16 @@ jobs:
     # validation command.
     env:
       CHECKOUT_ACTION_REFERENCE: &checkout-action-reference actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - name: Checkout protected base driver
         uses: *checkout-action-reference # actions/checkout v7
+        env:
+          GIT_CONFIG_COUNT: 2
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: 'false'
+          GIT_CONFIG_KEY_1: core.eol
+          GIT_CONFIG_VALUE_1: lf
         with:
           ref: ${{ github.event.pull_request.base.sha || (github.event.before != '0000000000000000000000000000000000000000' && github.event.before) || github.sha }}
           fetch-depth: 0
@@ -35,13 +41,19 @@ jobs:
 
       - name: Checkout immutable candidate
         uses: *checkout-action-reference # actions/checkout v7
+        env:
+          GIT_CONFIG_COUNT: 2
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: 'false'
+          GIT_CONFIG_KEY_1: core.eol
+          GIT_CONFIG_VALUE_1: lf
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: candidate
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Checkout immutable legacy 8a authority fixture
+      - name: Checkout immutable ff85 authority fixture
         uses: *checkout-action-reference # actions/checkout v7
         env:
           GIT_CONFIG_COUNT: 2
@@ -51,42 +63,92 @@ jobs:
           GIT_CONFIG_VALUE_1: lf
         with:
           repository: SyuanTsai/SyuanTsai-AI-Instructions
-          ref: 8aabd22694a05771f98639f6d726cc9a620eb94b
-          path: authority-8a
-          fetch-depth: 1
+          ref: ff85d5f80fe795b96354e753074b5ce59ad04ecd
+          path: authority-ff85
+          fetch-depth: 0
           persist-credentials: false
 
-      - name: Verify immutable legacy 8a authority fixture
+      - name: Verify immutable event base, candidate and ff85 authority
         shell: pwsh
+        env:
+          PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PULL_REQUEST_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $authorityRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'authority-8a'))
+          $baseRoot = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
           $candidateRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'candidate'))
+          $authorityRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'authority-ff85'))
+          $runRoot = Join-Path $env:RUNNER_TEMP 'code-collaboration'
+          [void](New-Item -ItemType Directory -Path $runRoot -Force)
+          $sourceToolsPath = [IO.Path]::GetFullPath((Join-Path (Join-Path $runRoot 'source-tools') 'source-tools.json'))
+          $artifactsRoot = [IO.Path]::GetFullPath((Join-Path $runRoot 'core-v2'))
+          $eventName = $env:GITHUB_EVENT_NAME
+          $pullBase = [string]$env:PULL_REQUEST_BASE_SHA
+          $pushBefore = [string]$env:PUSH_BEFORE_SHA
+          $baseCommit = if ($eventName -eq 'pull_request') { $pullBase }
+            elseif ($eventName -eq 'push' -and -not [string]::IsNullOrWhiteSpace($pushBefore) -and $pushBefore -notmatch '^0+$') { $pushBefore }
+            else { '' }
+          $driverCommit = if ([string]::IsNullOrWhiteSpace($baseCommit)) { [string]$env:GITHUB_SHA } else { $baseCommit }
+          $candidateCommit = if ($eventName -eq 'pull_request') { [string]$env:PULL_REQUEST_HEAD_SHA } else { [string]$env:GITHUB_SHA }
+          $envLines = @(
+            "CODE_SOURCE_BASE_COMMIT=$baseCommit",
+            "CODE_SOURCE_DRIVER_COMMIT=$driverCommit",
+            "CODE_SOURCE_CANDIDATE_COMMIT=$candidateCommit",
+            "CODE_SOURCE_TOOLS_PATH=$sourceToolsPath",
+            "CODE_SOURCE_ARTIFACTS_ROOT=$artifactsRoot"
+          ) -join "`n"
+          [IO.File]::AppendAllText($env:GITHUB_ENV, "$envLines`n", [Text.UTF8Encoding]::new($false))
+          $initialIndex = [ordered]@{
+            schemaVersion = 1; state = 'checkout-verified'; eventName = $eventName
+            baseCommit = $baseCommit; protectedDriverCommit = $driverCommit; candidateCommit = $candidateCommit
+            authorityCommit = 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
+            sourceToolsPath = $sourceToolsPath; artifactsRoot = $artifactsRoot
+          }
+          [IO.File]::WriteAllText((Join-Path $runRoot 'evidence-index.json'), (($initialIndex | ConvertTo-Json -Depth 10 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
           $expectedRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-          $expectedCommit = '8aabd22694a05771f98639f6d726cc9a620eb94b'
-          $expectedArchiveSha256 = 'd92df1a8f0aa342970dc9c66a77b6211955b4708de12119cb7f9a360fd265311'
+          $expectedCommit = 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
+          $expectedArchiveSha256 = '3dc38613f2e2316ad8fcc79d4bf48d0b03fd8398f8dacc72d156abcbce95ea9d'
+
+          $baseHead = ((& git -C $baseRoot rev-parse HEAD 2>$null) -join "`n").Trim()
+          if ($LASTEXITCODE -ne 0 -or $baseHead -cne $driverCommit) { throw 'Protected base checkout does not match the selected event-base driver commit.' }
+          $baseStatus = @(& git -C $baseRoot status --porcelain=v1 --untracked-files=no 2>$null)
+          if ($LASTEXITCODE -ne 0 -or $baseStatus.Count -ne 0) { throw 'Protected base checkout has tracked changes.' }
+          $candidateHead = ((& git -C $candidateRoot rev-parse HEAD 2>$null) -join "`n").Trim()
+          if ($LASTEXITCODE -ne 0 -or $candidateHead -cne $candidateCommit) { throw 'Candidate checkout does not match the immutable event candidate commit.' }
+          $candidateStatus = @(& git -C $candidateRoot status --porcelain=v1 --untracked-files=all 2>$null)
+          if ($LASTEXITCODE -ne 0 -or $candidateStatus.Count -ne 0) { throw 'Candidate checkout is not clean.' }
+          if (-not [string]::IsNullOrWhiteSpace($baseCommit)) {
+            if ($baseCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'Event base commit is not one immutable 40-character SHA.' }
+            $resolvedBase = ((& git -C $candidateRoot rev-parse --verify "$baseCommit^{commit}" 2>$null) -join "`n").Trim()
+            if ($LASTEXITCODE -ne 0 -or $resolvedBase -cne $baseCommit -or $resolvedBase -ceq $candidateCommit) {
+              throw 'A supplied BaseCommit must resolve to a distinct candidate ancestor.'
+            }
+            & git -C $candidateRoot merge-base --is-ancestor $resolvedBase $candidateCommit
+            if ($LASTEXITCODE -ne 0) { throw 'A supplied BaseCommit is not an ancestor of the immutable candidate.' }
+          }
           $config = Get-Content -LiteralPath (Join-Path $candidateRoot 'config/standard-v1.json') -Raw | ConvertFrom-Json -Depth 20
           $authority = $config.authority
           if ($authority.repository -cne $expectedRepository -or $authority.commit -cne $expectedCommit -or
               $authority.archiveUrl -cne "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/$expectedCommit" -or
-              $authority.archiveSha256 -cne $expectedArchiveSha256 -or @($authority.files).Count -ne 26) {
-            throw 'The active config is not the exact approved legacy 8a authority tuple.'
+              $authority.archiveSha256 -cne $expectedArchiveSha256 -or @($authority.files).Count -ne 32) {
+            throw 'The candidate config is not the exact approved ff85 authority tuple.'
           }
           $gitRoot = ((& git -C $authorityRoot rev-parse --show-toplevel 2>$null) -join "`n").Trim()
           if ($LASTEXITCODE -ne 0 -or [IO.Path]::GetFullPath($gitRoot) -cne $authorityRoot) {
-            throw 'The legacy authority fixture is not the root of a Git checkout.'
+            throw 'The ff85 authority fixture is not the root of a Git checkout.'
           }
           $head = ((& git -C $authorityRoot rev-parse HEAD 2>$null) -join "`n").Trim()
-          if ($LASTEXITCODE -ne 0 -or $head -cne $expectedCommit) { throw 'The legacy authority fixture has the wrong Git HEAD.' }
+          if ($LASTEXITCODE -ne 0 -or $head -cne $expectedCommit) { throw 'The ff85 authority fixture has the wrong Git HEAD.' }
           $originUrls = @(& git -C $authorityRoot remote get-url --all origin 2>$null)
           if ($LASTEXITCODE -ne 0 -or $originUrls.Count -ne 1) { throw 'The legacy authority fixture must have exactly one origin URL.' }
           $normalizedOrigin = ([string]$originUrls[0]).TrimEnd('/') -replace '\.git$', ''
           $normalizedExpectedRepository = $expectedRepository.TrimEnd('/') -replace '\.git$', ''
-          if ($normalizedOrigin -cne $normalizedExpectedRepository) { throw 'The legacy authority fixture has the wrong origin.' }
+          if ($normalizedOrigin -cne $normalizedExpectedRepository) { throw 'The ff85 authority fixture has the wrong origin.' }
           $status = @(& git -C $authorityRoot status --porcelain=v1 --untracked-files=all 2>$null)
-          if ($LASTEXITCODE -ne 0 -or $status.Count -ne 0) { throw 'The legacy authority fixture is not clean.' }
+          if ($LASTEXITCODE -ne 0 -or $status.Count -ne 0) { throw 'The ff85 authority fixture is not clean.' }
           $treeRecords = @(& git -C $authorityRoot ls-tree -r --full-tree --format='%(objectmode)%x09%(objectname)%x09%(path)' $expectedCommit 2>$null)
-          if ($LASTEXITCODE -ne 0) { throw 'Could not read the legacy authority HEAD Git tree.' }
+          if ($LASTEXITCODE -ne 0) { throw 'Could not read the ff85 authority HEAD Git tree.' }
           $gitEntries = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
           foreach ($record in $treeRecords) {
             $firstSeparator = $record.IndexOf([char]9)
@@ -116,16 +178,16 @@ jobs:
             $path = [IO.Path]::GetFullPath((Join-Path $authorityRoot $relativePath))
             if (-not $path.StartsWith($rootPrefix, $pathComparison) -or -not (Test-Path -LiteralPath $path -PathType Leaf) -or
                 (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$entry.sha256) {
-              throw "Legacy authority fixture file identity differs: $relativePath"
+              throw "ff85 authority fixture file identity differs: $relativePath"
             }
             if (-not $gitEntries.ContainsKey($relativePath)) { throw "The legacy authority HEAD Git tree omits an approved path: $relativePath" }
             $gitEntry = $gitEntries[$relativePath]
             if ([string]$gitEntry.mode -cne '100644' -or [string]$gitEntry.objectId -cnotmatch '^[0-9a-f]{40}$') {
-              throw "The legacy authority HEAD Git entry has an unexpected mode or object ID: $relativePath"
+              throw "The ff85 authority HEAD Git entry has an unexpected mode or object ID: $relativePath"
             }
             $blobObjectId = ((& git -C $authorityRoot hash-object --no-filters -- $relativePath 2>$null) -join "`n").Trim()
             if ($LASTEXITCODE -ne 0 -or $blobObjectId -cne [string]$gitEntry.objectId) {
-              throw "Legacy authority raw bytes differ from the HEAD Git blob: $relativePath"
+              throw "ff85 authority raw bytes differ from the HEAD Git blob: $relativePath"
             }
           }
 
@@ -145,31 +207,192 @@ jobs:
               [string]$versionOutput[0] -notmatch '^go version go(?<version>[0-9]+\.[0-9]+\.[0-9]+) [^\s]+/[^\s]+$') {
             throw "setup-go did not provide one stable Go runtime version. Evidence='$($versionOutput -join ' | ')'"
           }
-          "STANDARD_GO_RUNTIME_VERSION=$($Matches.version)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          [IO.File]::AppendAllText($env:GITHUB_ENV, "STANDARD_GO_RUNTIME_VERSION=$($Matches.version)`n", [Text.UTF8Encoding]::new($false))
 
-      - name: Run canonical Standard v1 validation
+      - name: Prepare source tools once
         shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-          PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          PUSH_BEFORE_SHA: ${{ github.event.before }}
-          SYP154_CANDIDATE_AUTHORITY_ROOT: ${{ github.workspace }}/authority-8a
+          SYP154_CANDIDATE_AUTHORITY_ROOT: ${{ github.workspace }}/authority-ff85
         run: |
           $ErrorActionPreference = 'Stop'
+          $baseRoot = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
           $candidateRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'candidate'))
-          $baseCommit = if ($env:GITHUB_EVENT_NAME -eq 'pull_request') {
-            $env:PULL_REQUEST_BASE_SHA
+          $authorityRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'authority-ff85'))
+          $protectedDriver = Join-Path $baseRoot 'scripts/Validate.ps1'
+          $candidateCommit = [string]$env:CODE_SOURCE_CANDIDATE_COMMIT
+          $sourceToolsPath = [IO.Path]::GetFullPath($env:CODE_SOURCE_TOOLS_PATH)
+          $baseCommit = [string]$env:CODE_SOURCE_BASE_COMMIT
+          $baseArguments = @()
+          if (-not [string]::IsNullOrWhiteSpace($baseCommit)) { $baseArguments = @('-BaseCommit', $baseCommit) }
+          $supervisor = Join-Path $authorityRoot 'scripts/Invoke-StandardValidation.ps1'
+          $supervisorSha256 = (Get-FileHash -LiteralPath $supervisor -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($supervisorSha256 -cne 'a4ee880810171428a6abd2e8fd5db2da1eaeda4abc0fc6c72dc259b4a709174b') { throw 'The ff85 process supervisor differs from its reviewed identity.' }
+          . $supervisor -DefineFunctionsOnly -CandidateRoot $candidateRoot -AdapterPath $protectedDriver `
+            -ArtifactsRoot (Split-Path -Parent $sourceToolsPath) -SourceRepository 'https://github.com/SyuanTsai/Skill-Code-Collaboration.git' `
+            -SourceRevision $candidateCommit -BaseRevision $(if ($baseCommit) { $baseCommit } else { $candidateCommit })
+          $pwshPath = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+          $commandArguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $protectedDriver,
+            '-RepositoryRoot', $candidateRoot, '-AdapterVersion', '2', '-PrepareSourceTools',
+            '-SourceToolsPath', $sourceToolsPath, '-AuthorityRepositoryRoot', $authorityRoot,
+            '-TrustedToolRoot', $PSHOME, '-ExpectedGoRuntimeVersion', $env:STANDARD_GO_RUNTIME_VERSION,
+            '-TimeoutSeconds', '10800') + $baseArguments
+          $ownedProcess = Invoke-StandardValidationProcess -Command $pwshPath -Arguments $commandArguments `
+            -WorkingDirectory $baseRoot -Environment @{} -TimeoutSeconds 10800 -CoreLifecycleOnly
+          $runRoot = Split-Path -Parent (Split-Path -Parent $sourceToolsPath)
+          $ownedProcess | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $runRoot 'source-tools-setup-process.json') -Encoding utf8NoBOM
+          [IO.File]::WriteAllText((Join-Path $runRoot 'source-tools-setup.stdout.txt'), [string]$ownedProcess.stdout, [Text.UTF8Encoding]::new($false))
+          [IO.File]::WriteAllText((Join-Path $runRoot 'source-tools-setup.stderr.txt'), [string]$ownedProcess.stderr, [Text.UTF8Encoding]::new($false))
+          if ($ownedProcess.cleanedUp -isnot [bool] -or -not $ownedProcess.cleanedUp) { throw 'Source setup process cleanup was not verified.' }
+          if ([string]$ownedProcess.status -cne 'passed' -or [int]$ownedProcess.exitCode -ne 0) { throw "Source tools preparation failed with status $($ownedProcess.status), exit $($ownedProcess.exitCode)." }
+          $prepared = Get-Content -LiteralPath $sourceToolsPath -Raw | ConvertFrom-Json -Depth 80
+          if ([string]$prepared.runId -cnotmatch '^[0-9a-f]{32}$' -or
+              [string]$prepared.sourceRevision -cne [string]$env:CODE_SOURCE_CANDIDATE_COMMIT -or
+              [string]$prepared.authorityRevision -cne 'ff85d5f80fe795b96354e753074b5ce59ad04ecd') {
+            throw 'Prepared source-tools metadata does not bind the immutable candidate and ff85 authority.'
           }
-          elseif ($env:GITHUB_EVENT_NAME -eq 'push' -and
-              -not [string]::IsNullOrWhiteSpace($env:PUSH_BEFORE_SHA) -and
-              $env:PUSH_BEFORE_SHA -notmatch '^0+$') {
-            $env:PUSH_BEFORE_SHA
+          $setupRoot = Split-Path -Parent $sourceToolsPath
+          $setupTimingPath = Join-Path ([string]$prepared.ownedRoot) 'setup-timing.json'
+          $setupTimingBindings = @($prepared.sourceValidation.frozenFiles | Where-Object {
+            [IO.Path]::GetFullPath([string]$_.path).Equals([IO.Path]::GetFullPath($setupTimingPath), [StringComparison]::OrdinalIgnoreCase)
+          })
+          if ($setupTimingBindings.Count -ne 1 -or -not (Test-Path -LiteralPath $setupTimingPath -PathType Leaf) -or
+              (Get-FileHash -LiteralPath $setupTimingPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$setupTimingBindings[0].sha256) {
+            throw 'Source setup stage timing evidence is missing or differs from its frozen binding.'
           }
-          else {
-            ''
+          $setupCompletedTimingPath = Join-Path $setupRoot "source-tools-setup-completed-$($prepared.runId).json"
+          if (-not (Test-Path -LiteralPath $setupCompletedTimingPath -PathType Leaf)) { throw "Source setup evidence is missing: $setupCompletedTimingPath" }
+          $runRoot = Split-Path -Parent $setupRoot
+          $indexPath = Join-Path $runRoot 'evidence-index.json'
+          $index = Get-Content -LiteralPath $indexPath -Raw | ConvertFrom-Json -Depth 20
+          $index | Add-Member -NotePropertyName runId -NotePropertyValue ([string]$prepared.runId) -Force
+          $index | Add-Member -NotePropertyName setupStatus -NotePropertyValue 'verified' -Force
+          $index | Add-Member -NotePropertyName setupTimingPath -NotePropertyValue $setupTimingPath -Force
+          $index | Add-Member -NotePropertyName setupCompletedTimingPath -NotePropertyValue (Join-Path $setupRoot "source-tools-setup-completed-$($prepared.runId).json") -Force
+          [IO.File]::WriteAllText($indexPath, (($index | ConvertTo-Json -Depth 20 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+
+      - name: Run full source validation
+        shell: pwsh
+        env:
+          SYP154_CANDIDATE_AUTHORITY_ROOT: ${{ github.workspace }}/authority-ff85
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $baseRoot = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+          $candidateRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'candidate'))
+          $authorityRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'authority-ff85'))
+          $protectedDriver = Join-Path $baseRoot 'scripts/Validate.ps1'
+          $sourceToolsPath = [IO.Path]::GetFullPath($env:CODE_SOURCE_TOOLS_PATH)
+          $artifactsRoot = [IO.Path]::GetFullPath($env:CODE_SOURCE_ARTIFACTS_ROOT)
+          $baseCommit = [string]$env:CODE_SOURCE_BASE_COMMIT
+          $baseArguments = @()
+          if (-not [string]::IsNullOrWhiteSpace($baseCommit)) { $baseArguments = @('-BaseCommit', $baseCommit) }
+          $candidateCommit = [string]$env:CODE_SOURCE_CANDIDATE_COMMIT
+          $supervisor = Join-Path $authorityRoot 'scripts/Invoke-StandardValidation.ps1'
+          $supervisorSha256 = (Get-FileHash -LiteralPath $supervisor -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($supervisorSha256 -cne 'a4ee880810171428a6abd2e8fd5db2da1eaeda4abc0fc6c72dc259b4a709174b') { throw 'The ff85 process supervisor differs from its reviewed identity.' }
+          . $supervisor -DefineFunctionsOnly -CandidateRoot $candidateRoot -AdapterPath $protectedDriver `
+            -ArtifactsRoot $artifactsRoot -SourceRepository 'https://github.com/SyuanTsai/Skill-Code-Collaboration.git' `
+            -SourceRevision $candidateCommit -BaseRevision $(if ($baseCommit) { $baseCommit } else { $candidateCommit })
+          $pwshPath = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+          $reportPath = Join-Path $artifactsRoot 'standard-core-validation-v2-report.json'
+          $commandArguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $protectedDriver,
+            '-RepositoryRoot', $candidateRoot, '-AdapterVersion', '2', '-SourceValidation',
+            '-SourceToolsPath', $sourceToolsPath, '-AuthorityRepositoryRoot', $authorityRoot,
+            '-TrustedToolRoot', $PSHOME, '-ArtifactsRoot', $artifactsRoot, '-OutputPath', $reportPath,
+            '-ExpectedGoRuntimeVersion', $env:STANDARD_GO_RUNTIME_VERSION, '-TimeoutSeconds', '10800') + $baseArguments
+          $ownedProcess = Invoke-StandardValidationProcess -Command $pwshPath -Arguments $commandArguments `
+            -WorkingDirectory $baseRoot -Environment @{} -TimeoutSeconds 10800 -CoreLifecycleOnly
+          $runRoot = Split-Path -Parent (Split-Path -Parent $sourceToolsPath)
+          $ownedProcess | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $runRoot 'source-validation-process.json') -Encoding utf8NoBOM
+          [IO.File]::WriteAllText((Join-Path $runRoot 'source-validation.stdout.txt'), [string]$ownedProcess.stdout, [Text.UTF8Encoding]::new($false))
+          [IO.File]::WriteAllText((Join-Path $runRoot 'source-validation.stderr.txt'), [string]$ownedProcess.stderr, [Text.UTF8Encoding]::new($false))
+          if ($ownedProcess.cleanedUp -isnot [bool] -or -not $ownedProcess.cleanedUp) { throw 'Source validation process cleanup was not verified.' }
+          if ([string]$ownedProcess.status -cne 'passed' -or [int]$ownedProcess.exitCode -ne 0) { throw "Full source validation failed with status $($ownedProcess.status), exit $($ownedProcess.exitCode)." }
+          $prepared = Get-Content -LiteralPath $sourceToolsPath -Raw | ConvertFrom-Json -Depth 80
+          $setupRoot = [IO.Path]::GetFullPath((Split-Path -Parent $sourceToolsPath))
+          $ownedRoot = [IO.Path]::GetFullPath([string]$prepared.ownedRoot)
+          $expectedOwnedRoot = [IO.Path]::GetFullPath((Join-Path $setupRoot "source-tools-$($prepared.runId)"))
+          if (-not $ownedRoot.Equals($expectedOwnedRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Prepared source tools are outside the expected run-owned setup root.'
           }
-          $outputPath = Join-Path $env:RUNNER_TEMP 'code-collaboration-conformance-report.json'
-          & ./scripts/Validate.ps1 -RepositoryRoot $candidateRoot -ArtifactsRoot $env:RUNNER_TEMP -BaseCommit $baseCommit -ExpectedGoRuntimeVersion $env:STANDARD_GO_RUNTIME_VERSION -OutputPath $outputPath
+          $setupTimingPath = Join-Path $ownedRoot 'setup-timing.json'
+          $setupCompletedTimingPath = Join-Path $setupRoot "source-tools-setup-completed-$($prepared.runId).json"
+          $setupTimingBindings = @($prepared.sourceValidation.frozenFiles | Where-Object {
+            [IO.Path]::GetFullPath([string]$_.path).Equals([IO.Path]::GetFullPath($setupTimingPath), [StringComparison]::OrdinalIgnoreCase)
+          })
+          if ($setupTimingBindings.Count -ne 1 -or -not (Test-Path -LiteralPath $setupTimingPath -PathType Leaf) -or
+              (Get-FileHash -LiteralPath $setupTimingPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$setupTimingBindings[0].sha256 -or
+              -not (Test-Path -LiteralPath $setupCompletedTimingPath -PathType Leaf)) {
+            throw 'Source setup timing evidence is missing or differs from its frozen run binding.'
+          }
+          $reportPath = Join-Path $artifactsRoot 'standard-core-validation-v2-report.json'
+          $sourceTimingPath = Join-Path (Split-Path -Parent $artifactsRoot) "source-validation-timing-$($prepared.runId).json"
+          foreach ($path in @($reportPath, $sourceTimingPath)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Source validation evidence is missing: $path" }
+          }
+          $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json -Depth 80
+          if ([string]$report.runId -cne [string]$prepared.runId -or [string]$report.state -cne 'PASS') {
+            throw 'The full Core source report does not show a passing result for the prepared run.'
+          }
+          $expectedCoreRunRoot = [IO.Path]::GetFullPath((Join-Path (Join-Path $artifactsRoot 'runs') ([string]$prepared.runId)))
+          $reportedCoreRunRoot = [IO.Path]::GetFullPath([string]$report.artifacts.runRoot)
+          $caseBinding = $report.sourceValidation.pesterCaseInventory
+          if (-not $reportedCoreRunRoot.Equals($expectedCoreRunRoot, [StringComparison]::OrdinalIgnoreCase) -or
+              $null -eq $caseBinding -or [string]::IsNullOrWhiteSpace([string]$caseBinding.path) -or
+              [string]$caseBinding.sha256 -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'The source report has no exact run-root-bound Pester case inventory.'
+          }
+          $caseLedgerPath = [IO.Path]::GetFullPath([string]$caseBinding.path)
+          $runRootPrefix = $reportedCoreRunRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+          if (-not $caseLedgerPath.StartsWith($runRootPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+              -not (Test-Path -LiteralPath $caseLedgerPath -PathType Leaf) -or
+              (Get-FileHash -LiteralPath $caseLedgerPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$caseBinding.sha256) {
+            throw 'The source report Pester case inventory is outside its Core run root or has a different hash.'
+          }
+          $caseLedger = Get-Content -LiteralPath $caseLedgerPath -Raw | ConvertFrom-Json -Depth 60
+          if ([int]$caseLedger.schemaVersion -ne 1 -or [string]$caseLedger.report -cne 'standard-core-pester-case-inventory-v1' -or
+              [string]$caseLedger.coreRunId -cne [string]$prepared.runId -or $caseLedger.complete -ne $true -or
+              [string]$caseLedger.terminalStatus -cne 'complete' -or
+              [int]$caseLedger.caseDiscoveryCount -ne [int]$caseLedger.caseExecutionCount) {
+            throw 'The Pester case inventory is incomplete or belongs to a different Core run.'
+          }
+          if (-not (Test-Path -LiteralPath $sourceTimingPath -PathType Leaf)) { throw "Source validation evidence is missing: $sourceTimingPath" }
+          $setupTiming = Get-Content -LiteralPath $setupTimingPath -Raw | ConvertFrom-Json -Depth 40
+          $setupCompletedTiming = Get-Content -LiteralPath $setupCompletedTimingPath -Raw | ConvertFrom-Json -Depth 40
+          $sourceTiming = Get-Content -LiteralPath $sourceTimingPath -Raw | ConvertFrom-Json -Depth 40
+          if ([string]$setupTiming.runId -cne [string]$prepared.runId -or
+              [string]$setupCompletedTiming.runId -cne [string]$prepared.runId -or
+              [string]$sourceTiming.runId -cne [string]$prepared.runId -or
+              -not [bool]$sourceTiming.reportAccepted -or -not [bool]$sourceTiming.cleanupSucceeded -or
+              [int]$sourceTiming.processExitCode -ne 0) {
+            throw 'Source timing records do not bind the accepted, cleaned-up prepared run.'
+          }
+          $reportedCounts = $caseLedger.reportedCounts
+          $containerFileCount = @($caseLedger.containerFileInventory).Count
+          $checkSummary = @($report.checks | ForEach-Object { "$($_.kind)=$($_.status)/$($_.exitCode)" }) -join ', '
+          Write-Output "Source validation report: runId=$($prepared.runId) state=$($report.state) checks=[$checkSummary]"
+          Write-Output "Pester case ledger: sha256=$($caseBinding.sha256) discovered=$($caseLedger.caseDiscoveryCount) executed=$($caseLedger.caseExecutionCount) containers=$containerFileCount passed=$($reportedCounts.Passed) failed=$($reportedCounts.Failed) skipped=$($reportedCounts.Skipped) inconclusive=$($reportedCounts.Inconclusive) notRun=$($reportedCounts.NotRun)"
+          Write-Output "Source timing seconds: setup=$($setupCompletedTiming.setupTotalSeconds) validation=$($sourceTiming.sourceValidationTotalSeconds) central=$($sourceTiming.centralRunnerSeconds) combined=$($sourceTiming.combinedSetupToValidationSeconds) diagnosticTarget=$($sourceTiming.diagnosticTargetSeconds) exceeded=$($sourceTiming.diagnosticTargetExceeded)"
+          $runRoot = Split-Path -Parent (Split-Path -Parent $sourceToolsPath)
+          $indexPath = Join-Path $runRoot 'evidence-index.json'
+          $index = Get-Content -LiteralPath $indexPath -Raw | ConvertFrom-Json -Depth 20
+          $index | Add-Member -NotePropertyName validationStatus -NotePropertyValue 'passed' -Force
+          $index | Add-Member -NotePropertyName reportPath -NotePropertyValue $reportPath -Force
+          $index | Add-Member -NotePropertyName caseLedgerPath -NotePropertyValue $caseLedgerPath -Force
+          $index | Add-Member -NotePropertyName sourceValidationTimingPath -NotePropertyValue $sourceTimingPath -Force
+          [IO.File]::WriteAllText($indexPath, (($index | ConvertTo-Json -Depth 20 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+
+      - name: Upload source validation evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: standard-core-source-validation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/code-collaboration/
+            !${{ runner.temp }}/code-collaboration/source-tools/source-tools-*/runtime/**
+            !${{ runner.temp }}/code-collaboration/source-tools/source-tools-*/installed/**
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 30
 
   # These jobs preserve the repository's existing required status contexts while
   # keeping the canonical Standard v1 gate as the only validation policy.
