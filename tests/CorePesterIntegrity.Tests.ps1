@@ -305,13 +305,24 @@ Describe 'Verified Pester 6.2.0 module closure' {
 
     # Scenario: Normal Core wrapper is source-bound to the exact runtime and performs no acquisition.
     # Purpose: Keep setup separate from execution and prevent ambient-module fallback or runtime downloads.
-    It 'UnitT60_keeps_download_and_install_commands_out_of_the_core_child' {
+    It 'UnitT60_keeps_the_core_child_source_bound_and_rechecks_its_runtime' {
         $wrapper = Get-Content -LiteralPath (Join-Path $script:repositoryRoot 'scripts/Invoke-CorePester.ps1') -Raw -Encoding utf8
         $wrapper | Should -Not -Match '(?i)Invoke-WebRequest|Invoke-RestMethod|Install-PSResource|Install-Module|Save-Module|Save-PSResource'
-        $wrapper | Should -Match 'Get-CorePesterRuntimeModuleRoot'
+        $wrapper | Should -Match 'Assert-CorePesterRuntimeInventory'
+        $wrapper | Should -Match '\$moduleSearchRoot = Split-Path -Parent \(Split-Path -Parent \$verifiedPesterManifest\)'
+        $wrapper | Should -Match 'SetEnvironmentVariable\(''PSModulePath'', \[IO\.Path\]::GetFullPath\(\$moduleSearchRoot\), ''Process''\)'
         $wrapper | Should -Match 'Test-CorePesterClosure'
         $wrapper | Should -Match 'Get-CorePesterExpectedLoadedModulePath'
         $wrapper | Should -Match 'Test-CorePesterLoadedModuleIdentity'
+        $inventoryCall = 'Assert-CorePesterRuntimeInventory -RuntimeRoot $verifiedPowerShellRuntimeRoot'
+        $preImportOffset = $wrapper.IndexOf($inventoryCall, [StringComparison]::Ordinal)
+        $moduleImportOffset = $wrapper.IndexOf('Import-Module -Name $verifiedPesterManifest', [StringComparison]::Ordinal)
+        $pesterRunOffset = $wrapper.IndexOf('$result = Invoke-Pester -Configuration $pesterConfig', [StringComparison]::Ordinal)
+        $postRunOffset = $wrapper.LastIndexOf($inventoryCall, [StringComparison]::Ordinal)
+        $preImportOffset | Should -BeGreaterThan -1
+        ($moduleImportOffset -gt $preImportOffset) | Should -BeTrue
+        ($pesterRunOffset -gt $moduleImportOffset) | Should -BeTrue
+        ($postRunOffset -gt $pesterRunOffset) | Should -BeTrue
         $acceptanceGateOffset = $wrapper.IndexOf('if (-not $caseInventoryLedgerWritten', [StringComparison]::Ordinal)
         $successReportOffset = $wrapper.IndexOf('[Console]::Out.WriteLine((ConvertTo-Json -InputObject $summary -Compress))', [StringComparison]::Ordinal)
         ($acceptanceGateOffset -ge 0 -and $successReportOffset -gt $acceptanceGateOffset) | Should -BeTrue

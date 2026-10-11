@@ -8,11 +8,10 @@ Describe 'Code child uses central package tool report rules' {
         }
         $script:testRoot = $null
 
-        function Assert-IntegrationAuthorityFileIdentity {
+        function Assert-IntegrationAuthorityRawFileIdentity {
             param(
                 [Parameter(Mandatory = $true)][string] $AuthorityRoot,
-                [Parameter(Mandatory = $true)] $Entry,
-                [Parameter(Mandatory = $true)] $GitEntry
+                [Parameter(Mandatory = $true)] $Entry
             )
 
             $relativePath = [string]$Entry.path
@@ -23,11 +22,6 @@ Describe 'Code child uses central package tool report rules' {
                 [string]$Entry.sha256 -cnotmatch '^[0-9a-f]{64}$') {
                 throw 'The active authority config contains an unsafe fixture file record.'
             }
-            if ([string]$GitEntry.path -cne $relativePath -or [string]$GitEntry.mode -cne '100644' -or
-                [string]$GitEntry.objectId -cnotmatch '^[0-9a-f]{40}$') {
-                throw "The authority Git tree has an unexpected path or mode: $relativePath"
-            }
-
             $fullRoot = [IO.Path]::GetFullPath($AuthorityRoot).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
             $rootPrefix = $fullRoot + [IO.Path]::DirectorySeparatorChar
             $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
@@ -42,6 +36,23 @@ Describe 'Code child uses central package tool report rules' {
                 throw "Authority fixture raw SHA-256 differs from the approved config: $relativePath"
             }
 
+            return $path
+        }
+
+        function Assert-IntegrationAuthorityFileIdentity {
+            param(
+                [Parameter(Mandatory = $true)][string] $AuthorityRoot,
+                [Parameter(Mandatory = $true)] $Entry,
+                [Parameter(Mandatory = $true)] $GitEntry
+            )
+            $relativePath = [string]$Entry.path
+            if ([string]$GitEntry.path -cne $relativePath -or [string]$GitEntry.mode -cne '100644' -or
+                [string]$GitEntry.objectId -cnotmatch '^[0-9a-f]{40}$') {
+                throw "The authority Git tree has an unexpected path or mode: $relativePath"
+            }
+            $path = Assert-IntegrationAuthorityRawFileIdentity -AuthorityRoot $AuthorityRoot -Entry $Entry
+            $content = [IO.File]::ReadAllBytes($path)
+
             $header = [Text.Encoding]::ASCII.GetBytes("blob $($content.Length)`0")
             $gitContent = [byte[]]::new($header.Length + $content.Length)
             [Array]::Copy($header, 0, $gitContent, 0, $header.Length)
@@ -50,6 +61,22 @@ Describe 'Code child uses central package tool report rules' {
             if ($sha1 -cne [string]$GitEntry.objectId) {
                 throw "Authority fixture bytes differ from the exact HEAD Git blob: $relativePath"
             }
+        }
+
+        function Get-IntegrationProcessArgumentValue {
+            param(
+                [Parameter(Mandatory = $true)][string[]] $ProcessArguments,
+                [Parameter(Mandatory = $true)][string] $Name
+            )
+            $found = [Collections.Generic.List[string]]::new()
+            for ($index = 0; $index -lt $ProcessArguments.Count; $index++) {
+                if ([string]$ProcessArguments[$index] -ceq "-$Name") {
+                    if ($index + 1 -ge $ProcessArguments.Count) { throw "Process is missing the value for -$Name." }
+                    $found.Add([string]$ProcessArguments[$index + 1])
+                }
+            }
+            if ($found.Count -ne 1 -or [string]::IsNullOrWhiteSpace($found[0])) { throw "The Pester child requires exactly one process CLI -$Name binding." }
+            return $found[0]
         }
 
         function Assert-IntegrationApprovedOrigin {
@@ -92,12 +119,8 @@ Describe 'Code child uses central package tool report rules' {
         [IO.File]::WriteAllText($script:childPath, $script:childMatch.Groups['body'].Value)
         $script:fakeToolPath = Join-Path $script:testRoot 'skill-validator.ps1'
         [IO.File]::WriteAllText($script:fakeToolPath, 'Get-Content -LiteralPath $env:SYP154_TEST_TOOL_REPORT -Raw; $global:LASTEXITCODE = 0')
-        # This fixture serves only the extracted legacy-child integration tests.
-        # The protected Validate.ps1 gate continues to use its active 8a config.
-        if ([string]::IsNullOrWhiteSpace($env:SYP154_CANDIDATE_AUTHORITY_ROOT)) {
-            throw 'The protected workflow must provide the verified legacy 8a authority fixture to the Pester child.'
-        }
         $repositoryRoot = Split-Path -Parent $PSScriptRoot
+        $script:pwshPath = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
         $authority = (Get-Content -LiteralPath (Join-Path $repositoryRoot 'config/standard-v1.json') -Raw | ConvertFrom-Json -Depth 20).authority
         $expectedRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
         $expectedCommit = '8aabd22694a05771f98639f6d726cc9a620eb94b'
@@ -108,44 +131,66 @@ Describe 'Code child uses central package tool report rules' {
             throw 'The Pester child fixture is only valid while the active authority config remains the exact 8a tuple.'
         }
 
-        $moduleRoot = [IO.Path]::GetFullPath([string]$env:SYP154_CANDIDATE_AUTHORITY_ROOT)
-        $gitRoot = ((& git -C $moduleRoot rev-parse --show-toplevel 2>$null) -join "`n").Trim()
-        if ($LASTEXITCODE -ne 0 -or [IO.Path]::GetFullPath($gitRoot) -cne $moduleRoot) {
-            throw 'The Pester child authority fixture is not the root of a Git checkout.'
-        }
-        $fixtureCommit = ((& git -C $moduleRoot rev-parse HEAD 2>$null) -join "`n").Trim()
-        if ($LASTEXITCODE -ne 0 -or $fixtureCommit -cne $expectedCommit) { throw 'The Pester child authority fixture has the wrong Git HEAD.' }
-        $fixtureOrigins = @(& git -C $moduleRoot remote get-url --all origin 2>$null)
-        if ($LASTEXITCODE -ne 0) { throw 'The Pester child authority fixture origin could not be read.' }
-        Assert-IntegrationApprovedOrigin -OriginUrls ([string[]]$fixtureOrigins) -ExpectedRepository $expectedRepository
-        $fixtureStatus = @(& git -C $moduleRoot status --porcelain=v1 --untracked-files=all 2>$null)
-        if ($LASTEXITCODE -ne 0 -or $fixtureStatus.Count -ne 0) { throw 'The Pester child authority fixture is not clean.' }
+        if (-not [string]::IsNullOrWhiteSpace($env:SYP154_CANDIDATE_AUTHORITY_ROOT)) {
+            # Keep the SourceValidation path's real Git checkout admission strict.
+            # The archive fallback below is only for the protected legacy driver.
+            $script:authorityFixtureMode = 'verified-git-checkout'
+            $moduleRoot = [IO.Path]::GetFullPath([string]$env:SYP154_CANDIDATE_AUTHORITY_ROOT)
+            $gitRoot = ((& git -C $moduleRoot rev-parse --show-toplevel 2>$null) -join "`n").Trim()
+            if ($LASTEXITCODE -ne 0 -or [IO.Path]::GetFullPath($gitRoot) -cne $moduleRoot) {
+                throw 'The Pester child authority fixture is not the root of a Git checkout.'
+            }
+            $fixtureCommit = ((& git -C $moduleRoot rev-parse HEAD 2>$null) -join "`n").Trim()
+            if ($LASTEXITCODE -ne 0 -or $fixtureCommit -cne $expectedCommit) { throw 'The Pester child authority fixture has the wrong Git HEAD.' }
+            $fixtureOrigins = @(& git -C $moduleRoot remote get-url --all origin 2>$null)
+            if ($LASTEXITCODE -ne 0) { throw 'The Pester child authority fixture origin could not be read.' }
+            Assert-IntegrationApprovedOrigin -OriginUrls ([string[]]$fixtureOrigins) -ExpectedRepository $expectedRepository
+            $fixtureStatus = @(& git -C $moduleRoot status --porcelain=v1 --untracked-files=all 2>$null)
+            if ($LASTEXITCODE -ne 0 -or $fixtureStatus.Count -ne 0) { throw 'The Pester child authority fixture is not clean.' }
 
-        $treeRecords = @(& git -C $moduleRoot ls-tree -r --full-tree --format='%(objectmode)%x09%(objectname)%x09%(path)' $expectedCommit 2>$null)
-        if ($LASTEXITCODE -ne 0) { throw 'Could not read the exact authority HEAD Git tree.' }
-        $script:authorityGitEntries = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
-        foreach ($record in $treeRecords) {
-            $firstSeparator = $record.IndexOf([char]9)
-            $secondSeparator = if ($firstSeparator -ge 0) { $record.IndexOf([char]9, $firstSeparator + 1) } else { -1 }
-            if ($firstSeparator -le 0 -or $secondSeparator -le $firstSeparator + 1 -or $secondSeparator -ge $record.Length - 1) {
-                throw 'The authority HEAD Git tree contains a malformed entry.'
+            $treeRecords = @(& git -C $moduleRoot ls-tree -r --full-tree --format='%(objectmode)%x09%(objectname)%x09%(path)' $expectedCommit 2>$null)
+            if ($LASTEXITCODE -ne 0) { throw 'Could not read the exact authority HEAD Git tree.' }
+            $script:authorityGitEntries = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
+            foreach ($record in $treeRecords) {
+                $firstSeparator = $record.IndexOf([char]9)
+                $secondSeparator = if ($firstSeparator -ge 0) { $record.IndexOf([char]9, $firstSeparator + 1) } else { -1 }
+                if ($firstSeparator -le 0 -or $secondSeparator -le $firstSeparator + 1 -or $secondSeparator -ge $record.Length - 1) {
+                    throw 'The authority HEAD Git tree contains a malformed entry.'
+                }
+                $path = $record.Substring($secondSeparator + 1)
+                if (-not $script:authorityGitEntries.TryAdd($path, [pscustomobject]@{
+                    mode = $record.Substring(0, $firstSeparator)
+                    objectId = $record.Substring($firstSeparator + 1, $secondSeparator - $firstSeparator - 1)
+                    path = $path
+                })) {
+                    throw "The authority HEAD Git tree repeats a path: $path"
+                }
             }
-            $path = $record.Substring($secondSeparator + 1)
-            if (-not $script:authorityGitEntries.TryAdd($path, [pscustomobject]@{
-                mode = $record.Substring(0, $firstSeparator)
-                objectId = $record.Substring($firstSeparator + 1, $secondSeparator - $firstSeparator - 1)
-                path = $path
-            })) {
-                throw "The authority HEAD Git tree repeats a path: $path"
+            foreach ($entry in @($authority.files)) {
+                $relativePath = [string]$entry.path
+                if (-not $script:authorityGitEntries.ContainsKey($relativePath)) { throw "Authority HEAD Git tree omits an approved path: $relativePath" }
+                Assert-IntegrationAuthorityFileIdentity -AuthorityRoot $moduleRoot -Entry $entry -GitEntry $script:authorityGitEntries[$relativePath]
             }
         }
-        foreach ($entry in @($authority.files)) {
-            $relativePath = [string]$entry.path
-            if (-not $script:authorityGitEntries.ContainsKey($relativePath)) { throw "Authority HEAD Git tree omits an approved path: $relativePath" }
-            Assert-IntegrationAuthorityFileIdentity -AuthorityRoot $moduleRoot -Entry $entry -GitEntry $script:authorityGitEntries[$relativePath]
+        else {
+            $script:authorityFixtureMode = 'verified-driver-archive'
+            $processArguments = [Environment]::GetCommandLineArgs()
+            $processToolchainPath = Get-IntegrationProcessArgumentValue -ProcessArguments $processArguments -Name 'ToolchainPath'
+            $processToolchainSha = Get-IntegrationProcessArgumentValue -ProcessArguments $processArguments -Name 'ToolchainSha256'
+            $resolverPath = Join-Path $PSScriptRoot 'ResolveLegacyAuthorityArchiveFixture.ps1'
+            $archiveOutput = @(& $script:pwshPath -NoLogo -NoProfile -NonInteractive -File $resolverPath `
+                -RepositoryRoot $repositoryRoot -ToolchainPath $processToolchainPath -ToolchainSha256 $processToolchainSha 2>&1)
+            $archiveExitCode = $LASTEXITCODE
+            if ($archiveExitCode -ne 0) { throw "Legacy archive fixture admission failed: $($archiveOutput -join ' ')" }
+            $archiveReceipt = ($archiveOutput -join "`n") | ConvertFrom-Json -Depth 20 -ErrorAction Stop
+            if ([string]$archiveReceipt.fixtureMode -cne 'verified-driver-archive' -or [string]$archiveReceipt.authorityRevision -cne $expectedCommit -or
+                [int]$archiveReceipt.authorityFileCount -ne 26 -or [int]$archiveReceipt.authorityExtraFileCount -lt 1) {
+                throw 'Legacy archive fixture receipt does not bind the selected 8a closure inside a full archive extraction.'
+            }
+            $moduleRoot = [IO.Path]::GetFullPath([string]$archiveReceipt.authorityRoot)
+            $script:authorityGitEntries = $null
         }
         $script:runnerPath = Join-Path $moduleRoot 'scripts/Invoke-StandardValidation.ps1'
-        $script:pwshPath = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
         $env:STANDARD_VALIDATION_ACTIVE_SKILLS = 'demo'
         $env:STANDARD_VALIDATION_SKILLS_ROOT = Join-Path $script:testRoot 'candidate/skills'
         $env:STANDARD_VALIDATION_SKILL_ID = 'demo'
@@ -297,20 +342,128 @@ Describe 'Code child uses central package tool report rules' {
         ($child.output -join "`n") | Should -Match 'category|required string field'
     }
 
-    # Scenario: a trusted authority file is changed only from LF to CRLF after checkout.
-    # Purpose: reject line-ending normalization when matching both the exact config SHA-256 and HEAD Git blob.
+    # Scenario: the extracted authority archive contains unpinned repository files alongside the exact selected closure.
+    # Purpose: exercise the fallback helper through its real CLI bindings, including missing-hash and raw-file tamper rejection.
+    It 'InterT40_accepts_full_archive_extras_and_rejects_missing_or_tampered_bindings' {
+        $repositoryRoot = Split-Path -Parent $PSScriptRoot
+        $authority = (Get-Content -LiteralPath (Join-Path $repositoryRoot 'config/standard-v1.json') -Raw | ConvertFrom-Json -Depth 20).authority
+        $runId = [guid]::NewGuid().ToString('N')
+        $toolsRoot = Join-Path $script:testRoot "skcv1-tools-$runId"
+        $authorityRoot = Join-Path (Join-Path $toolsRoot 'authority') "SyuanTsai-AI-Instructions-$($authority.commit)"
+        $resolvedToolsRoot = Join-Path (Split-Path -Parent $toolsRoot) "skcv1-resolved-tools-$runId"
+        [void](New-Item -ItemType Directory -Path $authorityRoot -Force)
+        [void](New-Item -ItemType Directory -Path $resolvedToolsRoot -Force)
+        $approvedPaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($entry in @($authority.files)) {
+            $relative = [string]$entry.path
+            [void]$approvedPaths.Add($relative)
+            $sourcePath = Join-Path $script:moduleRoot ($relative -replace '/', [IO.Path]::DirectorySeparatorChar)
+            $destinationPath = Join-Path $authorityRoot ($relative -replace '/', [IO.Path]::DirectorySeparatorChar)
+            if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { throw "The verified fixture source is missing: $relative" }
+            [void](New-Item -ItemType Directory -Path (Split-Path -Parent $destinationPath) -Force)
+            [IO.File]::Copy($sourcePath, $destinationPath, $true)
+        }
+        # The production archive includes unrelated repository files. Their contents are
+        # intentionally not part of the selected authority closure, so model one harmless
+        # extra directly in this owned extraction fixture rather than relying on the
+        # independently verified source checkout to be non-sparse.
+        $extraArchivePath = Join-Path $authorityRoot 'archive-extra.txt'
+        [IO.File]::WriteAllText($extraArchivePath, 'unselected archive file', [Text.UTF8Encoding]::new($false))
+
+        function Get-IntegrationFixtureSha256 {
+            param([Parameter(Mandatory = $true)][string] $Path)
+            return (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+        }
+        $centralRunnerPath = Join-Path $authorityRoot 'scripts/Invoke-StandardValidation.ps1'
+        $upstreamAdapterPath = Join-Path $authorityRoot 'scripts/Validate-UpstreamAdapter.ps1'
+        $upstreamPolicyPath = Join-Path $authorityRoot 'docs/standards/upstream-adapter.json'
+        $toolchain = [ordered]@{
+            centralRunnerPath = $centralRunnerPath
+            centralRunnerSha256 = Get-IntegrationFixtureSha256 -Path $centralRunnerPath
+            upstreamAdapterValidatorPath = $upstreamAdapterPath
+            upstreamAdapterValidatorSha256 = Get-IntegrationFixtureSha256 -Path $upstreamAdapterPath
+            upstreamPolicyPath = $upstreamPolicyPath
+            upstreamPolicySha256 = Get-IntegrationFixtureSha256 -Path $upstreamPolicyPath
+        }
+        $resolvedToolBindings = @(
+            @{ property = 'skillValidator'; relativePath = 'skill-validator/skill-validator.exe' },
+            @{ property = 'skillToolsNode'; relativePath = 'node/node.exe'; outsideResolvedRoot = $true },
+            @{ property = 'skillToolsEntryPoint'; relativePath = 'skill-tools/entrypoint.js' },
+            @{ property = 'skillSpector'; relativePath = 'skillspector/skillspector.exe' },
+            @{ property = 'pesterModule'; relativePath = 'Pester/6.2.0/Pester.psd1' }
+        )
+        foreach ($binding in $resolvedToolBindings) {
+            $isOutsideResolvedRoot = $binding.ContainsKey('outsideResolvedRoot') -and [bool]$binding['outsideResolvedRoot']
+            $bindingRoot = if ($isOutsideResolvedRoot) { $toolsRoot } else { $resolvedToolsRoot }
+            $bindingPath = Join-Path $bindingRoot ([string]$binding.relativePath -replace '/', [IO.Path]::DirectorySeparatorChar)
+            [void](New-Item -ItemType Directory -Path (Split-Path -Parent $bindingPath) -Force)
+            [IO.File]::WriteAllText($bindingPath, "verified fixture bytes: $($binding.property)", [Text.UTF8Encoding]::new($false))
+            $pathField = [string]$binding.property + 'Path'
+            $shaField = [string]$binding.property + 'Sha256'
+            if ($binding.property -ceq 'skillToolsEntryPoint') { $pathField = 'skillToolsEntryPointPath'; $shaField = 'skillToolsEntryPointSha256' }
+            if ($binding.property -ceq 'pesterModule') { $pathField = 'pesterModulePath'; $shaField = 'pesterModuleSha256' }
+            $toolchain[$pathField] = $bindingPath
+            $toolchain[$shaField] = Get-IntegrationFixtureSha256 -Path $bindingPath
+        }
+        $toolchain.pesterVersion = '6.2.0'
+        $toolchainPath = Join-Path $toolsRoot 'toolchain.json'
+        [IO.File]::WriteAllText($toolchainPath, ($toolchain | ConvertTo-Json -Depth 20 -Compress), [Text.UTF8Encoding]::new($false))
+        $toolchainSha = Get-IntegrationFixtureSha256 -Path $toolchainPath
+        $resolverPath = Join-Path $PSScriptRoot 'ResolveLegacyAuthorityArchiveFixture.ps1'
+        $previousAuthorityEnv = [Environment]::GetEnvironmentVariable('SYP154_CANDIDATE_AUTHORITY_ROOT', 'Process')
+        try {
+            [Environment]::SetEnvironmentVariable('SYP154_CANDIDATE_AUTHORITY_ROOT', $null, 'Process')
+            $arguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $resolverPath,
+                '-RepositoryRoot', $repositoryRoot, '-ToolchainPath', $toolchainPath, '-ToolchainSha256', $toolchainSha)
+            $output = @(& $script:pwshPath @arguments 2>&1)
+            $exitCode = $LASTEXITCODE
+            $exitCode | Should -Be 0
+            $receipt = ($output -join "`n") | ConvertFrom-Json -Depth 20 -ErrorAction Stop
+            $receipt.fixtureMode | Should -Be 'verified-driver-archive'
+            $receipt.authorityFileCount | Should -Be 26
+            $receipt.authorityExtraFileCount | Should -Be 1
+            $receipt.authorityRevision | Should -Be $authority.commit
+
+            $withoutHash = @(& $script:pwshPath -NoLogo -NoProfile -NonInteractive -File $resolverPath `
+                -RepositoryRoot $repositoryRoot -ToolchainPath $toolchainPath 2>&1)
+            $missingHashExitCode = $LASTEXITCODE
+            $missingHashExitCode | Should -Not -Be 0
+            ($withoutHash -join "`n") | Should -Match 'ToolchainSha256|MissingMandatoryParameter'
+
+            $tamperEntry = @($authority.files | Where-Object { [string]$_.path -cnotin @(
+                'scripts/Invoke-StandardValidation.ps1', 'scripts/Validate-UpstreamAdapter.ps1', 'docs/standards/upstream-adapter.json'
+            ) } | Select-Object -First 1)[0]
+            $tamperPath = Join-Path $authorityRoot ([string]$tamperEntry.path -replace '/', [IO.Path]::DirectorySeparatorChar)
+            [IO.File]::AppendAllText($tamperPath, "`n# tampered`n", [Text.UTF8Encoding]::new($false))
+            $tampered = @(& $script:pwshPath @arguments 2>&1)
+            $tamperedExitCode = $LASTEXITCODE
+            $tamperedExitCode | Should -Not -Be 0
+            ($tampered -join "`n") | Should -Match 'raw authority SHA-256 differs'
+        }
+        finally {
+            [Environment]::SetEnvironmentVariable('SYP154_CANDIDATE_AUTHORITY_ROOT', $previousAuthorityEnv, 'Process')
+        }
+    }
+
+    # Scenario: a trusted authority file is changed only from LF to CRLF.
+    # Purpose: reject raw-byte normalization in both driver-extracted archives and verified Git checkouts.
     It 'InterT35_rejects_a_crlf_only_authority_fixture_change' {
         $activeConfig = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'config/standard-v1.json') -Raw | ConvertFrom-Json -Depth 20
         $entry = @($activeConfig.authority.files)[0]
-        $gitEntry = $script:authorityGitEntries[[string]$entry.path]
-        $sourcePath = Join-Path ([string]$env:SYP154_CANDIDATE_AUTHORITY_ROOT) ([string]$entry.path)
+        $sourcePath = Join-Path $script:moduleRoot ([string]$entry.path)
         $sourceText = [Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($sourcePath))
         $sourceText.Contains("`r") | Should -BeFalse
         $tamperRoot = Join-Path $script:testRoot 'crlf-authority'
         $tamperPath = Join-Path $tamperRoot ([string]$entry.path)
         [void](New-Item -ItemType Directory -Path (Split-Path -Parent $tamperPath) -Force)
         [IO.File]::WriteAllText($tamperPath, $sourceText.Replace("`n", "`r`n"), [Text.UTF8Encoding]::new($false))
-        { Assert-IntegrationAuthorityFileIdentity -AuthorityRoot $tamperRoot -Entry $entry -GitEntry $gitEntry } | Should -Throw -ExpectedMessage '*raw SHA-256 differs*'
+        if ($script:authorityFixtureMode -ceq 'verified-git-checkout') {
+            $gitEntry = $script:authorityGitEntries[[string]$entry.path]
+            { Assert-IntegrationAuthorityFileIdentity -AuthorityRoot $tamperRoot -Entry $entry -GitEntry $gitEntry } | Should -Throw -ExpectedMessage '*raw SHA-256 differs*'
+        }
+        else {
+            { Assert-IntegrationAuthorityRawFileIdentity -AuthorityRoot $tamperRoot -Entry $entry } | Should -Throw -ExpectedMessage '*raw SHA-256 differs*'
+        }
     }
     # Scenario: the same report is supplied with a forged central runner digest.
     # Purpose: a candidate cannot substitute an unverified shared validator and still receive PASS.

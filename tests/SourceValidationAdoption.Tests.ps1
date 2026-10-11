@@ -39,6 +39,12 @@ Describe 'Protected Standard Core SourceValidation preparation' {
             $setupReceiptPath = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot 'pester-setup/setup-receipt.json') -Text '{}'
             $candidateArchivePath = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot 'candidate.zip') -Text 'immutable candidate archive fixture'
             $manifestPath = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot 'candidate-git-entry-modes.json') -Text '{"schemaVersion":3,"candidateCommit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","entries":[{"path":"skills/demo/SKILL.md","mode":"100644","sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}'
+            $sourceIdentityPath = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot 'source-run-identity.json') -Text (([ordered]@{
+                schemaVersion = 1; runId = $runId; sourceRevision = $candidateRevision
+                authorityRevision = 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
+                candidateManifestPath = [IO.Path]::GetFullPath($manifestPath); candidateManifestSha256 = Get-SourceBindingFixtureHash -Path $manifestPath
+                candidateArchivePath = [IO.Path]::GetFullPath($candidateArchivePath); candidateArchiveSha256 = Get-SourceBindingFixtureHash -Path $candidateArchivePath
+            } | ConvertTo-Json -Depth 20 -Compress) + "`n")
             $wrapperPath = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot 'Invoke-CodeCollaborationValidationChild.ps1') -Text '# child fixture'
             $alternateWrapperPath = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot 'alternate-frozen-script.ps1') -Text '# alternate frozen fixture script'
             $toolchainPath = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot 'toolchain.json') -Text '{}'
@@ -105,7 +111,7 @@ Describe 'Protected Standard Core SourceValidation preparation' {
             [IO.File]::WriteAllText($setupReceiptPath, (($setupReceipt | ConvertTo-Json -Depth 20 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
             $setupReceiptSha256 = Get-SourceBindingFixtureHash -Path $setupReceiptPath
 
-            $allSourceFiles = @($candidateArchivePath, $manifestPath, $wrapperPath, $alternateWrapperPath, $toolchainPath, $runtimeInventoryPath, $setupTimingPath, $closureLock) + $toolClosurePaths
+            $allSourceFiles = @($candidateArchivePath, $manifestPath, $sourceIdentityPath, $wrapperPath, $alternateWrapperPath, $toolchainPath, $runtimeInventoryPath, $setupTimingPath, $closureLock) + $toolClosurePaths
             $pesterClosureFiles = @($moduleManifest, $modulePayload)
             $receiptFrozenPaths = @($toolClosurePaths)
             $receiptBindingPaths = @($receiptPaths)
@@ -326,7 +332,28 @@ Describe 'Protected Standard Core SourceValidation preparation' {
             $sourceOwnedRoot = Join-Path $base "source-tools-$runId"
             [void](New-Item -ItemType Directory -Path $sourceOwnedRoot -Force)
             $manifestPath = Write-SourceBindingFixtureFile -Path (Join-Path $sourceOwnedRoot 'candidate-git-entry-modes.json') -Text (($manifest | ConvertTo-Json -Depth 30 -Compress) + "`n")
-            $frozenFiles = @([pscustomobject]@{ path = $manifestPath; sha256 = Get-SourceBindingFixtureHash -Path $manifestPath })
+            $archivePath = Write-SourceBindingFixtureFile -Path (Join-Path $sourceOwnedRoot 'candidate.zip') -Text 'immutable candidate archive fixture'
+            $manifestHash = Get-SourceBindingFixtureHash -Path $manifestPath
+            $archiveHash = Get-SourceBindingFixtureHash -Path $archivePath
+            $sourceIdentityPath = Write-SourceBindingFixtureFile -Path (Join-Path $sourceOwnedRoot 'source-run-identity.json') -Text (([ordered]@{
+                schemaVersion = 1; runId = $runId; sourceRevision = $candidateRevision
+                authorityRevision = 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
+                candidateManifestPath = [IO.Path]::GetFullPath($manifestPath); candidateManifestSha256 = $manifestHash
+                candidateArchivePath = [IO.Path]::GetFullPath($archivePath); candidateArchiveSha256 = $archiveHash
+            } | ConvertTo-Json -Depth 20 -Compress) + "`n")
+            $protectedFiles = @('scripts/Invoke-RepositoryCheck.ps1', 'scripts/Invoke-CorePester.ps1', 'scripts/CorePesterIntegrity.psm1', 'scripts/Test-Repository.ps1', 'tests/validate-catalog.ps1')
+            $protectedCopyPaths = @()
+            foreach ($relative in $protectedFiles) {
+                $sourcePath = Join-Path $script:RepositoryRoot ($relative -replace '/', [IO.Path]::DirectorySeparatorChar)
+                $copyPath = Join-Path $sourceOwnedRoot ("runtime/ProtectedSourceChecks/" + $relative)
+                [void](New-Item -ItemType Directory -Path (Split-Path -Parent $copyPath) -Force)
+                Copy-Item -LiteralPath $sourcePath -Destination $copyPath -Force
+                $protectedCopyPaths += [IO.Path]::GetFullPath($copyPath)
+            }
+            $frozenFiles = @([pscustomobject]@{ path = $manifestPath; sha256 = $manifestHash },
+                [pscustomobject]@{ path = $archivePath; sha256 = $archiveHash },
+                [pscustomobject]@{ path = $sourceIdentityPath; sha256 = Get-SourceBindingFixtureHash -Path $sourceIdentityPath })
+            foreach ($copyPath in $protectedCopyPaths) { $frozenFiles += [pscustomobject]@{ path = $copyPath; sha256 = Get-SourceBindingFixtureHash -Path $copyPath } }
             $toolReceipts = @()
             foreach ($toolName in @('skill-validator', 'skill-tools', 'skillspector')) {
                 $receiptPath = Write-SourceBindingFixtureFile -Path (Join-Path $sourceOwnedRoot "receipt-$toolName.json") -Text (([ordered]@{
@@ -346,6 +373,7 @@ Describe 'Protected Standard Core SourceValidation preparation' {
                 runRoot = [IO.Path]::GetFullPath($runRoot); candidateRoot = [IO.Path]::GetFullPath($candidateRoot)
                 adapterPath = [IO.Path]::GetFullPath($adapterPath); retainedAdapterPath = [IO.Path]::GetFullPath($retainedAdapterPath)
                 manifestPath = [IO.Path]::GetFullPath($manifestPath); manifestSha256 = Get-SourceBindingFixtureHash -Path $manifestPath
+                sourceOwnedRoot = [IO.Path]::GetFullPath($sourceOwnedRoot); protectedCopyPaths = $protectedCopyPaths
                 activeSkills = $activeSkills; wrapperPath = [IO.Path]::GetFullPath((Join-Path $candidateRoot 'scripts/Invoke-RepositoryCheck.ps1'))
             }
         }
@@ -482,6 +510,55 @@ Describe 'Protected Standard Core SourceValidation preparation' {
             -SourceRepository 'https://github.com/SyuanTsai/Skill-Code-Collaboration.git' } | Should -Throw '*protected wrapper*'
     }
 
+    # Scenario: a candidate substitutes one of the scripts dispatched by the protected Core adapter.
+    # Purpose: require both the candidate manifest and candidate bytes to match the exact trusted-base bytes.
+    It 'UnitT48_binds_core_dispatch_files_to_the_protected_base_bytes' {
+        Import-Module -Name $script:DriverPath -Force
+        $fixture = New-GeneralWrapperFixture -Root (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))
+        $manifest = Get-Content -LiteralPath $fixture.manifestPath -Raw | ConvertFrom-Json -Depth 40
+        $accepted = Assert-CodeSourceProtectedDispatchFiles -ProtectedBaseRoot $script:RepositoryRoot `
+            -CandidateRoot $fixture.candidateRoot -ManifestEntries $manifest.entries
+        @($accepted).Count | Should -Be 5
+
+        $adapter = Get-Content -LiteralPath $fixture.retainedAdapterPath -Raw | ConvertFrom-Json -Depth 40
+        $frozenFiles = @($adapter.sourceValidation.frozenFiles)
+        $protectedCopyBindings = @(Assert-CodeSourceProtectedRuntimeCopies -ProtectedBaseRoot $script:RepositoryRoot `
+            -CandidateRoot $fixture.candidateRoot -OwnedRoot $fixture.sourceOwnedRoot `
+            -ManifestEntries $manifest.entries -FrozenFiles $frozenFiles)
+        $protectedCopyBindings.Count | Should -Be 5
+
+        $runtimeCopy = Join-Path $fixture.sourceOwnedRoot 'runtime/ProtectedSourceChecks/scripts/Test-Repository.ps1'
+        [IO.File]::AppendAllText($runtimeCopy, "`n# self-hashed copied substitution`n", [Text.UTF8Encoding]::new($false))
+        $selfConsistentFrozenFiles = @($frozenFiles | ForEach-Object {
+            if ([IO.Path]::GetFullPath([string]$_.path).Equals([IO.Path]::GetFullPath($runtimeCopy), $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }))) {
+                [pscustomobject]@{ path = $_.path; sha256 = Get-SourceBindingFixtureHash -Path $runtimeCopy }
+            }
+            else { $_ }
+        })
+        { Assert-CodeSourceProtectedRuntimeCopies -ProtectedBaseRoot $script:RepositoryRoot `
+            -CandidateRoot $fixture.candidateRoot -OwnedRoot $fixture.sourceOwnedRoot `
+            -ManifestEntries $manifest.entries -FrozenFiles $selfConsistentFrozenFiles } | Should -Throw '*differs from the trusted protected-base bytes*'
+        Copy-Item -LiteralPath (Join-Path $script:RepositoryRoot 'scripts/Test-Repository.ps1') -Destination $runtimeCopy -Force
+
+        $target = 'scripts/Invoke-RepositoryCheck.ps1'
+        $candidatePath = Join-Path $fixture.candidateRoot ($target -replace '/', [IO.Path]::DirectorySeparatorChar)
+        [IO.File]::AppendAllText($candidatePath, "`n# candidate substitution`n", [Text.UTF8Encoding]::new($false))
+        $selfHashedEntries = @($manifest.entries | ForEach-Object {
+            if ([string]$_.path -ceq $target) {
+                [pscustomobject]@{ path = $_.path; mode = $_.mode; sha256 = Get-SourceBindingFixtureHash -Path $candidatePath }
+            }
+            else { $_ }
+        })
+        { Assert-CodeSourceProtectedDispatchFiles -ProtectedBaseRoot $script:RepositoryRoot `
+            -CandidateRoot $fixture.candidateRoot -ManifestEntries $selfHashedEntries } | Should -Throw '*differs from the trusted driver bytes*'
+
+        foreach ($invalidPath in @('scripts\Invoke-RepositoryCheck.ps1', 'scripts//Invoke-RepositoryCheck.ps1', 'scripts/./Invoke-RepositoryCheck.ps1')) {
+            $invalidEntries = @($manifest.entries) + @([pscustomobject]@{ path = $invalidPath; mode = '100644'; sha256 = 'a' * 64 })
+            { Assert-CodeSourceProtectedDispatchFiles -ProtectedBaseRoot $script:RepositoryRoot `
+                -CandidateRoot $fixture.candidateRoot -ManifestEntries $invalidEntries } | Should -Throw '*invalid or duplicate protected dispatch entry*'
+        }
+    }
+
     # Scenario: the Core v2 adapter receives an admitted setup receipt and the exact candidate mode manifest.
     # Purpose: prove positive routing produces one general check plus the complete Pester closure and runtime identity arguments.
     It 'UnitT41_builds_the_complete_two_check_core_adapter_from_prepared_metadata' {
@@ -497,9 +574,17 @@ Describe 'Protected Standard Core SourceValidation preparation' {
         $adapter.schemaVersion | Should -Be 2
         @($adapter.checks).Count | Should -Be 2
         @($adapter.checks | ForEach-Object { [string]$_.kind }) | Should -Be @('general', 'pester')
-        $adapter.checks[0].arguments | Should -Contain '-GitEntryModeManifestSha256'
-        $adapter.checks[1].arguments | Should -Contain '-PowerShellRuntimeInventorySha256'
-        $adapter.checks[1].arguments | Should -Contain '-PowerShellRuntimeExecutableSha256'
+        $adapter.checks[0].arguments | Should -Contain 'scripts/Invoke-RepositoryCheck.ps1'
+        $adapter.checks[1].arguments | Should -Contain 'scripts/Invoke-CorePester.ps1'
+        foreach ($check in @($adapter.checks)) {
+            [string]$check.executable | Should -Be $fixture.runtimeExecutable
+            $check.arguments | Should -Contain '-CandidateRevision'
+            $absoluteArguments = @($check.arguments | Where-Object { [IO.Path]::IsPathRooted([string]$_) })
+            $absoluteArguments | Should -BeNullOrEmpty
+            $encodedOrCommandArguments = @($check.arguments | Where-Object { [string]$_ -in @('-Command', '-EncodedCommand', '-EncodedArguments') })
+            $encodedOrCommandArguments | Should -BeNullOrEmpty
+        }
+        $adapter.checks[1].arguments | Should -Contain '-CandidateAuthorityAdapterRunId'
     }
 
     # Scenario: one prepared resolver receipt references a skill-tools shim omitted from the frozen file inventory.
@@ -614,8 +699,7 @@ Describe 'Protected Standard Core SourceValidation preparation' {
             Push-Location -LiteralPath $fixture.candidateRoot
             try {
                 & $pwsh -NoLogo -NoProfile -NonInteractive -File $fixture.wrapperPath `
-                    -CandidateRevision $fixture.candidateRevision -GitEntryModeManifestPath $fixture.manifestPath `
-                    -GitEntryModeManifestSha256 $fixture.manifestSha256 1> $stdoutPath 2> $stderrPath
+                    -CandidateRevision $fixture.candidateRevision 1> $stdoutPath 2> $stderrPath
                 $exitCode = $LASTEXITCODE
             }
             finally { Pop-Location }
@@ -644,7 +728,7 @@ Describe 'Protected Standard Core SourceValidation preparation' {
             [string]$native.id | Should -BeIn $expectedReports
             [string]$native.path | Should -Match ([regex]::Escape((Join-Path $runRoot 'repository-general')))
             [string]$native.sha256 | Should -Be (Get-SourceBindingFixtureHash -Path ([string]$native.path))
-            [string]$native.command | Should -Match ([regex]::Escape($fixture.candidateRoot))
+            [string]$native.command | Should -Match ([regex]::Escape((Join-Path $fixture.sourceOwnedRoot 'runtime/ProtectedSourceChecks')))
             [string]$native.commandSha256 | Should -Be (Get-SourceBindingFixtureHash -Path ([string]$native.command))
             [int]$native.exitCode | Should -Be 0
         }

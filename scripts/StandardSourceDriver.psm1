@@ -176,6 +176,97 @@ function New-CodeSourceFrozenFileInventory {
     return [pscustomobject]@{ files = [object[]]$records; count = $records.Count }
 }
 
+function Assert-CodeSourceProtectedDispatchFiles {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $ProtectedBaseRoot,
+        [Parameter(Mandatory = $true)][string] $CandidateRoot,
+        [Parameter(Mandatory = $true)][object[]] $ManifestEntries
+    )
+
+    $protectedRoot = [IO.Path]::GetFullPath($ProtectedBaseRoot)
+    $candidateRootFull = [IO.Path]::GetFullPath($CandidateRoot)
+    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    $protectedPaths = @(
+        'scripts/Invoke-RepositoryCheck.ps1',
+        'scripts/Invoke-CorePester.ps1',
+        'scripts/CorePesterIntegrity.psm1',
+        'scripts/Test-Repository.ps1',
+        'tests/validate-catalog.ps1'
+    )
+    $entries = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
+    foreach ($entry in $ManifestEntries) {
+        $relative = [string]$entry.path
+        $segments = $relative.Split('/')
+        if ([string]::IsNullOrWhiteSpace($relative) -or $relative.Contains('\') -or [IO.Path]::IsPathRooted($relative) -or
+            $segments -contains '' -or $segments -contains '.' -or $segments -contains '..' -or
+            [string]$entry.sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            [string]$entry.mode -cnotin @('100644', '100755') -or $entries.ContainsKey($relative)) {
+            throw 'Candidate Git entry mode manifest contains an invalid or duplicate protected dispatch entry.'
+        }
+        $entries.Add($relative, $entry)
+    }
+
+    $result = [Collections.Generic.List[object]]::new()
+    foreach ($relative in $protectedPaths) {
+        if (-not $entries.ContainsKey($relative)) { throw "Candidate revision is missing the protected dispatch file: $relative" }
+        $basePath = Join-Path $protectedRoot ($relative.Replace('/', [IO.Path]::DirectorySeparatorChar))
+        $candidatePath = Join-Path $candidateRootFull ($relative.Replace('/', [IO.Path]::DirectorySeparatorChar))
+        foreach ($path in @($basePath, $candidatePath)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Protected dispatch file is missing: $path" }
+            $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Protected dispatch file is a reparse point: $path" }
+        }
+        $baseHash = (Get-FileHash -LiteralPath $basePath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+        $candidateHash = (Get-FileHash -LiteralPath $candidatePath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+        if ($baseHash -cne $candidateHash -or [string]$entries[$relative].sha256 -cne $baseHash -or [string]$entries[$relative].mode -cne '100644') {
+            throw "Candidate protected dispatch file differs from the trusted driver bytes: $relative"
+        }
+        $result.Add([pscustomobject]@{ path = $relative; sha256 = $baseHash; protectedPath = [IO.Path]::GetFullPath($basePath) })
+    }
+    return $result.ToArray()
+}
+
+function Assert-CodeSourceProtectedRuntimeCopies {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $ProtectedBaseRoot,
+        [Parameter(Mandatory = $true)][string] $CandidateRoot,
+        [Parameter(Mandatory = $true)][string] $OwnedRoot,
+        [Parameter(Mandatory = $true)][object[]] $ManifestEntries,
+        [Parameter(Mandatory = $true)][object[]] $FrozenFiles
+    )
+
+    $dispatchFiles = @(Assert-CodeSourceProtectedDispatchFiles -ProtectedBaseRoot $ProtectedBaseRoot `
+        -CandidateRoot $CandidateRoot -ManifestEntries $ManifestEntries)
+    $runtimeRoot = [IO.Path]::GetFullPath((Join-Path $OwnedRoot 'runtime/ProtectedSourceChecks'))
+    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    $frozen = [Collections.Generic.Dictionary[string, string]]::new($(if ($IsWindows) { [StringComparer]::OrdinalIgnoreCase } else { [StringComparer]::Ordinal }))
+    foreach ($record in $FrozenFiles) {
+        $path = [IO.Path]::GetFullPath([string]$record.path)
+        if ([string]$record.sha256 -cnotmatch '^[0-9a-f]{64}$' -or -not $frozen.TryAdd($path, [string]$record.sha256)) {
+            throw 'Prepared frozen file inventory contains an invalid or duplicate protected-copy record.'
+        }
+    }
+    foreach ($binding in $dispatchFiles) {
+        $relative = ([string]$binding.path).Replace('/', [IO.Path]::DirectorySeparatorChar)
+        $copyPath = [IO.Path]::GetFullPath((Join-Path $runtimeRoot $relative))
+        if (-not $copyPath.StartsWith($runtimeRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar, $comparison) -or
+            -not $frozen.ContainsKey($copyPath)) {
+            throw "Run-owned protected dispatch copy is missing from the frozen closure: $($binding.path)"
+        }
+        foreach ($path in @([string]$binding.protectedPath, $copyPath)) {
+            $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+            if ($item.PSIsContainer -or $item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Run-owned protected dispatch copy is not a regular file: $path" }
+            if ((Get-FileHash -LiteralPath $path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() -cne [string]$binding.sha256) {
+                throw "Run-owned protected dispatch copy differs from the trusted protected-base bytes: $($binding.path)"
+            }
+        }
+        if ($frozen[$copyPath] -cne [string]$binding.sha256) { throw "Run-owned protected dispatch copy has a self-consistent but untrusted frozen hash: $($binding.path)" }
+    }
+    return $dispatchFiles
+}
+
 function Assert-CodeSourceSha256 {
     param([Parameter(Mandatory = $true)][string] $Value, [Parameter(Mandatory = $true)][string] $Context)
     if ($Value -cnotmatch '^[0-9a-f]{64}$') { throw "$Context must be a lowercase SHA-256 value." }
@@ -345,6 +436,21 @@ function Assert-CodeSourcePreparedBindings {
             -not $frozen.TryAdd($path, [string]$file.sha256)) {
             throw "Prepared source frozen file is missing, unsafe, changed or duplicated: $path"
         }
+    }
+    $manifestPath = [IO.Path]::GetFullPath((Join-Path ([string]$Prepared.ownedRoot) 'candidate-git-entry-modes.json'))
+    $identityPath = [IO.Path]::GetFullPath((Join-Path ([string]$Prepared.ownedRoot) 'source-run-identity.json'))
+    $manifestHash = if ($frozen.ContainsKey($manifestPath)) { [string]$frozen[$manifestPath] } else { '' }
+    if (-not $frozen.ContainsKey($identityPath) -or [string]::IsNullOrWhiteSpace($manifestHash)) {
+        throw 'Prepared source run identity or candidate manifest is missing from the frozen closure.'
+    }
+    $identity = Get-Content -LiteralPath $identityPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -Depth 30 -ErrorAction Stop
+    if ([int]$identity.schemaVersion -ne 1 -or [string]$identity.runId -cne [string]$Prepared.runId -or
+        [string]$identity.sourceRevision -cne [string]$Prepared.sourceRevision -or [string]$identity.authorityRevision -cne [string]$Prepared.authorityRevision -or
+        -not [IO.Path]::GetFullPath([string]$identity.candidateManifestPath).Equals($manifestPath, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal })) -or
+        [string]$identity.candidateManifestSha256 -cne $manifestHash -or
+        -not [IO.Path]::GetFullPath([string]$identity.candidateArchivePath).Equals($archivePath, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal })) -or
+        [string]$identity.candidateArchiveSha256 -cne [string]$Prepared.candidateArchiveSha256) {
+        throw 'Prepared source identity receipt does not bind the exact source revision, authority, archive, manifest and RunId.'
     }
     $receiptNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($receiptBinding in @($Prepared.sourceValidation.toolReceipts)) {
@@ -704,22 +810,9 @@ function New-CodeCoreAdapterV2 {
     }
     [void](Assert-CodeSourceRuntimeInventory -PesterRuntime $PesterRuntime -OwnedRoot (Split-Path -Parent $trustedRuntimeRoot) -FrozenFiles $runtimeFrozenFiles)
     $generalArguments = @('-NoProfile', '-NonInteractive', '-File', 'scripts/Invoke-RepositoryCheck.ps1',
-        '-CandidateRevision', $CandidateRevision,
-        '-GitEntryModeManifestPath', [IO.Path]::GetFullPath($CandidateGitEntryModeManifestPath),
-        '-GitEntryModeManifestSha256', $CandidateGitEntryModeManifestSha256)
+        '-CandidateRevision', $CandidateRevision)
     $pesterArguments = @('-NoProfile', '-NonInteractive', '-File', 'scripts/Invoke-CorePester.ps1',
-        '-CandidateAuthorityAdapterRunId', $CandidateAuthorityAdapterRunId,
-        '-CandidateGitEntryModeManifestPath', [IO.Path]::GetFullPath($CandidateGitEntryModeManifestPath),
-        '-CandidateGitEntryModeManifestSha256', $CandidateGitEntryModeManifestSha256,
-        '-PesterModuleManifestPath', [IO.Path]::GetFullPath([string]$PesterRuntime.moduleManifestPath),
-        '-PesterClosureLockPath', [IO.Path]::GetFullPath([string]$PesterRuntime.closureLockPath),
-        '-PesterClosureLockSha256', [string]$PesterRuntime.closureLockSha256,
-        '-PesterSetupReceiptPath', [IO.Path]::GetFullPath([string]$PesterRuntime.setupReceiptPath),
-        '-PesterSetupReceiptSha256', [string]$PesterRuntime.setupReceiptSha256,
-        '-PowerShellRuntimeRoot', $trustedRuntimeRoot,
-        '-PowerShellRuntimeInventoryPath', [IO.Path]::GetFullPath([string]$PesterRuntime.runtimeInventoryPath),
-        '-PowerShellRuntimeInventorySha256', [string]$PesterRuntime.runtimeInventorySha256,
-        '-PowerShellRuntimeExecutableSha256', [string]$PesterRuntime.runtimeExecutableSha256)
+        '-CandidateAuthorityAdapterRunId', $CandidateAuthorityAdapterRunId, '-CandidateRevision', $CandidateRevision)
     return [ordered]@{
         schemaVersion = 2
         adapter = 'standard-core-adapter-v2'
@@ -733,4 +826,4 @@ function New-CodeCoreAdapterV2 {
     }
 }
 
-Export-ModuleMember -Function Get-PreparedSourceAuthorityPin, Assert-CodeSourceAuthorityConfig, Assert-CodeSourceRunRequest, New-CodeSourceFrozenFileInventory, Assert-CodeSourcePreparedBindings, Assert-CodeSourceAuthorityToolchain, Assert-CodeSourceReportBinding, New-CodeCoreAdapterV2
+Export-ModuleMember -Function Get-PreparedSourceAuthorityPin, Assert-CodeSourceAuthorityConfig, Assert-CodeSourceRunRequest, New-CodeSourceFrozenFileInventory, Assert-CodeSourceProtectedDispatchFiles, Assert-CodeSourceProtectedRuntimeCopies, Assert-CodeSourcePreparedBindings, Assert-CodeSourceAuthorityToolchain, Assert-CodeSourceReportBinding, New-CodeCoreAdapterV2

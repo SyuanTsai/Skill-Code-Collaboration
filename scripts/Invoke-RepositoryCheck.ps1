@@ -4,9 +4,7 @@
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{40}$')][string] $CandidateRevision,
-    [Parameter(Mandatory = $true)][string] $GitEntryModeManifestPath,
-    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{64}$')][string] $GitEntryModeManifestSha256
+    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{40}$')][string] $CandidateRevision
 )
 
 Set-StrictMode -Version Latest
@@ -73,16 +71,40 @@ $setupRunId = [string]$env:STANDARD_VALIDATION_CORE_RUN_ID
 if ($setupRunId -cnotmatch '^[0-9a-f]{32}$' -or $sourceSpec.frozenFiles -isnot [array] -or $sourceSpec.toolReceipts -isnot [array]) {
     throw 'Repository general check requires the exact prepared source run identity and frozen closure.'
 }
-$manifestFullPath = [IO.Path]::GetFullPath($GitEntryModeManifestPath)
-$manifestBindings = @($sourceSpec.frozenFiles | Where-Object {
-    [IO.Path]::GetFullPath([string]$_.path).Equals($manifestFullPath, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal })) -and
-    [string]$_.sha256 -ceq $GitEntryModeManifestSha256
-})
-if ($manifestBindings.Count -ne 1) { throw 'Git entry mode manifest is not the exact retained adapter frozen file.' }
+$manifestBindings = @($sourceSpec.frozenFiles | Where-Object { [IO.Path]::GetFileName([string]$_.path) -ceq 'candidate-git-entry-modes.json' })
+if ($manifestBindings.Count -ne 1) { throw 'Retained Core adapter must contain one candidate Git entry mode manifest.' }
+$manifestFullPath = [IO.Path]::GetFullPath([string]$manifestBindings[0].path)
+$manifestSha256 = [string]$manifestBindings[0].sha256
 $sourceOwnedRoot = [IO.Path]::GetFullPath((Split-Path -Parent $manifestFullPath))
 if ([IO.Path]::GetFileName($sourceOwnedRoot) -cne "source-tools-$setupRunId") {
     throw 'Git entry mode manifest path does not bind the actual prepared setup RunId.'
 }
+$identityPath = Join-Path $sourceOwnedRoot 'source-run-identity.json'
+$identityBindings = @($sourceSpec.frozenFiles | Where-Object { [IO.Path]::GetFullPath([string]$_.path).Equals([IO.Path]::GetFullPath($identityPath), $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal })) })
+if ($identityBindings.Count -ne 1 -or (Get-FileSha256 -Path $identityPath) -cne [string]$identityBindings[0].sha256) { throw 'Repository general check source identity receipt is missing or changed.' }
+$sourceIdentity = Get-Content -LiteralPath $identityPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -Depth 30 -ErrorAction Stop
+if ([int]$sourceIdentity.schemaVersion -ne 1 -or [string]$sourceIdentity.runId -cne $setupRunId -or
+    [string]$sourceIdentity.sourceRevision -cne $CandidateRevision -or [string]$sourceIdentity.authorityRevision -cnotmatch '^[0-9a-f]{40}$' -or
+    -not [IO.Path]::GetFullPath([string]$sourceIdentity.candidateManifestPath).Equals($manifestFullPath, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal })) -or
+    [string]$sourceIdentity.candidateManifestSha256 -cne $manifestSha256) {
+    throw 'Repository general check source identity does not bind the exact revision, RunId and Git entry mode manifest.'
+}
+$archiveBindings = @($sourceSpec.frozenFiles | Where-Object { [IO.Path]::GetFileName([string]$_.path) -ceq 'candidate.zip' })
+if ($archiveBindings.Count -ne 1 -or -not [IO.Path]::GetFullPath([string]$sourceIdentity.candidateArchivePath).Equals([IO.Path]::GetFullPath([string]$archiveBindings[0].path), $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal })) -or
+    [string]$sourceIdentity.candidateArchiveSha256 -cne [string]$archiveBindings[0].sha256 -or
+    (Get-FileSha256 -Path ([string]$archiveBindings[0].path)) -cne [string]$archiveBindings[0].sha256) {
+    throw 'Repository general check source identity does not bind the exact frozen candidate archive.'
+}
+$protectedWrapperPath = [IO.Path]::GetFullPath((Join-Path $sourceOwnedRoot 'runtime/ProtectedSourceChecks/scripts/Invoke-RepositoryCheck.ps1'))
+$candidateWrapperPath = [IO.Path]::GetFullPath((Join-Path $candidateRoot 'scripts/Invoke-RepositoryCheck.ps1'))
+$protectedWrapperBinding = @($sourceSpec.frozenFiles | Where-Object { [IO.Path]::GetFullPath([string]$_.path).Equals($protectedWrapperPath, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal })) })
+if ($protectedWrapperBinding.Count -ne 1 -or
+    (Get-FileSha256 -Path $protectedWrapperPath) -cne [string]$protectedWrapperBinding[0].sha256 -or
+    (Get-FileSha256 -Path $candidateWrapperPath) -cne [string]$protectedWrapperBinding[0].sha256) {
+    throw 'Candidate repository general wrapper is not byte-identical to the exact frozen protected-base copy.'
+}
+if ($sourceSpec.toolReceipts.Count -ne 3) { throw 'Repository general check requires exactly three prepared resolver receipts.' }
+$receiptNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
 foreach ($receiptBinding in @($sourceSpec.toolReceipts)) {
     $receiptPath = [IO.Path]::GetFullPath([string]$receiptBinding.path)
     if (-not $receiptPath.StartsWith($sourceOwnedRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }))) {
@@ -90,11 +112,17 @@ foreach ($receiptBinding in @($sourceSpec.toolReceipts)) {
     }
     if ((Get-FileSha256 -Path $receiptPath) -cne [string]$receiptBinding.sha256) { throw 'Prepared resolver receipt changed after setup.' }
     $receipt = Get-Content -LiteralPath $receiptPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -Depth 50 -ErrorAction Stop
-    if ([string]$receipt.resolutionRunId -cne $setupRunId -or $receipt.frozenForRun -isnot [bool] -or -not $receipt.frozenForRun) {
+    $toolName = [string]$receipt.toolName
+    if ($toolName -cnotin @('skill-validator', 'skill-tools', 'skillspector') -or -not $receiptNames.Add($toolName) -or
+        -not $receiptPath.Equals([IO.Path]::GetFullPath((Join-Path $sourceOwnedRoot "receipt-$toolName.json")), $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal })) -or
+        [string]$receipt.resolutionRunId -cne $setupRunId -or $receipt.frozenForRun -isnot [bool] -or -not $receipt.frozenForRun) {
         throw 'Prepared resolver receipt does not bind the actual setup RunId.'
     }
 }
-if (-not (Test-Path -LiteralPath $manifestFullPath -PathType Leaf) -or (Get-FileSha256 -Path $manifestFullPath) -cne $GitEntryModeManifestSha256) {
+foreach ($expectedTool in @('skill-validator', 'skill-tools', 'skillspector')) {
+    if (-not $receiptNames.Contains($expectedTool)) { throw "Repository general check is missing resolver receipt '$expectedTool'." }
+}
+if (-not (Test-Path -LiteralPath $manifestFullPath -PathType Leaf) -or (Get-FileSha256 -Path $manifestFullPath) -cne $manifestSha256) {
     throw 'Git entry mode manifest path or prepared SHA-256 does not match.'
 }
 $document = $null
@@ -157,10 +185,13 @@ if ((Test-Path -LiteralPath $manifestPath) -or (Test-Path -LiteralPath $checkRoo
 try {
     $repositoryReportPath = Join-Path $checkRoot 'test-repository.json'
     $catalogReportPath = Join-Path $checkRoot 'validate-catalog.json'
-    $repositoryValidatorPath = Join-Path $candidateRoot 'scripts/Test-Repository.ps1'
-    $catalogValidatorPath = Join-Path $candidateRoot 'tests/validate-catalog.ps1'
+    $repositoryValidatorPath = Join-Path $sourceOwnedRoot 'runtime/ProtectedSourceChecks/scripts/Test-Repository.ps1'
+    $catalogValidatorPath = Join-Path $sourceOwnedRoot 'runtime/ProtectedSourceChecks/tests/validate-catalog.ps1'
     foreach ($path in @($repositoryValidatorPath, $catalogValidatorPath)) {
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required repository contract checker is missing: $path" }
+        $frozen = @($sourceSpec.frozenFiles | Where-Object { [IO.Path]::GetFullPath([string]$_.path).Equals([IO.Path]::GetFullPath($path), $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal })) })
+        if ($frozen.Count -ne 1 -or -not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-FileSha256 -Path $path) -cne [string]$frozen[0].sha256) {
+            throw "Protected repository contract checker is missing or changed: $path"
+        }
     }
     $repositoryArguments = @('-RepositoryRoot', $candidateRoot, '-OutputPath', $repositoryReportPath, '-ReadOnlySnapshot', '-GitEntryModeManifestPath', $manifestPath)
     $repositoryParameters = @{

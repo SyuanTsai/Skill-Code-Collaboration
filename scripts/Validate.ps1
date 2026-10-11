@@ -1427,6 +1427,9 @@ function Invoke-CodeSourceToolSetup {
     $stageTimer = [Diagnostics.Stopwatch]::StartNew()
     $manifestPath = Join-Path $ownedRoot 'candidate-git-entry-modes.json'
     $manifest = Get-GitEntryModeManifest -GitPath $GitPath -RepositoryRoot $RepositoryRoot -CandidateCommit $CandidateRevision
+    $protectedSourceRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
+    $protectedDispatchBindings = @(Assert-CodeSourceProtectedDispatchFiles -ProtectedBaseRoot $protectedSourceRoot `
+        -CandidateRoot $RepositoryRoot -ManifestEntries @($manifest.entries))
     Write-Utf8NoBomCreateNew -Path $manifestPath -Text (($manifest | ConvertTo-Json -Depth 40) + [Environment]::NewLine)
     $manifestSha256 = Get-FileSha256 -Path $manifestPath
     $archivePath = Join-Path $ownedRoot 'candidate.zip'
@@ -1435,6 +1438,18 @@ function Invoke-CodeSourceToolSetup {
     $archiveSha256 = Get-FileSha256 -Path $archivePath
     $stageTimer.Stop()
     $setupStageSeconds.candidateManifestAndArchiveSeconds = [Math]::Round($stageTimer.Elapsed.TotalSeconds, 3)
+    $sourceIdentityPath = Join-Path $ownedRoot 'source-run-identity.json'
+    $sourceIdentity = [ordered]@{
+        schemaVersion = 1
+        runId = $runId
+        sourceRevision = $CandidateRevision
+        authorityRevision = [string]$pin.commit
+        candidateManifestPath = [IO.Path]::GetFullPath($manifestPath)
+        candidateManifestSha256 = $manifestSha256
+        candidateArchivePath = [IO.Path]::GetFullPath($archivePath)
+        candidateArchiveSha256 = $archiveSha256
+    }
+    Write-Utf8NoBomCreateNew -Path $sourceIdentityPath -Text (($sourceIdentity | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
 
     $receipts = [ordered]@{}
     $receiptBindings = @()
@@ -1528,6 +1543,19 @@ function Invoke-CodeSourceToolSetup {
     $pesterSetupTimer.Stop()
     $setupStageSeconds.pesterRuntimeSetupAndInventorySeconds = [Math]::Round($pesterSetupTimer.Elapsed.TotalSeconds, 3)
 
+    $protectedDispatchCopyRoot = Join-Path $runtimeRoot 'ProtectedSourceChecks'
+    foreach ($binding in $protectedDispatchBindings) {
+        $destination = Join-Path $protectedDispatchCopyRoot ([string]$binding.path)
+        $destinationParent = Split-Path -Parent $destination
+        if (-not (Test-Path -LiteralPath $destinationParent -PathType Container)) {
+            [void](New-Item -ItemType Directory -Path $destinationParent -Force -ErrorAction Stop)
+        }
+        Copy-Item -LiteralPath ([string]$binding.protectedPath) -Destination $destination -ErrorAction Stop
+        if ((Get-FileSha256 -Path $destination) -cne [string]$binding.sha256) {
+            throw "Protected Core dispatch copy changed during source setup: $($binding.path)"
+        }
+    }
+
     $inventoryTimer = [Diagnostics.Stopwatch]::StartNew()
     $runtimeFiles = @(Get-ChildItem -LiteralPath $runtimeRoot -Recurse -File -Force -ErrorAction Stop | ForEach-Object {
         if ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Run-owned PowerShell runtime contains a reparse point: $($_.FullName)" }
@@ -1551,7 +1579,7 @@ function Invoke-CodeSourceToolSetup {
     $sourceFrozenFiles = New-CodeSourceFrozenFileInventory -RuntimeFiles $runtimeCopyFiles `
         -SourceFiles @($runtimeInventoryPath, $powerShell, $runner, $resolver, $policy, $toolchain.upstreamAdapterValidatorPath,
             $toolchain.upstreamPolicyPath, $toolchainPath, $wrapperPath, $manifestPath, $archivePath, $lockPath,
-            $prepareScript, $integrityModule) `
+            $sourceIdentityPath, $prepareScript, $integrityModule) `
         -PesterFiles (@($moduleManifestPath, $setupReceiptPath) + @($pesterClosureFiles)) `
         -ReceiptFiles (@($receiptFrozenPaths) + @($receiptBindings | ForEach-Object { [string]$_.path }) + @(
             [string]$toolchain.skillValidatorPath, [string]$toolchain.skillToolsNodePath,
@@ -1627,11 +1655,35 @@ function Invoke-CodeSourceToolSetup {
 function Read-CodeSourcePreparedTools {
     param([Parameter(Mandatory)][string] $Path, [Parameter(Mandatory)][string] $CandidateRevision,
         [Parameter(Mandatory)][string] $PowerShellPath, [Parameter(Mandatory)][string] $AuthorityRoot,
-        [Parameter(Mandatory)] $AuthorityPin)
+        [Parameter(Mandatory)] $AuthorityPin, [Parameter(Mandatory)][string] $CandidateRoot,
+        [Parameter(Mandatory)][string] $ProtectedBaseRoot)
 
     $prepared = Read-JsonFile -Path $Path -Context 'Prepared Code-Collaboration source tools'
     [void](Assert-CodeSourcePreparedBindings -Prepared $prepared -PreparedPath $Path -CandidateRevision $CandidateRevision -PowerShellPath $PowerShellPath -SourceRepository $script:SourceRepository)
     $ownedRoot = [IO.Path]::GetFullPath([string]$prepared.ownedRoot)
+    $manifestPath = Join-Path $ownedRoot 'candidate-git-entry-modes.json'
+    $manifestBindings = @($prepared.sourceValidation.frozenFiles | Where-Object { (Test-PathEqual -Left ([string]$_.path) -Right $manifestPath) })
+    if ($manifestBindings.Count -ne 1 -or (Get-FileSha256 -Path $manifestPath) -cne [string]$manifestBindings[0].sha256) {
+        throw 'Prepared candidate Git entry mode manifest is missing or changed.'
+    }
+    $candidateManifest = Read-JsonFile -Path $manifestPath -Context 'Prepared candidate Git entry mode manifest'
+    $identityPath = Join-Path $ownedRoot 'source-run-identity.json'
+    $identityBindings = @($prepared.sourceValidation.frozenFiles | Where-Object { (Test-PathEqual -Left ([string]$_.path) -Right $identityPath) })
+    if ($identityBindings.Count -ne 1 -or (Get-FileSha256 -Path $identityPath) -cne [string]$identityBindings[0].sha256) {
+        throw 'Prepared source run identity receipt is missing or changed.'
+    }
+    $sourceIdentity = Read-JsonFile -Path $identityPath -Context 'Prepared source run identity receipt'
+    if ([int]$sourceIdentity.schemaVersion -ne 1 -or [string]$sourceIdentity.runId -cne [string]$prepared.runId -or
+        [string]$sourceIdentity.sourceRevision -cne $CandidateRevision -or [string]$sourceIdentity.authorityRevision -cne [string]$AuthorityPin.commit -or
+        -not (Test-PathEqual -Left ([string]$sourceIdentity.candidateManifestPath) -Right $manifestPath) -or
+        [string]$sourceIdentity.candidateManifestSha256 -cne [string]$manifestBindings[0].sha256 -or
+        -not (Test-PathEqual -Left ([string]$sourceIdentity.candidateArchivePath) -Right ([string]$prepared.candidateArchivePath)) -or
+        [string]$sourceIdentity.candidateArchiveSha256 -cne [string]$prepared.candidateArchiveSha256) {
+        throw 'Prepared source run identity does not bind the exact source, authority, manifest, archive and RunId.'
+    }
+    $protectedDispatchBindings = @(Assert-CodeSourceProtectedRuntimeCopies -ProtectedBaseRoot $ProtectedBaseRoot `
+        -CandidateRoot $CandidateRoot -OwnedRoot $ownedRoot -ManifestEntries @($candidateManifest.entries) `
+        -FrozenFiles @($prepared.sourceValidation.frozenFiles))
     $wrapperPath = Join-Path $ownedRoot 'Invoke-CodeCollaborationValidationChild.ps1'
     $expectedWrapperHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.UTF8Encoding]::new($false).GetBytes($childRunnerText))).ToLowerInvariant()
     if ((Get-FileSha256 -Path $wrapperPath) -cne $expectedWrapperHash) { throw 'Prepared source child wrapper differs from the protected event-base driver.' }
@@ -1696,7 +1748,8 @@ function Invoke-CodeSourceValidation {
     Assert-OutsideRoot -Path $preparedRoot -Root $trustedRoot -Context 'Prepared source root'
     $script:SourceInvalidInput = $true
     $prepared = Read-CodeSourcePreparedTools -Path $preparedPath -CandidateRevision $CandidateRevision -PowerShellPath $powerShell `
-        -AuthorityRoot $authority.root -AuthorityPin $pin
+        -AuthorityRoot $authority.root -AuthorityPin $pin -CandidateRoot $RepositoryRoot `
+        -ProtectedBaseRoot ([IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot)))
     if ([string]$prepared.authorityRevision -cne [string]$pin.commit) { throw 'Prepared source tools do not bind the exact ff85 authority revision.' }
     $setupTimingPath = Join-Path ([string]$prepared.ownedRoot) 'setup-timing.json'
     $setupTimingBinding = @($prepared.sourceValidation.frozenFiles | Where-Object {

@@ -4,24 +4,134 @@
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][string] $CandidateAuthorityAdapterRunId,
-    [Parameter(Mandatory = $true)][string] $CandidateGitEntryModeManifestPath,
-    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{64}$')][string] $CandidateGitEntryModeManifestSha256,
-    [Parameter(Mandatory = $true)][string] $PesterModuleManifestPath,
-    [Parameter(Mandatory = $true)][string] $PesterClosureLockPath,
-    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{64}$')][string] $PesterClosureLockSha256,
-    [Parameter(Mandatory = $true)][string] $PesterSetupReceiptPath,
-    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{64}$')][string] $PesterSetupReceiptSha256,
-    [Parameter(Mandatory = $true)][string] $PowerShellRuntimeRoot,
-    [Parameter(Mandatory = $true)][string] $PowerShellRuntimeInventoryPath,
-    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{64}$')][string] $PowerShellRuntimeInventorySha256,
-    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{64}$')][string] $PowerShellRuntimeExecutableSha256
+    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{32}$')][string] $CandidateAuthorityAdapterRunId,
+    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{40}$')][string] $CandidateRevision
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$integrityModulePath = Join-Path $PSScriptRoot 'CorePesterIntegrity.psm1'
+$verifiedPowerShellRuntimeRoot = [IO.Path]::GetFullPath($PSHOME)
+$verifiedPowerShellExecutable = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+$runtimeExecutableName = if ($IsWindows) { 'pwsh.exe' } else { 'pwsh' }
+if ([IO.Path]::GetFileName($verifiedPowerShellExecutable) -ine $runtimeExecutableName) { throw 'Core Pester is not running in the prepared PowerShell runtime.' }
+$candidateSnapshotRoot = [IO.Path]::GetFullPath((Get-Location).Path)
+$coreRunId = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_CORE_RUN_ID', 'Process')
+$coreCheckId = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_CORE_CHECK_ID', 'Process')
+if ([IO.Path]::GetFileName($candidateSnapshotRoot) -cne 'candidate' -or $coreRunId -cnotmatch '^[0-9a-f]{32}$' -or
+    [IO.Path]::GetFileName((Split-Path -Parent $candidateSnapshotRoot)) -cne $coreRunId -or $coreCheckId -cne 'repository-pester' -or
+    $CandidateAuthorityAdapterRunId -cne $coreRunId) {
+    throw 'Core Pester requires the immutable candidate snapshot and trusted check identity.'
+}
+$coreRunRoot = [IO.Path]::GetFullPath((Split-Path -Parent $candidateSnapshotRoot))
+$coreArtifactsRoot = [IO.Path]::GetFullPath((Split-Path -Parent (Split-Path -Parent $coreRunRoot)))
+$adapterParent = [IO.Path]::GetFullPath((Split-Path -Parent $coreArtifactsRoot))
+$adapterRoot = [IO.Path]::GetFullPath((Join-Path $adapterParent ".core-v2-adapter-$CandidateAuthorityAdapterRunId"))
+$adapterPath = Join-Path $adapterRoot 'standard-core-adapter-v2.json'
+$retainedAdapterPath = Join-Path $coreRunRoot 'source-core-adapter.json'
+foreach ($adapterFile in @($adapterPath, $retainedAdapterPath)) {
+    if (-not (Test-Path -LiteralPath $adapterFile -PathType Leaf)) { throw 'Core Pester cannot locate its retained adapter identity.' }
+}
+$adapterSha = (Get-FileHash -LiteralPath $retainedAdapterPath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+if ((Get-FileHash -LiteralPath $adapterPath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() -cne $adapterSha) {
+    throw 'Core Pester adapter snapshots differ.'
+}
+$adapter = Get-Content -LiteralPath $retainedAdapterPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -Depth 80 -ErrorAction Stop
+$sourceSpec = $adapter.sourceValidation
+if ($sourceSpec.frozenFiles -isnot [array] -or $sourceSpec.toolReceipts -isnot [array]) { throw 'Core Pester retained adapter has no prepared frozen closure.' }
+function Get-CorePesterFrozenBinding {
+    param([Parameter(Mandatory)][string] $Name)
+    $matches = @($sourceSpec.frozenFiles | Where-Object { [IO.Path]::GetFileName([string]$_.path) -ceq $Name })
+    if ($matches.Count -ne 1 -or [string]$matches[0].sha256 -cnotmatch '^[0-9a-f]{64}$') { throw "Core Pester requires exactly one frozen '$Name' input." }
+    $fullPath = [IO.Path]::GetFullPath([string]$matches[0].path)
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf) -or (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() -cne [string]$matches[0].sha256) {
+        throw "Core Pester frozen '$Name' input is missing or changed."
+    }
+    return [pscustomobject]@{ path = $fullPath; sha256 = [string]$matches[0].sha256 }
+}
+$manifestBinding = Get-CorePesterFrozenBinding -Name 'candidate-git-entry-modes.json'
+$sourceOwnedRoot = [IO.Path]::GetFullPath((Split-Path -Parent $manifestBinding.path))
+if ([IO.Path]::GetFileName($sourceOwnedRoot) -cne "source-tools-$CandidateAuthorityAdapterRunId") { throw 'Core Pester manifest does not bind its exact setup RunId.' }
+$CandidateGitEntryModeManifestPath = $manifestBinding.path
+$CandidateGitEntryModeManifestSha256 = $manifestBinding.sha256
+$sourceIdentityBinding = Get-CorePesterFrozenBinding -Name 'source-run-identity.json'
+$sourceIdentity = Get-Content -LiteralPath $sourceIdentityBinding.path -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -Depth 30 -ErrorAction Stop
+if ([int]$sourceIdentity.schemaVersion -ne 1 -or [string]$sourceIdentity.runId -cne $CandidateAuthorityAdapterRunId -or
+    [string]$sourceIdentity.sourceRevision -cne $CandidateRevision -or [string]$sourceIdentity.authorityRevision -cnotmatch '^[0-9a-f]{40}$' -or
+    -not [IO.Path]::GetFullPath([string]$sourceIdentity.candidateManifestPath).Equals($CandidateGitEntryModeManifestPath, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal })) -or
+    [string]$sourceIdentity.candidateManifestSha256 -cne $CandidateGitEntryModeManifestSha256) {
+    throw 'Core Pester source identity does not bind the exact source revision, authority, manifest and setup RunId.'
+}
+$modeManifest = Get-Content -LiteralPath $CandidateGitEntryModeManifestPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -Depth 40 -ErrorAction Stop
+if ([int]$modeManifest.schemaVersion -ne 3 -or [string]$modeManifest.candidateCommit -cne $CandidateRevision) {
+    throw 'Core Pester Git entry mode manifest differs from the requested candidate revision.'
+}
+$archiveBinding = Get-CorePesterFrozenBinding -Name 'candidate.zip'
+if (-not [IO.Path]::GetFullPath([string]$sourceIdentity.candidateArchivePath).Equals($archiveBinding.path, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal })) -or
+    [string]$sourceIdentity.candidateArchiveSha256 -cne $archiveBinding.sha256) {
+    throw 'Core Pester source identity does not bind the exact frozen candidate archive.'
+}
+$lockBinding = Get-CorePesterFrozenBinding -Name 'pester-6.2.0-closure.lock.json'
+$receiptBinding = Get-CorePesterFrozenBinding -Name 'setup-receipt.json'
+$inventoryBinding = Get-CorePesterFrozenBinding -Name 'powershell-runtime-inventory.json'
+$expectedOwnedBindings = @(
+    [pscustomobject]@{ actual = $lockBinding.path; expected = (Join-Path $sourceOwnedRoot 'pester-6.2.0-closure.lock.json'); name = 'Pester lock' },
+    [pscustomobject]@{ actual = $receiptBinding.path; expected = (Join-Path $sourceOwnedRoot 'pester-setup/setup-receipt.json'); name = 'Pester setup receipt' },
+    [pscustomobject]@{ actual = $inventoryBinding.path; expected = (Join-Path $sourceOwnedRoot 'powershell-runtime-inventory.json'); name = 'PowerShell runtime inventory' },
+    [pscustomobject]@{ actual = $archiveBinding.path; expected = (Join-Path $sourceOwnedRoot 'candidate.zip'); name = 'Candidate archive' },
+    [pscustomobject]@{ actual = $sourceIdentityBinding.path; expected = (Join-Path $sourceOwnedRoot 'source-run-identity.json'); name = 'Source identity' }
+)
+foreach ($binding in $expectedOwnedBindings) {
+    if (-not [IO.Path]::GetFullPath([string]$binding.actual).Equals([IO.Path]::GetFullPath([string]$binding.expected), $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }))) {
+        throw "Core Pester $($binding.name) is not the exact same-run setup path."
+    }
+}
+$expectedModuleManifest = [IO.Path]::GetFullPath((Join-Path $verifiedPowerShellRuntimeRoot 'Modules/Pester/6.2.0/Pester.psd1'))
+if ($sourceSpec.toolReceipts.Count -ne 3) { throw 'Core Pester retained adapter must contain exactly three resolver receipts.' }
+foreach ($toolName in @('skill-validator', 'skill-tools', 'skillspector')) {
+    $receiptBindings = @($sourceSpec.toolReceipts | Where-Object { [IO.Path]::GetFileName([string]$_.path) -ceq "receipt-$toolName.json" })
+    if ($receiptBindings.Count -ne 1 -or [string]$receiptBindings[0].sha256 -cnotmatch '^[0-9a-f]{64}$') { throw "Core Pester resolver receipt is missing: $toolName" }
+    $receiptPath = [IO.Path]::GetFullPath([string]$receiptBindings[0].path)
+    $expectedReceiptPath = [IO.Path]::GetFullPath((Join-Path $sourceOwnedRoot "receipt-$toolName.json"))
+    if (-not $receiptPath.Equals($expectedReceiptPath, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal })) -or
+        (Get-FileHash -LiteralPath $receiptPath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() -cne [string]$receiptBindings[0].sha256) {
+        throw "Core Pester resolver receipt is not the exact frozen setup file: $toolName"
+    }
+    $receipt = Get-Content -LiteralPath $receiptPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -Depth 30 -ErrorAction Stop
+    if ([string]$receipt.toolName -cne $toolName -or [string]$receipt.resolutionRunId -cne $CandidateAuthorityAdapterRunId -or
+        $receipt.frozenForRun -isnot [bool] -or -not $receipt.frozenForRun) { throw "Core Pester resolver receipt does not bind the setup run: $toolName" }
+}
+$executableBinding = @($sourceSpec.frozenFiles | Where-Object { [IO.Path]::GetFullPath([string]$_.path).Equals($verifiedPowerShellExecutable, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal })) })
+if ($executableBinding.Count -ne 1 -or [string]$executableBinding[0].sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'Core Pester executable is not one exact frozen runtime file.' }
+$PesterClosureLockPath = $lockBinding.path
+$PesterClosureLockSha256 = $lockBinding.sha256
+$PesterSetupReceiptPath = $receiptBinding.path
+$PesterSetupReceiptSha256 = $receiptBinding.sha256
+$PowerShellRuntimeRoot = $verifiedPowerShellRuntimeRoot
+$PowerShellRuntimeInventoryPath = $inventoryBinding.path
+$PowerShellRuntimeInventorySha256 = $inventoryBinding.sha256
+$PowerShellRuntimeExecutableSha256 = [string]$executableBinding[0].sha256
+$PesterModuleManifestPath = [IO.Path]::GetFullPath((Join-Path $verifiedPowerShellRuntimeRoot 'Modules/Pester/6.2.0/Pester.psd1'))
+$expectedOwnedRuntimeRoot = [IO.Path]::GetFullPath((Join-Path $sourceOwnedRoot 'runtime'))
+if (-not $verifiedPowerShellRuntimeRoot.Equals($expectedOwnedRuntimeRoot, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }))) {
+    throw 'Core Pester is not running from the exact runtime directory owned by its prepared source setup.'
+}
+if (-not $PesterModuleManifestPath.Equals($expectedModuleManifest, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }))) {
+    throw 'Core Pester manifest differs from the exact prepared owned runtime path.'
+}
+$protectedWrapperBinding = Get-CorePesterFrozenBinding -Name 'Invoke-CorePester.ps1'
+$protectedWrapperPath = [IO.Path]::GetFullPath((Join-Path $verifiedPowerShellRuntimeRoot 'ProtectedSourceChecks/scripts/Invoke-CorePester.ps1'))
+$candidateWrapperPath = [IO.Path]::GetFullPath((Join-Path $candidateSnapshotRoot 'scripts/Invoke-CorePester.ps1'))
+if (-not $protectedWrapperBinding.path.Equals($protectedWrapperPath, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal })) -or
+    (Get-FileHash -LiteralPath $protectedWrapperPath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() -cne $protectedWrapperBinding.sha256 -or
+    (Get-FileHash -LiteralPath $candidateWrapperPath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() -cne $protectedWrapperBinding.sha256) {
+    throw 'Candidate Core Pester wrapper is not byte-identical to the exact frozen protected-base copy.'
+}
+$integrityModulePath = Join-Path $verifiedPowerShellRuntimeRoot 'ProtectedSourceChecks/scripts/CorePesterIntegrity.psm1'
+$integrityBinding = @($sourceSpec.frozenFiles | Where-Object { [IO.Path]::GetFullPath([string]$_.path).Equals([IO.Path]::GetFullPath($integrityModulePath), $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal })) })
+if ($integrityBinding.Count -ne 1 -or (Get-FileHash -LiteralPath $integrityModulePath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() -cne [string]$integrityBinding[0].sha256) {
+    throw 'Protected Core Pester integrity module is not the exact frozen trusted copy.'
+}
 Import-Module -Name $integrityModulePath -Force -ErrorAction Stop
 
 function Assert-CorePesterRuntimeInventory {
