@@ -22,9 +22,7 @@ This repository is versioned independently from any consumer repository. Use Sem
 
 ## Protected source-validation adoption
 
-The explicit `-AdapterVersion 2 -PrepareSourceTools` and `-SourceValidation` route is not yet a required workflow gate. Use it only when the candidate has the exact approved ff85 authority tuple and the supplied authority path is the verified ff85 Git checkout. Preparation and execution are separate commands; keep the prepared source-tools file, its run-owned receipts and closure, the Core report, the stage timing file, the completed setup timing file, and the source-validation timing file together as review evidence. Each setup is create-only and gets a fresh run ID. See the README for the invocation template.
-
-The stage timing file records runtime copy/inventory work, candidate manifest/archive, each resolver, Pester setup, and one frozen-file inventory/hash/sort pass. The completed setup file measures through final frozen-file verification and prepared metadata creation. Source execution timing records the central validation duration and combined setup-to-validation wall time. The 1200-second threshold is a diagnostic target and does not affect the validation decision. Pass `-TimeoutSeconds 10800` when running the complete source check so the Pester portion has room to finish; retain the raw process output and timing evidence with the Core report.
+The protected source-validation route is optional adoption material for a future candidate with the exact approved ff85 authority tuple; it is not part of the current required workflow gate. See [Protected source-validation adoption](SOURCE-VALIDATION-ADOPTION.md) for its commands, timing records, and evidence requirements.
 
 ## Pin invariants
 
