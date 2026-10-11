@@ -134,6 +134,17 @@ if ($integrityBinding.Count -ne 1 -or (Get-FileHash -LiteralPath $integrityModul
 }
 Import-Module -Name $integrityModulePath -Force -ErrorAction Stop
 
+function Import-CorePesterModuleWithWarningsOnStderr {
+    param([Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string] $ManifestPath)
+
+    Import-Module -Name $ManifestPath -Scope Global -ErrorAction Stop 3>&1 |
+        ForEach-Object {
+            if ($_ -is [Management.Automation.WarningRecord]) {
+                [Console]::Error.WriteLine("Pester import warning: $($_.Message)")
+            }
+        }
+}
+
 function Assert-CorePesterRuntimeInventory {
     param(
         [Parameter(Mandatory = $true)][string] $RuntimeRoot,
@@ -292,7 +303,7 @@ $preImportClosure = $setupClosure
 $expectedLoadedPesterPath = Get-CorePesterExpectedLoadedModulePath -ManifestPath $verifiedPesterManifest -ModuleRoot $verifiedPesterModuleRoot -Lock $closureLockRecord.Value
 $alreadyLoadedPester = @(Get-Module -Name Pester)
 if ($alreadyLoadedPester.Count -ne 0) { throw 'Core Pester refuses to reuse an already-loaded Pester module.' }
-Import-Module -Name $verifiedPesterManifest -ErrorAction Stop
+Import-CorePesterModuleWithWarningsOnStderr -ManifestPath $verifiedPesterManifest
 $loadedPester = @(Get-Module -Name Pester)
 $loadedPesterCheck = Test-CorePesterLoadedModuleIdentity -Modules $loadedPester -ExpectedVersion ([string]$closureLockRecord.Value.source.version) -ExpectedPath $expectedLoadedPesterPath -ExpectedModuleBase $verifiedPesterModuleRoot
 if (-not $loadedPesterCheck.IsValid) { throw ('Core Pester loaded-module identity failed: ' + (@($loadedPesterCheck.Errors) -join '; ')) }

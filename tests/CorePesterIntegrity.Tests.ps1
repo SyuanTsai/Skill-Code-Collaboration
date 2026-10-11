@@ -359,7 +359,7 @@ Describe 'Verified Pester 6.2.0 module closure' {
         $wrapper | Should -Match 'Test-CorePesterLoadedModuleIdentity'
         $inventoryCall = 'Assert-CorePesterRuntimeInventory -RuntimeRoot $verifiedPowerShellRuntimeRoot'
         $preImportOffset = $wrapper.IndexOf($inventoryCall, [StringComparison]::Ordinal)
-        $moduleImportOffset = $wrapper.IndexOf('Import-Module -Name $verifiedPesterManifest', [StringComparison]::Ordinal)
+        $moduleImportOffset = $wrapper.IndexOf('Import-CorePesterModuleWithWarningsOnStderr -ManifestPath $verifiedPesterManifest', [StringComparison]::Ordinal)
         $pesterRunOffset = $wrapper.IndexOf('$result = Invoke-Pester -Configuration $pesterConfig', [StringComparison]::Ordinal)
         $postRunOffset = $wrapper.LastIndexOf($inventoryCall, [StringComparison]::Ordinal)
         $preImportOffset | Should -BeGreaterThan -1
@@ -421,5 +421,95 @@ Describe 'Verified Pester 6.2.0 module closure' {
             frozenFiles = @($sourceSpec.frozenFiles[0], $sourceSpec.frozenFiles[0])
         }
         { & $invokeBindingHelper $helperNodes[0].Extent.Text $ambiguousSourceSpec 'candidate-git-entry-modes.json' } | Should -Throw '*exactly one frozen*'
+    }
+
+    # Scenario: A pinned Pester module emits a warning while it is imported.
+    # Purpose: Preserve the warning on stderr while keeping stdout as a single machine report.
+    It 'UnitT80_routes_Pester_import_warnings_to_stderr_without_polluting_machine_output' {
+        $wrapperPath = Join-Path $script:repositoryRoot 'scripts/Invoke-CorePester.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $wrapperAst = [System.Management.Automation.Language.Parser]::ParseFile($wrapperPath, [ref]$tokens, [ref]$parseErrors)
+        $parseErrors.Count | Should -Be 0
+        $helperNodes = @($wrapperAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Import-CorePesterModuleWithWarningsOnStderr'
+        }, $true))
+        $helperNodes.Count | Should -Be 1
+
+        $moduleName = 'PesterImportWarningFixture' + [guid]::NewGuid().ToString('N')
+        $commandName = 'Get-' + $moduleName
+        $modulePath = Join-Path $TestDrive ($moduleName + '.psm1')
+        $warningText = 'fixture import diagnostic ' + [guid]::NewGuid().ToString('N')
+        $moduleText = "Write-Warning '$warningText'`nfunction $commandName { 'loaded' }`nExport-ModuleMember -Function $commandName`n"
+        [IO.File]::WriteAllText($modulePath, $moduleText, [Text.UTF8Encoding]::new($false))
+        $failingModuleName = $moduleName + 'Failure'
+        $failingModulePath = Join-Path $TestDrive ($failingModuleName + '.psm1')
+        $failureWarningText = 'fixture warning before import failure ' + [guid]::NewGuid().ToString('N')
+        $failureMessage = 'fixture import failure ' + [guid]::NewGuid().ToString('N')
+        $failingModuleText = "Write-Warning '$failureWarningText'`nthrow '$failureMessage'`n"
+        [IO.File]::WriteAllText($failingModulePath, $failingModuleText, [Text.UTF8Encoding]::new($false))
+
+        function Invoke-ImportBoundaryFixtureChild {
+            param([Parameter(Mandatory)][string] $ScriptPath)
+
+            $startInfo = [Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+            foreach ($argument in @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $ScriptPath)) { [void]$startInfo.ArgumentList.Add($argument) }
+            $startInfo.UseShellExecute = $false
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            $child = [Diagnostics.Process]::new()
+            $child.StartInfo = $startInfo
+            $stdout = [IO.MemoryStream]::new()
+            $stderr = [IO.MemoryStream]::new()
+            try {
+                if (-not $child.Start()) { throw 'Could not start the import boundary fixture child.' }
+                $stdoutTask = $child.StandardOutput.BaseStream.CopyToAsync($stdout)
+                $stderrTask = $child.StandardError.BaseStream.CopyToAsync($stderr)
+                $child.WaitForExit()
+                $stdoutTask.GetAwaiter().GetResult()
+                $stderrTask.GetAwaiter().GetResult()
+                return [pscustomobject]@{ ExitCode = $child.ExitCode; Stdout = $stdout.ToArray(); Stderr = $stderr.ToArray() }
+            }
+            finally {
+                $child.Dispose()
+                $stdout.Dispose()
+                $stderr.Dispose()
+            }
+        }
+
+        $quotedModulePath = "'" + $modulePath.Replace("'", "''") + "'"
+        $quotedCommandName = "'" + $commandName.Replace("'", "''") + "'"
+        $successScriptPath = Join-Path $TestDrive 'import-warning-success.ps1'
+        $successScript = @"
+$($helperNodes[0].Extent.Text)
+Import-CorePesterModuleWithWarningsOnStderr -ManifestPath $quotedModulePath
+if (-not (Get-Command -Name $quotedCommandName -ErrorAction Stop)) { throw 'Warning fixture module command was not imported.' }
+[Console]::Out.WriteLine((ConvertTo-Json -InputObject @{ report = 'machine' } -Compress))
+"@
+        [IO.File]::WriteAllText($successScriptPath, $successScript, [Text.UTF8Encoding]::new($false))
+        $success = Invoke-ImportBoundaryFixtureChild -ScriptPath $successScriptPath
+        $success.ExitCode | Should -Be 0
+        $successStdout = [Text.UTF8Encoding]::new($false, $true).GetString([byte[]]$success.Stdout)
+        $successStdout | Should -Be ('{"report":"machine"}' + [Environment]::NewLine)
+        [Text.Encoding]::ASCII.GetString([byte[]]$success.Stderr) | Should -Match ([regex]::Escape("Pester import warning: $warningText"))
+
+        $quotedFailingModulePath = "'" + $failingModulePath.Replace("'", "''") + "'"
+        $failureScriptPath = Join-Path $TestDrive 'import-warning-failure.ps1'
+        $failureScript = @"
+$($helperNodes[0].Extent.Text)
+Import-CorePesterModuleWithWarningsOnStderr -ManifestPath $quotedFailingModulePath
+[Console]::Out.WriteLine('unexpected import success')
+"@
+        [IO.File]::WriteAllText($failureScriptPath, $failureScript, [Text.UTF8Encoding]::new($false))
+        $failure = Invoke-ImportBoundaryFixtureChild -ScriptPath $failureScriptPath
+        $failure.ExitCode | Should -Not -Be 0
+        $failureStdout = [Text.UTF8Encoding]::new($false, $true).GetString([byte[]]$failure.Stdout)
+        $failureStdout | Should -BeExactly ''
+        $failureStderr = [Text.Encoding]::ASCII.GetString([byte[]]$failure.Stderr)
+        $failureStderr | Should -Match ([regex]::Escape("Pester import warning: $failureWarningText"))
+        $failureStderr | Should -Match ([regex]::Escape($failureMessage))
+        Remove-Item -LiteralPath 'Function:\Invoke-ImportBoundaryFixtureChild' -Force -ErrorAction SilentlyContinue
     }
 }
