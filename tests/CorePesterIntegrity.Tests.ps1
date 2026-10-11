@@ -379,4 +379,47 @@ Describe 'Verified Pester 6.2.0 module closure' {
         $setup | Should -Match 'Refusing unsafe recursive staging cleanup'
         $setup | Should -Not -Match 'Install-PSResource|Install-Module|CurrentUser'
     }
+
+    # Scenario: A valid frozen SHA-256 is checked before the binding path is returned.
+    # Purpose: Keep PowerShell's automatic Matches variable from replacing the selected file record.
+    It 'UnitT70_returns_a_frozen_binding_after_valid_SHA256_validation' {
+        $wrapperPath = Join-Path $script:repositoryRoot 'scripts/Invoke-CorePester.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $wrapperAst = [System.Management.Automation.Language.Parser]::ParseFile($wrapperPath, [ref]$tokens, [ref]$parseErrors)
+        $parseErrors.Count | Should -Be 0
+        $helperNodes = @($wrapperAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Get-CorePesterFrozenBinding'
+        }, $true))
+        $helperNodes.Count | Should -Be 1
+
+        $sourcePath = Join-Path $TestDrive 'candidate-git-entry-modes.json'
+        [IO.File]::WriteAllText($sourcePath, '{}', [Text.UTF8Encoding]::new($false))
+        $sourceSpec = [pscustomobject]@{
+            frozenFiles = @([pscustomobject]@{
+                path = [IO.Path]::GetFullPath($sourcePath)
+                sha256 = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
+            })
+        }
+        $invokeBindingHelper = {
+            param([string] $FunctionText, [pscustomobject] $BindingSource, [string] $Name)
+            $sourceSpec = $BindingSource
+            Invoke-Expression -Command $FunctionText
+            try { Get-CorePesterFrozenBinding -Name $Name }
+            finally { Remove-Item -Path 'Function:\Get-CorePesterFrozenBinding' -Force -ErrorAction SilentlyContinue }
+        }
+        $binding = & $invokeBindingHelper $helperNodes[0].Extent.Text $sourceSpec 'candidate-git-entry-modes.json'
+        $binding.path | Should -Be ([IO.Path]::GetFullPath($sourcePath))
+        $binding.sha256 | Should -Be (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
+
+        $invalidHashSourceSpec = [pscustomobject]@{
+            frozenFiles = @([pscustomobject]@{ path = [IO.Path]::GetFullPath($sourcePath); sha256 = 'invalid-sha256' })
+        }
+        { & $invokeBindingHelper $helperNodes[0].Extent.Text $invalidHashSourceSpec 'candidate-git-entry-modes.json' } | Should -Throw '*exactly one frozen*'
+        $ambiguousSourceSpec = [pscustomobject]@{
+            frozenFiles = @($sourceSpec.frozenFiles[0], $sourceSpec.frozenFiles[0])
+        }
+        { & $invokeBindingHelper $helperNodes[0].Extent.Text $ambiguousSourceSpec 'candidate-git-entry-modes.json' } | Should -Throw '*exactly one frozen*'
+    }
 }

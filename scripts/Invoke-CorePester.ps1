@@ -41,13 +41,13 @@ $sourceSpec = $adapter.sourceValidation
 if ($sourceSpec.frozenFiles -isnot [array] -or $sourceSpec.toolReceipts -isnot [array]) { throw 'Core Pester retained adapter has no prepared frozen closure.' }
 function Get-CorePesterFrozenBinding {
     param([Parameter(Mandatory)][string] $Name)
-    $matches = @($sourceSpec.frozenFiles | Where-Object { [IO.Path]::GetFileName([string]$_.path) -ceq $Name })
-    if ($matches.Count -ne 1 -or [string]$matches[0].sha256 -cnotmatch '^[0-9a-f]{64}$') { throw "Core Pester requires exactly one frozen '$Name' input." }
-    $fullPath = [IO.Path]::GetFullPath([string]$matches[0].path)
-    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf) -or (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() -cne [string]$matches[0].sha256) {
+    $bindingRecords = @($sourceSpec.frozenFiles | Where-Object { [IO.Path]::GetFileName([string]$_.path) -ceq $Name })
+    if ($bindingRecords.Count -ne 1 -or [string]$bindingRecords[0].sha256 -cnotmatch '^[0-9a-f]{64}$') { throw "Core Pester requires exactly one frozen '$Name' input." }
+    $fullPath = [IO.Path]::GetFullPath([string]$bindingRecords[0].path)
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf) -or (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() -cne [string]$bindingRecords[0].sha256) {
         throw "Core Pester frozen '$Name' input is missing or changed."
     }
-    return [pscustomobject]@{ path = $fullPath; sha256 = [string]$matches[0].sha256 }
+    return [pscustomobject]@{ path = $fullPath; sha256 = [string]$bindingRecords[0].sha256 }
 }
 $manifestBinding = Get-CorePesterFrozenBinding -Name 'candidate-git-entry-modes.json'
 $sourceOwnedRoot = [IO.Path]::GetFullPath((Split-Path -Parent $manifestBinding.path))
