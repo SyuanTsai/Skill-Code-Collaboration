@@ -1372,6 +1372,127 @@ function Get-CodeSourceCoreRunPaths {
     return [pscustomobject]@{ runId = $RunId; artifactsRoot = [IO.Path]::GetFullPath($coreRoot); adapterRoot = [IO.Path]::GetFullPath($adapterRoot); adapterPath = [IO.Path]::GetFullPath((Join-Path $adapterRoot 'standard-core-adapter-v2.json')); outputPath = [IO.Path]::GetFullPath($outputFull) }
 }
 
+function New-CodeSourceStandardValidationModule {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $RunnerPath,
+        [Parameter(Mandatory = $true)][string] $RunnerSha256,
+        [Parameter(Mandatory = $true)][System.Collections.IDictionary] $RunnerArguments,
+        [switch] $SourceValidation
+    )
+
+    $runnerFullPath = [IO.Path]::GetFullPath($RunnerPath)
+    if (-not [IO.Path]::IsPathRooted($RunnerPath) -or -not (Test-Path -LiteralPath $runnerFullPath -PathType Leaf)) {
+        throw 'The protected Standard Core runner must be an existing absolute file.'
+    }
+    if ($RunnerSha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'The protected Standard Core runner hash is invalid.' }
+    if ((Get-FileHash -LiteralPath $runnerFullPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $RunnerSha256) {
+        throw 'The protected Standard Core runner differs from its verified authority hash.'
+    }
+
+    $allowedNames = @(
+        'CandidateRoot', 'AdapterPath', 'ArtifactsRoot', 'OutputPath', 'SourceRepository',
+        'SourceRevision', 'BaseRevision', 'EventName', 'RunId', 'AuthorityRevision',
+        'TimeoutSeconds', 'CancellationPath', 'TrustedToolRoot'
+    )
+    $requiredNames = @(
+        'CandidateRoot', 'AdapterPath', 'ArtifactsRoot', 'OutputPath', 'SourceRepository',
+        'SourceRevision', 'BaseRevision', 'EventName', 'RunId', 'AuthorityRevision',
+        'TimeoutSeconds', 'CancellationPath', 'TrustedToolRoot'
+    )
+    $argumentNames = @($RunnerArguments.Keys | ForEach-Object { [string]$_ })
+    foreach ($name in $argumentNames) {
+        if ($name -cnotin $allowedNames) { throw "Unsupported protected Standard Core runner argument '$name'." }
+    }
+    foreach ($name in $requiredNames) {
+        if (-not $RunnerArguments.Contains($name)) { throw "Protected Standard Core runner context is missing '$name'." }
+    }
+    foreach ($name in @('CandidateRoot', 'AdapterPath', 'ArtifactsRoot', 'TrustedToolRoot')) {
+        $value = [string]$RunnerArguments[$name]
+        if ([string]::IsNullOrWhiteSpace($value) -or -not [IO.Path]::IsPathRooted($value)) {
+            throw "Protected Standard Core runner context '$name' must be an absolute path."
+        }
+    }
+    foreach ($name in @('OutputPath', 'CancellationPath')) {
+        $value = [string]$RunnerArguments[$name]
+        if (-not [string]::IsNullOrWhiteSpace($value) -and -not [IO.Path]::IsPathRooted($value)) {
+            throw "Protected Standard Core runner context '$name' must be empty or an absolute path."
+        }
+    }
+    foreach ($name in @('SourceRepository', 'SourceRevision', 'BaseRevision', 'RunId', 'AuthorityRevision')) {
+        if ([string]::IsNullOrWhiteSpace([string]$RunnerArguments[$name])) {
+            throw "Protected Standard Core runner context '$name' must be nonempty."
+        }
+    }
+    foreach ($name in @('SourceRevision', 'BaseRevision', 'AuthorityRevision')) {
+        if ([string]$RunnerArguments[$name] -cnotmatch '^[0-9a-f]{40}$') {
+            throw "Protected Standard Core runner context '$name' is not a canonical revision."
+        }
+    }
+    if ([string]$RunnerArguments['RunId'] -cnotmatch '^[0-9a-f]{32}$') { throw 'Protected Standard Core runner RunId is invalid.' }
+    if ([string]$RunnerArguments['EventName'] -cnotin @('local', 'pre-push', 'pull_request', 'push', 'workflow_dispatch')) {
+        throw 'Protected Standard Core runner event is unsupported.'
+    }
+    if ([int]$RunnerArguments['TimeoutSeconds'] -le 0) { throw 'Protected Standard Core runner timeout must be positive.' }
+
+    $importArguments = [ordered]@{}
+    foreach ($name in $argumentNames) { $importArguments[$name] = $RunnerArguments[$name] }
+    $importArguments['DefineFunctionsOnly'] = $true
+    if ($SourceValidation) {
+        $runnerTokens = $null
+        $runnerErrors = $null
+        $runnerAst = [Management.Automation.Language.Parser]::ParseFile($runnerFullPath, [ref]$runnerTokens, [ref]$runnerErrors)
+        if ($runnerErrors.Count -ne 0 -or @($runnerAst.ParamBlock.Parameters | Where-Object {
+            ([string]$_.Name.VariablePath.UserPath) -ceq 'SourceValidation'
+        }).Count -ne 1) {
+            throw 'The protected Standard Core runner does not expose the SourceValidation contract.'
+        }
+        $importArguments['SourceValidation'] = $true
+    }
+
+    $moduleName = 'CodeSourceStandardValidation_' + [guid]::NewGuid().ToString('N')
+    $moduleArguments = @($runnerFullPath, $importArguments)
+    $module = New-Module -Name $moduleName -ArgumentList $moduleArguments -ScriptBlock {
+        param([string] $__runnerPath, [System.Collections.IDictionary] $__runnerArguments)
+        . $__runnerPath @__runnerArguments
+        Export-ModuleMember -Function @() -Cmdlet @() -Alias @() -Variable @()
+    }
+    if ($module -isnot [System.Management.Automation.PSModuleInfo] -or $module.Name -cne $moduleName) {
+        throw 'Could not create an isolated Standard Core runner module.'
+    }
+    return $module
+}
+
+function Invoke-CodeSourceStandardValidationModule {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][System.Management.Automation.PSModuleInfo] $Module,
+        [Parameter(Mandatory = $true)][string] $FunctionName,
+        [Parameter(Mandatory = $true)][System.Collections.IDictionary] $Arguments
+    )
+
+    $allowedFunctions = @(
+        'Invoke-StandardValidationProcess', 'Assert-StandardCoreFrozenFiles',
+        'Assert-StandardCoreSourceToolReceipts', 'Assert-StandardCoreSourceCheckReport'
+    )
+    if ($FunctionName -cnotin $allowedFunctions) { throw "Protected Standard Core operation '$FunctionName' is not allowed." }
+    $moduleInvoker = {
+        param([string] $Name, [System.Collections.IDictionary] $BoundArguments)
+        $command = Get-Command -Name $Name -CommandType Function -ErrorAction Stop
+        $currentModule = [string]$ExecutionContext.SessionState.Module.Name
+        if ([string]::IsNullOrWhiteSpace($currentModule) -or [string]$command.ModuleName -cne $currentModule) {
+            throw 'Protected Standard Core operation is not owned by its isolated runner module.'
+        }
+        foreach ($argumentName in $BoundArguments.Keys) {
+            if (-not $command.Parameters.ContainsKey([string]$argumentName)) {
+                throw "Protected Standard Core operation '$Name' does not accept argument '$argumentName'."
+            }
+        }
+        & $command @BoundArguments
+    }
+    return & $Module $moduleInvoker $FunctionName $Arguments
+}
+
 function Invoke-CodeSourceToolSetup {
     param([Parameter(Mandatory)][string] $GitPath, [Parameter(Mandatory)][string] $PowerShellPath,
         [Parameter(Mandatory)][string] $RepositoryRoot, [Parameter(Mandatory)][string] $CandidateRevision,
@@ -1421,8 +1542,24 @@ function Invoke-CodeSourceToolSetup {
     foreach ($binding in @(@($runner, 'scripts/Invoke-StandardValidation.ps1'), @($resolver, 'scripts/Resolve-StandardValidationTool.ps1'), @($policy, 'docs/standards/validation-toolchain.json'))) {
         if ((Get-FileSha256 -Path $binding[0]) -cne [string]$pin.files[$binding[1]]) { throw "Verified authority file changed before setup: $($binding[1])" }
     }
-    . $runner -DefineFunctionsOnly -CandidateRoot $RepositoryRoot -AdapterPath $preparedPath -ArtifactsRoot $setupRoot `
-        -SourceRepository $script:SourceRepository -SourceRevision $CandidateRevision -BaseRevision $CandidateRevision -AuthorityRevision $pin.commit
+    $runnerContext = [ordered]@{
+        CandidateRoot = $RepositoryRoot
+        AdapterPath = $preparedPath
+        ArtifactsRoot = $setupRoot
+        OutputPath = ''
+        SourceRepository = $script:SourceRepository
+        SourceRevision = $CandidateRevision
+        BaseRevision = $CandidateRevision
+        EventName = 'local'
+        RunId = $runId
+        AuthorityRevision = [string]$pin.commit
+        TimeoutSeconds = $TimeoutSeconds
+        CancellationPath = ''
+        TrustedToolRoot = $trustedRoot
+    }
+    $runnerModule = New-CodeSourceStandardValidationModule -RunnerPath $runner `
+        -RunnerSha256 ([string]$pin.files['scripts/Invoke-StandardValidation.ps1']) -RunnerArguments $runnerContext
+    try {
 
     $stageTimer = [Diagnostics.Stopwatch]::StartNew()
     $manifestPath = Join-Path $ownedRoot 'candidate-git-entry-modes.json'
@@ -1457,10 +1594,18 @@ function Invoke-CodeSourceToolSetup {
     foreach ($toolName in @('skill-validator', 'skill-tools', 'skillspector')) {
         $resolverTimer = [Diagnostics.Stopwatch]::StartNew()
         $receiptPath = Join-Path $ownedRoot "receipt-$toolName.json"
-        $processResult = Invoke-StandardValidationProcess -Command $powerShell -Arguments @('-NoProfile', '-NonInteractive', '-File', $resolver,
-            '-PolicyPath', $policy, '-ToolName', $toolName, '-Install', '-InstallRoot', (Join-Path $ownedRoot 'installed'),
-            '-ExpectedGoRuntimeVersion', $goVersion, '-RunId', $runId, '-OutputPath', $receiptPath) `
-            -WorkingDirectory $ownedRoot -Environment @{} -TimeoutSeconds $TimeoutSeconds -CoreLifecycleOnly
+        $resolverArguments = @{
+            Command = $powerShell
+            Arguments = [string[]]@('-NoProfile', '-NonInteractive', '-File', $resolver,
+                '-PolicyPath', $policy, '-ToolName', $toolName, '-Install', '-InstallRoot', (Join-Path $ownedRoot 'installed'),
+                '-ExpectedGoRuntimeVersion', $goVersion, '-RunId', $runId, '-OutputPath', $receiptPath)
+            WorkingDirectory = $ownedRoot
+            Environment = @{}
+            TimeoutSeconds = $TimeoutSeconds
+            CoreLifecycleOnly = $true
+        }
+        $processResult = Invoke-CodeSourceStandardValidationModule -Module $runnerModule `
+            -FunctionName 'Invoke-StandardValidationProcess' -Arguments $resolverArguments
         Write-Utf8NoBomCreateNew -Path (Join-Path $ownedRoot "setup-$toolName-process.json") -Text (($processResult | ConvertTo-Json -Depth 40) + [Environment]::NewLine)
         if ([string]$processResult.status -cne 'passed' -or [int]$processResult.exitCode -ne 0 -or -not [bool]$processResult.cleanedUp) {
             throw "Source tool setup '$toolName' failed with status '$($processResult.status)', exit $($processResult.exitCode), cleanup=$($processResult.cleanedUp)."
@@ -1524,10 +1669,18 @@ function Invoke-CodeSourceToolSetup {
     $setupReceiptPath = Join-Path $ownedRoot 'pester-setup/setup-receipt.json'
     $setupEnvironment = @{ RUN_OWNED_ROOT = $ownedRoot }
     $pesterSetupTimer = [Diagnostics.Stopwatch]::StartNew()
-    $setupResult = Invoke-StandardValidationProcess -Command $powerShell -Arguments @('-NoProfile', '-NonInteractive', '-File', $prepareScript,
-        '-RuntimeExecutable', $powerShell, '-OwnedRoot', $ownedRoot, '-ModuleRoot', $moduleRoot, '-LockPath', $lockPath,
-        '-SetupReceiptPath', $setupReceiptPath, '-RunId', $runId) -WorkingDirectory $ownedRoot -Environment $setupEnvironment `
-        -TimeoutSeconds $TimeoutSeconds -CoreLifecycleOnly
+    $pesterSetupArguments = @{
+        Command = $powerShell
+        Arguments = [string[]]@('-NoProfile', '-NonInteractive', '-File', $prepareScript,
+            '-RuntimeExecutable', $powerShell, '-OwnedRoot', $ownedRoot, '-ModuleRoot', $moduleRoot, '-LockPath', $lockPath,
+            '-SetupReceiptPath', $setupReceiptPath, '-RunId', $runId)
+        WorkingDirectory = $ownedRoot
+        Environment = $setupEnvironment
+        TimeoutSeconds = $TimeoutSeconds
+        CoreLifecycleOnly = $true
+    }
+    $setupResult = Invoke-CodeSourceStandardValidationModule -Module $runnerModule `
+        -FunctionName 'Invoke-StandardValidationProcess' -Arguments $pesterSetupArguments
     Write-Utf8NoBomCreateNew -Path (Join-Path $ownedRoot 'pester-setup-process.json') -Text (($setupResult | ConvertTo-Json -Depth 40) + [Environment]::NewLine)
     if ([string]$setupResult.status -cne 'passed' -or [int]$setupResult.exitCode -ne 0 -or -not [bool]$setupResult.cleanedUp) {
         throw "Run-owned Pester setup failed with status '$($setupResult.status)', exit $($setupResult.exitCode), cleanup=$($setupResult.cleanedUp)."
@@ -1605,10 +1758,11 @@ function Invoke-CodeSourceToolSetup {
     $frozenRecords = @($sourceFrozenFiles.files) + @($setupTimingRecord)
     $sourceDispatch.frozenFiles = @($frozenRecords | Sort-Object -Property path -CaseSensitive)
     $frozenFiles = @($sourceDispatch.frozenFiles)
-    . $runner -DefineFunctionsOnly -CandidateRoot $RepositoryRoot -AdapterPath $preparedPath -ArtifactsRoot $setupRoot `
-        -SourceRepository $script:SourceRepository -SourceRevision $CandidateRevision -BaseRevision $CandidateRevision -AuthorityRevision $pin.commit
-    Assert-StandardCoreFrozenFiles -Files @($sourceDispatch.frozenFiles)
-    Assert-StandardCoreSourceToolReceipts -Bindings @($sourceDispatch.toolReceipts) -FrozenFiles @($sourceDispatch.frozenFiles) -RunId $runId -CandidateRoot $RepositoryRoot -ArtifactsRoot $setupRoot
+    [void](Invoke-CodeSourceStandardValidationModule -Module $runnerModule -FunctionName 'Assert-StandardCoreFrozenFiles' `
+        -Arguments @{ Files = @($sourceDispatch.frozenFiles) })
+    [void](Invoke-CodeSourceStandardValidationModule -Module $runnerModule -FunctionName 'Assert-StandardCoreSourceToolReceipts' `
+        -Arguments @{ Bindings = @($sourceDispatch.toolReceipts); FrozenFiles = @($sourceDispatch.frozenFiles); `
+            RunId = $runId; CandidateRoot = $RepositoryRoot; ArtifactsRoot = $setupRoot })
 
     $prepared = [ordered]@{
         schemaVersion = 1; preparation = 'code-collaboration-source-tools'; runId = $runId
@@ -1650,6 +1804,10 @@ function Invoke-CodeSourceToolSetup {
     Write-Utf8NoBomCreateNew -Path $setupCompletedTimingPath -Text (($setupCompletedTiming | ConvertTo-Json -Depth 30) + [Environment]::NewLine)
     [Console]::Out.WriteLine("Prepared source validation tools for RunId $runId at $preparedPath")
     [Console]::Out.WriteLine("Source setup timing evidence: $setupCompletedTimingPath")
+    }
+    finally {
+        if ($null -ne $runnerModule) { Remove-Module -ModuleInfo $runnerModule -Force -ErrorAction Stop }
+    }
 }
 
 function Read-CodeSourcePreparedTools {
@@ -1800,7 +1958,9 @@ function Invoke-CodeSourceValidation {
     [void](New-Item -ItemType Directory -Path $paths.adapterRoot -ErrorAction Stop)
     $adapterRootCreated = $true
     $cleanupSucceeded = $false
+    $runnerModuleCleanupSucceeded = $true
     $processExitCode = 1
+    $reportRunnerModule = $null
     $previousTestValidateSource = [Environment]::GetEnvironmentVariable('SYP154_TEST_VALIDATE_SOURCE', 'Process')
     try {
         Assert-NoReparseAncestors -Path $paths.adapterRoot -Context 'Source Core adapter root'
@@ -1837,14 +1997,29 @@ function Invoke-CodeSourceValidation {
         }
         $runnerOutput | Out-Host
         if ($processExitCode -eq 0) {
-            . $centralRunner -DefineFunctionsOnly -CandidateRoot $RepositoryRoot -AdapterPath $paths.adapterPath -ArtifactsRoot $paths.artifactsRoot `
-                -OutputPath $paths.outputPath -SourceRepository $script:SourceRepository -SourceRevision $CandidateRevision `
-                -BaseRevision $BaseRevision -EventName $EventName -AuthorityRevision ([string]$pin.commit) -RunId ([string]$prepared.runId) `
-                -SourceValidation -TrustedToolRoot $trustedRoot
+            $reportRunnerContext = [ordered]@{
+                CandidateRoot = $RepositoryRoot
+                AdapterPath = $paths.adapterPath
+                ArtifactsRoot = $paths.artifactsRoot
+                OutputPath = $paths.outputPath
+                SourceRepository = $script:SourceRepository
+                SourceRevision = $CandidateRevision
+                BaseRevision = $BaseRevision
+                EventName = $EventName
+                RunId = [string]$prepared.runId
+                AuthorityRevision = [string]$pin.commit
+                TimeoutSeconds = $TimeoutSeconds
+                CancellationPath = if ([string]::IsNullOrWhiteSpace($CancellationPath)) { '' } else { [IO.Path]::GetFullPath($CancellationPath) }
+                TrustedToolRoot = $trustedRoot
+            }
+            $reportRunnerModule = New-CodeSourceStandardValidationModule -RunnerPath $centralRunner `
+                -RunnerSha256 ([string]$pin.files['scripts/Invoke-StandardValidation.ps1']) -RunnerArguments $reportRunnerContext `
+                -SourceValidation
             $report = Read-JsonFile -Path $paths.outputPath -Context 'Standard Core SourceValidation report'
-            [void](Assert-StandardCoreSourceCheckReport -Report $report -ExpectedSourceRevision $CandidateRevision -ExpectedBaseRevision $BaseRevision `
-                -ExpectedAuthorityRevision ([string]$pin.commit) -ExpectedEventName $EventName -ArtifactsRoot $paths.artifactsRoot `
-                -OutputPath $paths.outputPath -ProcessExitCode $processExitCode)
+            [void](Invoke-CodeSourceStandardValidationModule -Module $reportRunnerModule -FunctionName 'Assert-StandardCoreSourceCheckReport' `
+                -Arguments @{ Report = $report; ExpectedSourceRevision = $CandidateRevision; ExpectedBaseRevision = $BaseRevision; `
+                    ExpectedAuthorityRevision = [string]$pin.commit; ExpectedEventName = $EventName; ArtifactsRoot = $paths.artifactsRoot; `
+                    OutputPath = $paths.outputPath; ProcessExitCode = $processExitCode })
             [void](Assert-CodeSourceReportBinding -Report $report -Prepared $prepared -CandidateRevision $CandidateRevision `
                 -BaseRevision $BaseRevision -AuthorityRevision ([string]$pin.commit) -EventName $EventName -ArtifactsRoot $paths.artifactsRoot `
                 -OutputPath $paths.outputPath -ProcessExitCode $processExitCode -CleanupSucceeded $true `
@@ -1854,6 +2029,17 @@ function Invoke-CodeSourceValidation {
     }
     finally {
         [Environment]::SetEnvironmentVariable('SYP154_TEST_VALIDATE_SOURCE', $previousTestValidateSource, 'Process')
+        if ($null -ne $reportRunnerModule) {
+            try {
+                Remove-Module -ModuleInfo $reportRunnerModule -Force -ErrorAction Stop
+                $reportRunnerModule = $null
+            }
+            catch {
+                $runnerModuleCleanupSucceeded = $false
+                $script:SourceCleanupFailed = $true
+                $cleanupErrorMessage = "Central Standard Core module cleanup failed: $($_.Exception.Message)"
+            }
+        }
         if ($adapterRootCreated -and (Test-Path -LiteralPath $paths.adapterRoot -PathType Container)) {
             try {
                 $expectedAdapterRoot = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $paths.artifactsRoot) ".core-v2-adapter-$($prepared.runId)"))
@@ -1895,7 +2081,7 @@ function Invoke-CodeSourceValidation {
             diagnosticTargetExceeded = ($combinedWallSeconds -gt 1200)
             processExitCode = $processExitCode
             reportAccepted = $sourceReportAccepted
-            cleanupSucceeded = $cleanupSucceeded
+            cleanupSucceeded = ($cleanupSucceeded -and $runnerModuleCleanupSucceeded)
         }
         try {
             Assert-OutsideRoot -Path $sourceTimingPath -Root $RepositoryRoot -Context 'Source timing evidence'
@@ -1909,7 +2095,7 @@ function Invoke-CodeSourceValidation {
         }
         if ($null -ne $cleanupErrorMessage) { throw "SOURCE_CLEANUP| $cleanupErrorMessage" }
     }
-    if ($processExitCode -eq 0 -and -not $cleanupSucceeded) { throw 'Source Core adapter cleanup status is not complete.' }
+    if ($processExitCode -eq 0 -and (-not $cleanupSucceeded -or -not $runnerModuleCleanupSucceeded)) { throw 'Source Core cleanup status is not complete.' }
     if ($processExitCode -ne 0 -and (Test-Path -LiteralPath $paths.outputPath -PathType Leaf)) {
         [Console]::Error.WriteLine("Source Core report retained for failed process exit $($processExitCode): $($paths.outputPath)")
     }

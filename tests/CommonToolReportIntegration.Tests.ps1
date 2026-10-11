@@ -323,6 +323,166 @@ Describe 'Code child uses central package tool report rules' {
         Test-Path -LiteralPath $rawStderr[0].FullName -PathType Leaf | Should -BeTrue
     }
 
+    # Scenario: the real active authority runner is loaded while the caller holds nonempty values that use the runner's parameter names.
+    # Purpose: retain the central runner's full module-scoped function closure and script state without overwriting setup or validation locals.
+    It 'InterT15_preserves_caller_bindings_when_importing_the_real_authority_runner' {
+        $tokens = $null
+        $parseErrors = $null
+        $sourceAst = [Management.Automation.Language.Parser]::ParseInput($script:validationSource, [ref]$tokens, [ref]$parseErrors)
+        $parseErrors.Count | Should -Be 0
+        $factoryNodes = @($sourceAst.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'New-CodeSourceStandardValidationModule'
+        }, $true))
+        $dispatcherNodes = @($sourceAst.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-CodeSourceStandardValidationModule'
+        }, $true))
+        $setupNodes = @($sourceAst.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-CodeSourceToolSetup'
+        }, $true))
+        $validationNodes = @($sourceAst.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-CodeSourceValidation'
+        }, $true))
+        $factoryNodes.Count | Should -Be 1
+        $dispatcherNodes.Count | Should -Be 1
+        $setupNodes.Count | Should -Be 1
+        $validationNodes.Count | Should -Be 1
+        $setupSource = $setupNodes[0].Extent.Text
+        $validationSource = $validationNodes[0].Extent.Text
+        $setupSource | Should -Match 'New-CodeSourceStandardValidationModule'
+        $setupSource | Should -Match 'Invoke-CodeSourceStandardValidationModule'
+        $setupSource | Should -Not -Match '(?m)^\s*\.\s+\$runner\s+-DefineFunctionsOnly'
+        $validationSource | Should -Match 'New-CodeSourceStandardValidationModule'
+        $validationSource | Should -Match 'Invoke-CodeSourceStandardValidationModule'
+        $validationSource | Should -Not -Match '(?m)^\s*\.\s+\$centralRunner\s+-DefineFunctionsOnly'
+        Invoke-Expression $factoryNodes[0].Extent.Text
+        Invoke-Expression $dispatcherNodes[0].Extent.Text
+
+        $runId = 'f' * 32
+        $TimeoutSeconds = 10800
+        $TrustedToolRoot = Split-Path -Parent $script:pwshPath
+        $CancellationPath = Join-Path $script:testRoot 'central-runner-cancel.request'
+        $OutputPath = Join-Path $script:testRoot 'central-runner-report.json'
+        $EventName = 'pull_request'
+        $CandidateRevision = 'd' * 40
+        $BaseRevision = 'e' * 40
+        $activeAuthority = (Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'config/standard-v1.json') -Raw | ConvertFrom-Json -Depth 20).authority
+        $AuthorityRevision = [string]$activeAuthority.commit
+        $expectedSourceValidation = $AuthorityRevision -ceq 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
+        $AuthorityRevision | Should -BeIn @('8aabd22694a05771f98639f6d726cc9a620eb94b', 'ff85d5f80fe795b96354e753074b5ce59ad04ecd')
+        $SourceRepository = 'https://github.com/SyuanTsai/Skill-Code-Collaboration.git'
+        $expectedCallerBindings = [ordered]@{
+            runId = $runId
+            TimeoutSeconds = $TimeoutSeconds
+            TrustedToolRoot = $TrustedToolRoot
+            CancellationPath = $CancellationPath
+            OutputPath = $OutputPath
+            EventName = $EventName
+            CandidateRevision = $CandidateRevision
+            BaseRevision = $BaseRevision
+            AuthorityRevision = $AuthorityRevision
+            SourceRepository = $SourceRepository
+        }
+        $runnerContext = [ordered]@{
+            CandidateRoot = Join-Path $script:testRoot 'candidate'
+            AdapterPath = $script:toolchainPath
+            ArtifactsRoot = $script:testRoot
+            OutputPath = $expectedCallerBindings.OutputPath
+            SourceRepository = $expectedCallerBindings.SourceRepository
+            SourceRevision = $expectedCallerBindings.CandidateRevision
+            BaseRevision = $expectedCallerBindings.BaseRevision
+            EventName = $expectedCallerBindings.EventName
+            RunId = $expectedCallerBindings.runId
+            AuthorityRevision = $expectedCallerBindings.AuthorityRevision
+            TimeoutSeconds = $expectedCallerBindings.TimeoutSeconds
+            CancellationPath = $expectedCallerBindings.CancellationPath
+            TrustedToolRoot = $expectedCallerBindings.TrustedToolRoot
+        }
+        $runnerToolchain = Get-Content -LiteralPath $script:toolchainPath -Raw | ConvertFrom-Json -Depth 10
+        $module = $null
+        try {
+            $module = New-CodeSourceStandardValidationModule -RunnerPath $script:runnerPath `
+                -RunnerSha256 ([string]$runnerToolchain.centralRunnerSha256) -RunnerArguments $runnerContext `
+                -SourceValidation:$expectedSourceValidation
+
+            Get-Command Invoke-StandardValidationProcess -CommandType Function -ErrorAction SilentlyContinue | Should -BeNullOrEmpty
+            $moduleState = & $module {
+                $processFunction = Get-Command Invoke-StandardValidationProcess -CommandType Function -ErrorAction Stop
+                $runnerParamTokens = $null
+                $runnerParseErrors = $null
+                $runnerPathInModule = Join-Path ([string]$script:StandardValidationRepositoryRoot) 'scripts/Invoke-StandardValidation.ps1'
+                $runnerAst = [Management.Automation.Language.Parser]::ParseFile($runnerPathInModule, [ref]$runnerParamTokens, [ref]$runnerParseErrors)
+                if ($runnerParseErrors.Count -ne 0) { throw 'The selected authority runner did not parse.' }
+                $runnerSupportsSourceValidation = @($runnerAst.ParamBlock.Parameters | Where-Object {
+                    ([string]$_.Name.VariablePath.UserPath) -ceq 'SourceValidation'
+                }).Count -eq 1
+                $sourceValidationValue = Get-Variable -Name SourceValidation -ErrorAction SilentlyContinue
+                [pscustomobject][ordered]@{
+                    processFunctionModule = [string]$processFunction.ModuleName
+                    centralRepositoryRoot = [string]$script:StandardValidationRepositoryRoot
+                    runId = [string]$RunId
+                    timeoutSeconds = [int]$TimeoutSeconds
+                    trustedToolRoot = [string]$TrustedToolRoot
+                    cancellationPath = [string]$CancellationPath
+                    outputPath = [string]$OutputPath
+                    eventName = [string]$EventName
+                    sourceRevision = [string]$SourceRevision
+                    baseRevision = [string]$BaseRevision
+                    authorityRevision = [string]$AuthorityRevision
+                    processSupportsCoreLifecycleOnly = $processFunction.Parameters.ContainsKey('CoreLifecycleOnly')
+                    runnerSupportsSourceValidation = [bool]$runnerSupportsSourceValidation
+                    sourceValidationEnabled = ($null -ne $sourceValidationValue -and [bool]$sourceValidationValue.Value)
+                }
+            }
+
+            $moduleState.processFunctionModule | Should -Be $module.Name
+            $moduleState.centralRepositoryRoot | Should -Be $script:moduleRoot
+            $moduleState.runId | Should -Be $expectedCallerBindings.runId
+            $moduleState.timeoutSeconds | Should -Be $expectedCallerBindings.TimeoutSeconds
+            $moduleState.trustedToolRoot | Should -Be $expectedCallerBindings.TrustedToolRoot
+            $moduleState.cancellationPath | Should -Be $expectedCallerBindings.CancellationPath
+            $moduleState.outputPath | Should -Be $expectedCallerBindings.OutputPath
+            $moduleState.eventName | Should -Be $expectedCallerBindings.EventName
+            $moduleState.sourceRevision | Should -Be $expectedCallerBindings.CandidateRevision
+            $moduleState.baseRevision | Should -Be $expectedCallerBindings.BaseRevision
+            $moduleState.authorityRevision | Should -Be $expectedCallerBindings.AuthorityRevision
+            $moduleState.runnerSupportsSourceValidation | Should -Be $expectedSourceValidation
+            $moduleState.sourceValidationEnabled | Should -Be $expectedSourceValidation
+            $moduleState.processSupportsCoreLifecycleOnly | Should -Be $expectedSourceValidation
+
+            $probePath = Join-Path $script:testRoot 'central-runner-import-probe.ps1'
+            [IO.File]::WriteAllText($probePath, "[Console]::Out.WriteLine('central-runner-import-ok')", [Text.UTF8Encoding]::new($false))
+            $processArguments = @{
+                Command = $script:pwshPath
+                Arguments = [string[]]@('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $probePath)
+                WorkingDirectory = $script:testRoot
+                Environment = @{}
+                TimeoutSeconds = 30
+                CancellationPath = $CancellationPath
+            }
+            if ($expectedSourceValidation) { $processArguments.CoreLifecycleOnly = $true }
+            $processResult = Invoke-CodeSourceStandardValidationModule -Module $module `
+                -FunctionName 'Invoke-StandardValidationProcess' -Arguments $processArguments
+            $processResult.status | Should -Be 'passed' -Because $processResult.stderr
+            $processResult.exitCode | Should -Be 0
+            $processResult.cleanedUp | Should -BeTrue
+            $processResult.stdout | Should -Match 'central-runner-import-ok'
+
+            foreach ($name in $expectedCallerBindings.Keys) {
+                (Get-Variable -Name $name -ValueOnly) | Should -Be $expectedCallerBindings[$name]
+            }
+        }
+        finally {
+            if ($null -ne $module) { Remove-Module -ModuleInfo $module -Force -ErrorAction Stop }
+        }
+
+        Get-Module -Name $module.Name | Should -BeNullOrEmpty
+        Get-Command Invoke-StandardValidationProcess -CommandType Function -ErrorAction SilentlyContinue | Should -BeNullOrEmpty
+    }
+
     # Scenario: the same candidate-bound tool returns typed zero counts.
     # Purpose: the shared report rule must allow the normal Code envelope path.
     It 'InterT20_accepts_typed_zero_counts_through_the_real_Code_child' {
