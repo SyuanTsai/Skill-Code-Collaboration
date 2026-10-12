@@ -169,7 +169,20 @@ jobs:
             ''
           }
           $outputPath = Join-Path $env:RUNNER_TEMP 'code-collaboration-conformance-report.json'
-          & ./scripts/Validate.ps1 -RepositoryRoot $candidateRoot -ArtifactsRoot $env:RUNNER_TEMP -BaseCommit $baseCommit -ExpectedGoRuntimeVersion $env:STANDARD_GO_RUNTIME_VERSION -OutputPath $outputPath
+          $hadNpmConfigPrefix = Test-Path -LiteralPath 'Env:npm_config_prefix'
+          $priorNpmConfigPrefix = [Environment]::GetEnvironmentVariable('npm_config_prefix', 'Process')
+          try {
+            Remove-Item -LiteralPath 'Env:npm_config_prefix' -ErrorAction SilentlyContinue
+            & ./scripts/Validate.ps1 -RepositoryRoot $candidateRoot -ArtifactsRoot $env:RUNNER_TEMP -BaseCommit $baseCommit -ExpectedGoRuntimeVersion $env:STANDARD_GO_RUNTIME_VERSION -OutputPath $outputPath
+          }
+          finally {
+            if ($hadNpmConfigPrefix) {
+              [Environment]::SetEnvironmentVariable('npm_config_prefix', $priorNpmConfigPrefix, 'Process')
+            }
+            else {
+              [Environment]::SetEnvironmentVariable('npm_config_prefix', $null, 'Process')
+            }
+          }
 
   # These jobs preserve the repository's existing required status contexts while
   # keeping the canonical Standard v1 gate as the only validation policy.
