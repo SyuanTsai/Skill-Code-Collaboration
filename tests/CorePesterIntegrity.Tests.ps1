@@ -460,7 +460,7 @@ Describe 'Verified Pester 6.2.0 module closure' {
         $wrapper = Get-Content -LiteralPath (Join-Path $script:repositoryRoot 'scripts/Invoke-CorePester.ps1') -Raw -Encoding utf8
         $wrapper | Should -Not -Match '(?i)Invoke-WebRequest|Invoke-RestMethod|Install-PSResource|Install-Module|Save-Module|Save-PSResource'
         $wrapper | Should -Match 'Assert-CorePesterRuntimeInventory'
-        $wrapper | Should -Match '\$moduleSearchRoot = Split-Path -Parent \(Split-Path -Parent \$verifiedPesterManifest\)'
+        $wrapper | Should -Match '\$moduleSearchRoot = Join-Path \$verifiedPowerShellRuntimeRoot ''Modules'''
         $wrapper | Should -Match 'SetEnvironmentVariable\(''PSModulePath'', \[IO\.Path\]::GetFullPath\(\$moduleSearchRoot\), ''Process''\)'
         $wrapper | Should -Match 'Test-CorePesterClosure'
         $wrapper | Should -Match 'Get-CorePesterExpectedLoadedModulePath'
@@ -486,6 +486,36 @@ Describe 'Verified Pester 6.2.0 module closure' {
         $setup | Should -Match 'Refusing unsafe recursive runtime cleanup'
         $setup | Should -Match 'Refusing unsafe recursive staging cleanup'
         $setup | Should -Not -Match 'Install-PSResource|Install-Module|CurrentUser'
+    }
+
+    # Scenario: Pester 6.2 and built-in PowerShell modules share the verified runtime Modules directory.
+    # Purpose: Keep module discovery inside the owned runtime while making CimCmdlets available to Pester.
+    It 'UnitT65_uses_the_verified_runtime_modules_directory_for_module_search' {
+        $wrapperPath = Join-Path $script:repositoryRoot 'scripts/Invoke-CorePester.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $wrapperAst = [System.Management.Automation.Language.Parser]::ParseFile($wrapperPath, [ref]$tokens, [ref]$parseErrors)
+        $parseErrors.Count | Should -Be 0
+
+        $moduleSearchAssignments = @($wrapperAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                $node.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and
+                $node.Left.VariablePath.UserPath -ceq 'moduleSearchRoot'
+        }, $true))
+        $moduleSearchAssignments.Count | Should -Be 1
+
+        $verifiedPowerShellRuntimeRoot = [IO.Path]::GetFullPath($PSHOME)
+        $verifiedPesterManifest = [IO.Path]::GetFullPath((Join-Path $verifiedPowerShellRuntimeRoot 'Modules/Pester/6.2.0/Pester.psd1'))
+
+        $moduleSearchRoot = $null
+        . ([scriptblock]::Create($moduleSearchAssignments[0].Extent.Text))
+        $expectedModuleSearchRoot = [IO.Path]::GetFullPath((Join-Path $verifiedPowerShellRuntimeRoot 'Modules'))
+        $moduleSearchRoot | Should -BeExactly $expectedModuleSearchRoot
+
+        $pesterOnlySearchRoot = [IO.Path]::GetFullPath((Split-Path -Parent (Split-Path -Parent $verifiedPesterManifest)))
+        $moduleSearchRoot | Should -Not -BeExactly $pesterOnlySearchRoot
+        (Test-Path -LiteralPath (Join-Path $moduleSearchRoot 'CimCmdlets') -PathType Container) | Should -BeTrue
     }
 
     # Scenario: A valid frozen SHA-256 is checked before the binding path is returned.
