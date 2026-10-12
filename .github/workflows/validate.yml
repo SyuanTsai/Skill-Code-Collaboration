@@ -28,6 +28,12 @@ jobs:
     steps:
       - name: Checkout protected base driver
         uses: *checkout-action-reference # actions/checkout v7
+        env:
+          GIT_CONFIG_COUNT: 2
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: 'false'
+          GIT_CONFIG_KEY_1: core.eol
+          GIT_CONFIG_VALUE_1: lf
         with:
           ref: ${{ github.event.pull_request.base.sha || (github.event.before != '0000000000000000000000000000000000000000' && github.event.before) || github.sha }}
           fetch-depth: 0
@@ -35,6 +41,12 @@ jobs:
 
       - name: Checkout immutable candidate
         uses: *checkout-action-reference # actions/checkout v7
+        env:
+          GIT_CONFIG_COUNT: 2
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: 'false'
+          GIT_CONFIG_KEY_1: core.eol
+          GIT_CONFIG_VALUE_1: lf
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: candidate
