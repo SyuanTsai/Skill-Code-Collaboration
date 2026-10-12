@@ -397,39 +397,94 @@ Describe 'Protected Standard Core SourceValidation preparation' {
             }
         }
 
+        function Get-A031ProcessArgumentValue {
+            param([Parameter(Mandatory)][string] $Name)
+            $processArguments = [Environment]::GetCommandLineArgs()
+            $matches = [Collections.Generic.List[string]]::new()
+            for ($index = 0; $index -lt $processArguments.Count; $index++) {
+                if ([string]$processArguments[$index] -ceq "-$Name") {
+                    if ($index + 1 -ge $processArguments.Count -or [string]::IsNullOrWhiteSpace([string]$processArguments[$index + 1])) {
+                        throw "The Pester process is missing its actual CLI -$Name value."
+                    }
+                    $matches.Add([string]$processArguments[$index + 1])
+                }
+            }
+            if ($matches.Count -ne 1) { throw "The Pester process must contain exactly one actual CLI -$Name binding." }
+            return $matches[0]
+        }
+
         function Get-A031AuthoritySupervisorBinding {
             $authorityRoot = [Environment]::GetEnvironmentVariable('SYP154_CANDIDATE_AUTHORITY_ROOT', 'Process')
-            if ([string]::IsNullOrWhiteSpace($authorityRoot)) {
-                throw 'A031 supervised regressions require the runner from the trusted SYP154_CANDIDATE_AUTHORITY_ROOT fixture.'
-            }
-            $fullAuthorityRoot = [IO.Path]::GetFullPath($authorityRoot)
-            $runnerPath = [IO.Path]::GetFullPath((Join-Path $fullAuthorityRoot 'scripts/Invoke-StandardValidation.ps1'))
-            if (-not (Test-Path -LiteralPath $runnerPath -PathType Leaf)) {
-                throw 'The trusted candidate authority fixture does not contain scripts/Invoke-StandardValidation.ps1.'
-            }
-            $runnerSha256 = Get-SourceBindingFixtureHash -Path $runnerPath
             $expectedSha256 = [Environment]::GetEnvironmentVariable('SYP302_A031_EXPECTED_RUNNER_SHA256', 'Process')
-            if (-not [string]::IsNullOrWhiteSpace($expectedSha256) -and $runnerSha256 -cne $expectedSha256) {
-                throw "Trusted A031 supervisor hash differs from the requested immutable fixture: expected=$expectedSha256 actual=$runnerSha256"
-            }
+            $fixtureMode = $null
             $revision = $null
             $revisionSource = $null
-            $gitRoot = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($null -ne $gitRoot) {
-                $rootOutput = @(& $gitRoot.Path -C $fullAuthorityRoot rev-parse --show-toplevel 2>$null)
+            $toolchainPath = $null
+            $toolchainSha256 = $null
+
+            if (-not [string]::IsNullOrWhiteSpace($authorityRoot)) {
+                # Keep the trusted Git-checkout path strict whenever CI supplies its authority root.
+                $fullAuthorityRoot = [IO.Path]::GetFullPath($authorityRoot)
+                $fixtureMode = 'syp154-git-root-head'
+                $git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($null -eq $git) { throw 'The trusted SYP154 authority fixture requires Git to identify its actual checkout revision.' }
+                $rootOutput = @(& $git.Path -C $fullAuthorityRoot rev-parse --show-toplevel 2>$null)
                 $rootExitCode = $LASTEXITCODE
-                if ($rootExitCode -eq 0 -and $rootOutput.Count -eq 1) {
-                    $reportedRoot = [IO.Path]::GetFullPath([string]$rootOutput[0]).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
-                    $expectedRoot = $fullAuthorityRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
-                    $pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
-                    if ($reportedRoot.Equals($expectedRoot, $pathComparison)) {
-                        $revisionOutput = @(& $gitRoot.Path -C $fullAuthorityRoot rev-parse HEAD 2>$null)
-                        if ($LASTEXITCODE -eq 0 -and $revisionOutput.Count -eq 1 -and [string]$revisionOutput[0] -cmatch '^[0-9a-f]{40}$') {
-                            $revision = [string]$revisionOutput[0]
-                            $revisionSource = 'exact-authority-git-root'
-                        }
-                    }
+                if ($rootExitCode -ne 0 -or $rootOutput.Count -ne 1) { throw 'The trusted SYP154 authority fixture is not an identifiable Git checkout.' }
+                $reportedRoot = [IO.Path]::GetFullPath([string]$rootOutput[0]).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+                $expectedRoot = $fullAuthorityRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+                $pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+                if (-not $reportedRoot.Equals($expectedRoot, $pathComparison)) { throw 'The trusted SYP154 authority path is not the root of its Git checkout.' }
+                $revisionOutput = @(& $git.Path -C $fullAuthorityRoot rev-parse HEAD 2>$null)
+                if ($LASTEXITCODE -ne 0 -or $revisionOutput.Count -ne 1 -or [string]$revisionOutput[0] -cnotmatch '^[0-9a-f]{40}$') {
+                    throw 'The trusted SYP154 authority checkout does not have one exact Git HEAD revision.'
                 }
+                $revision = [string]$revisionOutput[0]
+                $revisionSource = 'exact-authority-git-root'
+            }
+            else {
+                # The protected legacy driver may not pass SYP154_CANDIDATE_AUTHORITY_ROOT.
+                # Admit that path only through the existing CLI-bound 8a archive resolver.
+                $fixtureMode = 'verified-driver-archive'
+                $toolchainPath = Get-A031ProcessArgumentValue -Name 'ToolchainPath'
+                $toolchainSha256 = Get-A031ProcessArgumentValue -Name 'ToolchainSha256'
+                if ($toolchainSha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'The actual Pester CLI ToolchainSha256 value is malformed.' }
+                $resolverPath = Join-Path $script:RepositoryRoot 'tests/ResolveLegacyAuthorityArchiveFixture.ps1'
+                $powerShellPath = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+                $resolverOutput = @(& $powerShellPath -NoLogo -NoProfile -NonInteractive -File $resolverPath `
+                    -RepositoryRoot $script:RepositoryRoot -ToolchainPath $toolchainPath -ToolchainSha256 $toolchainSha256 2>&1)
+                $resolverExitCode = $LASTEXITCODE
+                if ($resolverExitCode -ne 0) { throw "Verified legacy archive fixture admission failed: $($resolverOutput -join ' ')" }
+                $receiptText = ($resolverOutput -join "`n").Trim()
+                try { $receipt = $receiptText | ConvertFrom-Json -Depth 30 -ErrorAction Stop }
+                catch { throw 'Verified legacy archive fixture did not emit one parseable receipt.' }
+
+                $authorityConfigPath = Join-Path $script:RepositoryRoot 'config/standard-v1.json'
+                $authorityConfig = Get-Content -LiteralPath $authorityConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 40 -ErrorAction Stop
+                $pinnedRunner = @($authorityConfig.authority.files | Where-Object { [string]$_.path -ceq 'scripts/Invoke-StandardValidation.ps1' })
+                if ([string]$receipt.fixtureMode -cne 'verified-driver-archive' -or
+                    [string]$receipt.authorityRevision -cne [string]$authorityConfig.authority.commit -or
+                    [string]$receipt.authorityRevision -cne '8aabd22694a05771f98639f6d726cc9a620eb94b' -or
+                    [int]$receipt.authorityFileCount -ne 26 -or [int]$receipt.authorityExtraFileCount -lt 1 -or
+                    [IO.Path]::GetFullPath([string]$receipt.toolchainPath) -cne [IO.Path]::GetFullPath($toolchainPath) -or
+                    [string]$receipt.toolchainSha256 -cne $toolchainSha256 -or $pinnedRunner.Count -ne 1) {
+                    throw 'Verified legacy archive receipt does not bind the active exact 8a authority and actual process toolchain CLI.'
+                }
+                $fullAuthorityRoot = [IO.Path]::GetFullPath([string]$receipt.authorityRoot)
+                $revision = [string]$receipt.authorityRevision
+                $revisionSource = 'verified-driver-archive'
+            }
+
+            $runnerPath = [IO.Path]::GetFullPath((Join-Path $fullAuthorityRoot 'scripts/Invoke-StandardValidation.ps1'))
+            if (-not (Test-Path -LiteralPath $runnerPath -PathType Leaf)) {
+                throw 'The admitted candidate authority fixture does not contain scripts/Invoke-StandardValidation.ps1.'
+            }
+            $runnerSha256 = Get-SourceBindingFixtureHash -Path $runnerPath
+            if ($fixtureMode -ceq 'verified-driver-archive' -and $runnerSha256 -cne [string]$pinnedRunner[0].sha256) {
+                throw 'Verified 8a archive runner bytes differ from the active standard-v1 authority pin.'
+            }
+            if (-not [string]::IsNullOrWhiteSpace($expectedSha256) -and $runnerSha256 -cne $expectedSha256) {
+                throw "Trusted A031 supervisor hash differs from the requested immutable fixture: expected=$expectedSha256 actual=$runnerSha256"
             }
             return [pscustomobject]@{
                 root = $fullAuthorityRoot
@@ -437,6 +492,9 @@ Describe 'Protected Standard Core SourceValidation preparation' {
                 sha256 = $runnerSha256
                 revision = $revision
                 revisionSource = $revisionSource
+                fixtureMode = $fixtureMode
+                toolchainPath = $toolchainPath
+                toolchainSha256 = $toolchainSha256
             }
         }
 
@@ -882,27 +940,50 @@ Describe 'Protected Standard Core SourceValidation preparation' {
         $previousRunId = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_CORE_RUN_ID', 'Process')
         $previousCheckId = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_CORE_CHECK_ID', 'Process')
         $previousSkills = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_CORE_SKILLS', 'Process')
+        $previousBootstrapReleasePath = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', 'Process')
+        $previousBootstrapCommand = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', 'Process')
         $pwsh = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+        $foreignBootstrapReleasePath = Join-Path $fixture.sourceOwnedRoot 'a031-foreign-bootstrap-release.sig'
+        $foreignBootstrapCommand = $pwsh
+        $bootstrapEnvironmentRestored = $false
         try {
             [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_CORE_RUN_ID', $fixture.runId, 'Process')
             [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_CORE_CHECK_ID', 'repository-general', 'Process')
             [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_CORE_SKILLS', ($fixture.activeSkills -join ';'), 'Process')
+            # Simulate the outer protected runner's foreign bootstrap context. This direct wrapper
+            # invocation is intentionally unsupervised, so clear exactly those two values temporarily.
+            [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', $foreignBootstrapReleasePath, 'Process')
+            [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', $foreignBootstrapCommand, 'Process')
+            [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', 'Process') | Should -Be $foreignBootstrapReleasePath
+            [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', 'Process') | Should -Be $foreignBootstrapCommand
+            [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', $null, 'Process')
+            [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', $null, 'Process')
             Push-Location -LiteralPath $fixture.candidateRoot
             try {
                 & $pwsh -NoLogo -NoProfile -NonInteractive -File $fixture.wrapperPath `
                     -CandidateRevision $fixture.candidateRevision 1> $stdoutPath 2> $stderrPath
                 $exitCode = $LASTEXITCODE
             }
-            finally { Pop-Location }
+            finally {
+                Pop-Location
+                [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', $foreignBootstrapReleasePath, 'Process')
+                [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', $foreignBootstrapCommand, 'Process')
+            }
+            [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', 'Process') | Should -Be $foreignBootstrapReleasePath
+            [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', 'Process') | Should -Be $foreignBootstrapCommand
+            $bootstrapEnvironmentRestored = $true
         }
         finally {
             [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_CORE_RUN_ID', $previousRunId, 'Process')
             [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_CORE_CHECK_ID', $previousCheckId, 'Process')
             [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_CORE_SKILLS', $previousSkills, 'Process')
+            [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', $previousBootstrapReleasePath, 'Process')
+            [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', $previousBootstrapCommand, 'Process')
         }
 
         $stderr = Get-Content -LiteralPath $stderrPath -Raw -Encoding UTF8
         $stdout = Get-Content -LiteralPath $stdoutPath -Raw -Encoding UTF8
+        $bootstrapEnvironmentRestored | Should -BeTrue
         if ($exitCode -ne 0) { throw "General wrapper failed with exit $exitCode. stderr=$stderr stdout=$stdout" }
         $exitCode | Should -Be 0
         $stderr | Should -BeNullOrEmpty
@@ -1393,8 +1474,11 @@ exit 0
         $junctionTarget = Join-Path $fixture.sourceOwnedRoot 'a031-junction-target'
         $junctionRunRoot = Join-Path $fixture.sourceOwnedRoot 'a031-junction-run-root'
         [void](New-Item -ItemType Directory -Path $junctionTarget -ErrorAction Stop)
+        $linkType = if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }
         try {
-            [void](New-Item -ItemType Junction -Path $junctionRunRoot -Target $junctionTarget -ErrorAction Stop)
+            [void](New-Item -ItemType $linkType -Path $junctionRunRoot -Target $junctionTarget -ErrorAction Stop)
+            $linkItem = Get-Item -LiteralPath $junctionRunRoot -Force -ErrorAction Stop
+            (($linkItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) | Should -BeTrue
             { Write-CodeSourceRunnerOutputDiagnostic -OutputText 'x' -RunRoot $junctionRunRoot -CandidateRoot $fixture.candidateRoot -AuthorityRoot $authorityRoot -ProcessExitCode 0 } | Should -Throw '*reparse ancestor*'
             @(Get-ChildItem -LiteralPath $junctionTarget -Force).Count | Should -Be 0
         }
@@ -1500,8 +1584,10 @@ exit 0
             }
             $result = Invoke-A031GeneralWrapperProbe -Fixture $fixture
             $combined = [string]$result.stdout + [Environment]::NewLine + [string]$result.stderr
+            $assertionText = [regex]::Replace($combined, '\r?\n\s*\|\s*', ' ')
+            $assertionText = [regex]::Replace($assertionText, '\s+', ' ').Trim()
             $result.exitCode | Should -Not -Be 0 -Because $mutation.name
-            $combined | Should -Match ([regex]::Escape([string]$mutation.expectedError))
+            $assertionText | Should -Match ([regex]::Escape([string]$mutation.expectedError))
             $results.Add([pscustomobject]@{
                 name = $mutation.name; expectedError = $mutation.expectedError; exitCode = $result.exitCode
                 stdout = $result.stdout; stderr = $result.stderr; retainedAdapterSha256 = Get-SourceBindingFixtureHash -Path $fixture.retainedAdapterPath
@@ -1534,8 +1620,10 @@ exit 0
         $trackedResult = Invoke-A031GeneralWrapperProbe -Fixture $trackedFixture -ReleasePath $trackedSignalPath `
             -BootstrapCommand $trackedFixture.powerShellPath
         $trackedCombined = [string]$trackedResult.stdout + [Environment]::NewLine + [string]$trackedResult.stderr
+        $trackedAssertionText = [regex]::Replace($trackedCombined, '\r?\n\s*\|\s*', ' ')
+        $trackedAssertionText = [regex]::Replace($trackedAssertionText, '\s+', ' ').Trim()
         $trackedResult.exitCode | Should -Not -Be 0
-        $trackedCombined | Should -Match 'Tracked candidate file cannot be consumed as a repository general bootstrap signal\.'
+        $trackedAssertionText | Should -Match 'Tracked candidate file cannot be consumed as a repository general bootstrap signal\.'
         (Get-SourceBindingFixtureHash -Path $trackedSignalPath) | Should -Be $trackedBeforeHash
         $results.Add([pscustomobject]@{
             name = 'tracked supervisor-shaped signal path'; expectedError = 'Tracked candidate file cannot be consumed as a repository general bootstrap signal.'
