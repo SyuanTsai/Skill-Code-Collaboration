@@ -24,7 +24,7 @@ jobs:
     # validation command.
     env:
       CHECKOUT_ACTION_REFERENCE: &checkout-action-reference actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - name: Checkout protected base driver
         uses: *checkout-action-reference # actions/checkout v7
@@ -178,51 +178,57 @@ jobs:
     if: ${{ always() }}
     needs:
       - canonical-validation
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - name: Mirror canonical Standard v1 result
-        shell: bash
+        shell: pwsh
+        env:
+          CANONICAL_RESULT: ${{ needs['canonical-validation'].result }}
         run: |
-          set -euo pipefail
-          result='${{ needs['canonical-validation'].result }}'
-          if [[ "$result" != 'success' ]]; then
-            echo "Canonical Standard v1 validation result: $result"
+          $ErrorActionPreference = 'Stop'
+          if ($env:CANONICAL_RESULT -cne 'success') {
+            Write-Output "Canonical Standard v1 validation result: $env:CANONICAL_RESULT"
             exit 1
-          fi
-          echo 'Canonical Standard v1 validation passed.'
+          }
+          Write-Output 'Canonical Standard v1 validation passed.'
+          exit 0
 
   skill-validator:
     name: skill-validator
     if: ${{ always() }}
     needs:
       - canonical-validation
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - name: Mirror canonical Standard v1 result
-        shell: bash
+        shell: pwsh
+        env:
+          CANONICAL_RESULT: ${{ needs['canonical-validation'].result }}
         run: |
-          set -euo pipefail
-          result='${{ needs['canonical-validation'].result }}'
-          if [[ "$result" != 'success' ]]; then
-            echo "Canonical Standard v1 validation result: $result"
+          $ErrorActionPreference = 'Stop'
+          if ($env:CANONICAL_RESULT -cne 'success') {
+            Write-Output "Canonical Standard v1 validation result: $env:CANONICAL_RESULT"
             exit 1
-          fi
-          echo 'Canonical Standard v1 validation passed.'
+          }
+          Write-Output 'Canonical Standard v1 validation passed.'
+          exit 0
 
   skill-tools:
     name: skill-tools
     if: ${{ always() }}
     needs:
       - canonical-validation
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - name: Mirror canonical Standard v1 result
-        shell: bash
+        shell: pwsh
+        env:
+          CANONICAL_RESULT: ${{ needs['canonical-validation'].result }}
         run: |
-          set -euo pipefail
-          result='${{ needs['canonical-validation'].result }}'
-          if [[ "$result" != 'success' ]]; then
-            echo "Canonical Standard v1 validation result: $result"
+          $ErrorActionPreference = 'Stop'
+          if ($env:CANONICAL_RESULT -cne 'success') {
+            Write-Output "Canonical Standard v1 validation result: $env:CANONICAL_RESULT"
             exit 1
-          fi
-          echo 'Canonical Standard v1 validation passed.'
+          }
+          Write-Output 'Canonical Standard v1 validation passed.'
+          exit 0

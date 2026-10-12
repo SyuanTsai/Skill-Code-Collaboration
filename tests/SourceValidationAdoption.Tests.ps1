@@ -513,8 +513,31 @@ Describe 'Protected Standard Core SourceValidation preparation' {
             . $RunnerPath -CandidateRoot $CandidateRoot -AdapterPath $AdapterPath -ArtifactsRoot $ArtifactsRoot `
                 -SourceRepository 'https://github.com/SyuanTsai/Skill-Code-Collaboration.git' `
                 -SourceRevision $Revision -BaseRevision $Revision -EventName local -DefineFunctionsOnly
-            return Invoke-StandardValidationProcess -Command $PowerShellPath -Arguments $Arguments `
-                -WorkingDirectory $WorkingDirectory -Environment $Environment -TimeoutSeconds 90 -CoreLifecycleOnly
+            $processCommand = Get-Command -Name Invoke-StandardValidationProcess -CommandType Function -ErrorAction Stop
+            $expectedRunnerPath = [IO.Path]::GetFullPath($RunnerPath)
+            $boundRunnerPath = [IO.Path]::GetFullPath([string]$processCommand.ScriptBlock.File)
+            $pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+            if (-not $boundRunnerPath.Equals($expectedRunnerPath, $pathComparison)) {
+                throw 'The invoked process supervisor function did not originate from the admitted authority runner.'
+            }
+
+            $processParameters = @{
+                Command = $PowerShellPath
+                Arguments = $Arguments
+                WorkingDirectory = $WorkingDirectory
+                Environment = $Environment
+                TimeoutSeconds = 90
+            }
+            $coreLifecycleOnlyAdmitted = $processCommand.Parameters.ContainsKey('CoreLifecycleOnly')
+            if ($coreLifecycleOnlyAdmitted) { $processParameters.CoreLifecycleOnly = $true }
+            $script:A031LastProcessInvocation = [pscustomobject]@{
+                runnerPath = $expectedRunnerPath
+                functionPath = $boundRunnerPath
+                admittedParameters = @($processCommand.Parameters.Keys | Sort-Object)
+                coreLifecycleOnlyAdmitted = $coreLifecycleOnlyAdmitted
+                coreLifecycleOnlyPassed = $coreLifecycleOnlyAdmitted
+            }
+            return Invoke-StandardValidationProcess @processParameters
         }
 
         function Save-A031EvidenceJson {
@@ -1155,6 +1178,7 @@ exit 0
             observedSupervisorSignalSha256 = ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($observedSignalBytes))).ToLowerInvariant()
             observedSupervisorSignalEqualsExpected = [Convert]::ToHexString($observedSignalBytes) -ceq [Convert]::ToHexString($expectedSignalBytes)
             supervisorStreamsEvidenceEncoding = 'UTF-8 no-BOM re-encoding of the trusted supervisor returned stdout/stderr text; these are not original child byte streams.'
+            supervisorApiCall = $script:A031LastProcessInvocation
             probePath = $probePath
             probeSha256 = Get-SourceBindingFixtureHash -Path $probePath
             observationPath = $observationPath
@@ -1307,6 +1331,7 @@ exit 0
             scenario = 'actual candidate source capture, CreateNew diagnostic sidecar writer and bounded summary under the trusted supervisor fixture'
             authorityRunner = $supervisor
             supervisorStreamsEvidenceEncoding = 'UTF-8 no-BOM re-encoding of the trusted supervisor returned stdout/stderr text; these are not original child byte streams.'
+            supervisorApiCall = $script:A031LastProcessInvocation
             candidateRevision = $fixture.candidateRevision
             runnerPath = $validatePath
             runnerSha256 = Get-SourceBindingFixtureHash -Path $validatePath
@@ -1372,7 +1397,7 @@ exit 0
             -PowerShellPath $fixture.powerShellPath -Arguments @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $exitPath) `
             -WorkingDirectory $fixture.sourceOwnedRoot -Environment @{} -CandidateRoot $fixture.candidateRoot `
             -AdapterPath $fixture.adapterPath -ArtifactsRoot $fixture.artifactRoot -Revision $fixture.candidateRevision
-        [void](Save-A031EvidenceJson -Name 'nonzero-child-supervisor.json' -Value ([ordered]@{ authorityRunner = $supervisor; childPath = $exitPath; childSha256 = Get-SourceBindingFixtureHash -Path $exitPath; supervisorResult = $processResult }))
+        [void](Save-A031EvidenceJson -Name 'nonzero-child-supervisor.json' -Value ([ordered]@{ authorityRunner = $supervisor; supervisorApiCall = $script:A031LastProcessInvocation; childPath = $exitPath; childSha256 = Get-SourceBindingFixtureHash -Path $exitPath; supervisorResult = $processResult }))
         [int]$processResult.exitCode | Should -Be 23
         [bool]$processResult.cleanedUp | Should -BeTrue
         [bool]$processResult.outputQuotaExceeded | Should -BeFalse
@@ -1474,9 +1499,8 @@ exit 0
         $junctionTarget = Join-Path $fixture.sourceOwnedRoot 'a031-junction-target'
         $junctionRunRoot = Join-Path $fixture.sourceOwnedRoot 'a031-junction-run-root'
         [void](New-Item -ItemType Directory -Path $junctionTarget -ErrorAction Stop)
-        $linkType = if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }
         try {
-            [void](New-Item -ItemType $linkType -Path $junctionRunRoot -Target $junctionTarget -ErrorAction Stop)
+            [void](New-Item -ItemType Junction -Path $junctionRunRoot -Target $junctionTarget -ErrorAction Stop)
             $linkItem = Get-Item -LiteralPath $junctionRunRoot -Force -ErrorAction Stop
             (($linkItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) | Should -BeTrue
             { Write-CodeSourceRunnerOutputDiagnostic -OutputText 'x' -RunRoot $junctionRunRoot -CandidateRoot $fixture.candidateRoot -AuthorityRoot $authorityRoot -ProcessExitCode 0 } | Should -Throw '*reparse ancestor*'

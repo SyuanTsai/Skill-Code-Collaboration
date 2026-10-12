@@ -4,6 +4,8 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Protected source-validation adoption
 
+Windows is the only supported host for local development, installation, execution, testing, acceptance, and CI. Run these commands in PowerShell (pwsh) on Windows; Linux/macOS hosts, WSL, and Linux containers are unsupported.
+
 This document describes an opt-in preparation and validation route for a future candidate whose `config/standard-v1.json` contains the exact approved ff85 authority tuple. The active candidate and required CI gate remain on the 8a authority pin and the canonical Standard v1 check. These commands do not make source validation a required release or CI gate.
 
 Use the verified ff85 authority Git checkout and an immutable event-base commit. Check out that base separately as the trusted driver, with its Git HEAD equal to the base commit. The candidate is a separate clean Git checkout containing the future authority configuration. Both checkouts must preserve the committed bytes; on Windows, use `core.autocrlf=false` and `core.eol=lf` before checkout. Prepare a fresh run-owned tool closure once, then execute source validation with that same prepared file:
