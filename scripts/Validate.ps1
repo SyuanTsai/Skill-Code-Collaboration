@@ -1136,21 +1136,8 @@ try {
                 $findings += Assert-SkillSpectorReport -Report $report -SkillRoot $skillRoot -SkillId $skillId -Inventory $inventory
             }
             $semanticTriggered = ($SemanticRequired -ceq 'true') -or $findings.Count -gt 0
-            $semanticFindings = @()
-            if ($semanticTriggered) {
-                foreach ($skillId in $activeSkills) {
-                    $skillRoot = Get-SkillRoot -SkillId $skillId
-                    $inventory = Get-InventoryPaths -SkillRoot $skillRoot
-                    $semanticReportPath = Join-Path (Get-Location) ("skillspector-semantic-$skillId.json")
-                    & ([string]$toolchain.skillSpectorPath) scan $skillRoot --format json --output $semanticReportPath | Out-Null
-                    if ($LASTEXITCODE -ne 0) { throw "SkillSpector semantic scan failed for '$skillId' with exit code $LASTEXITCODE." }
-                    $semanticReport = Read-Json -Path $semanticReportPath -Context "SkillSpector semantic report for '$skillId'" -ArrayPropertyPaths $skillspectorArrayPropertyPaths
-                    $semanticFindings += Assert-SkillSpectorReport -Report $semanticReport -SkillRoot $skillRoot -SkillId $skillId -Inventory $inventory -Stage 'conditional-semantic-scan'
-                }
-            }
-            $findings += $semanticFindings
-            $semanticStatus = if ($semanticTriggered) { 'passed' } else { 'not-run' }
-            New-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ scannerIdentity = 'SkillSpector'; analyzerCompleteness = 'complete'; semanticRequired = $semanticTriggered; semanticScan = [ordered]@{ triggered = $semanticTriggered; status = $semanticStatus; findingCount = @($semanticFindings).Count } }
+            $semanticStatus = 'not-run'
+            New-Envelope -ActiveSkills $activeSkills -Findings $findings -Additional @{ scannerIdentity = 'SkillSpector'; analyzerCompleteness = 'complete'; semanticRequired = $semanticTriggered; semanticScan = [ordered]@{ triggered = $semanticTriggered; status = $semanticStatus; findingCount = 0 } }
         }
         'repository-knowledge' {
             $validatorPath = Join-Path $candidateRoot 'scripts/Test-Repository.ps1'

@@ -1,6 +1,6 @@
 ---
 name: write-copilot-implementation-prompt
-description: Produce a self-contained, repository-scoped implementation prompt for GitHub Copilot and recommend the exact selectable name of the lowest sufficient available model. Use when the user asks for a prompt that Copilot will use to implement, fix, refactor, or test a change. This Skill is supported on Windows hosts.
+description: Produce a self-contained, repository-scoped implementation prompt for GitHub Copilot and recommend the exact selectable name of the lowest sufficient available model. Use when the user asks for a prompt that Copilot will use to implement, fix, refactor, or test a change.
 ---
 <!--
 SPDX-FileCopyrightText: 2026 SyuanTsai
@@ -8,8 +8,6 @@ SPDX-License-Identifier: Apache-2.0
 -->
 
 # Write a GitHub Copilot Implementation Prompt
-
-This Skill is supported only on a Windows host. Generated local development, installation, testing, and acceptance commands must use Windows and PowerShell (pwsh). Inspect the target repository's instructions and preserve its remote API and deployment semantics. If its local requirements conflict with Windows and PowerShell support, state the conflict and ask for a supported path; do not provide Linux, WSL, or Linux-container alternatives.
 
 1. Treat a request to provide a prompt as delegation of implementation to GitHub Copilot.
 2. Inspect the current repository for the relevant files, symbols, conventions, and applicable rules. Do not assume Copilot can access another repository, external workspace, prior conversation, or undisclosed context.

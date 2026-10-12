@@ -175,12 +175,13 @@ __TERMINAL_EXIT__
         $script:Validator | Should -Match '\$issues\s+-isnot\s+\[array\]'
     }
 
-    It 'executes and validates conditional semantic SkillSpector analysis' {
-        # Scenario: a Skill change or static Finding requires the semantic pass.
-        # Purpose: ensure SemanticRequired triggers a real non-static scan before the envelope is emitted.
+    It 'UnitT60_reports_the_central_semantic_trigger_without_running_semantic_SkillSpector_analysis' {
+        # Scenario: a Skill change or static Finding requires central semantic review.
+        # Purpose: keep Static mode no-LLM and pass the typed requirement to the central consent boundary.
         $script:Validator | Should -Match '\$semanticTriggered = \(\$SemanticRequired -ceq ''true''\) -or \$findings\.Count -gt 0'
-        $script:Validator | Should -Match 'scan \$skillRoot --format json --output \$semanticReportPath'
-        $script:Validator | Should -Match 'Assert-SkillSpectorReport -Report \$semanticReport .* -Stage ''conditional-semantic-scan'''
+        $script:Validator | Should -Match '\$staticArguments = @\(''scan'', \$skillRoot, ''--no-llm'', ''--format'', ''json'', ''--output'', \$reportPath\)'
+        $script:Validator | Should -Not -Match '& \(\[string\]\$toolchain\.skillSpectorPath\) scan \$skillRoot --format json --output \$semanticReportPath'
+        $script:Validator | Should -Match '\$semanticStatus = ''not-run'''
         $script:Validator | Should -Match 'semanticScan = \[ordered\]@'
     }
 

@@ -2,5 +2,5 @@
 # SPDX-License-Identifier: Apache-2.0
 interface:
   display_name: "Write Copilot Implementation Prompt"
-  short_description: "Write Copilot prompts from Windows hosts"
-  default_prompt: "Use $write-copilot-implementation-prompt from a Windows host to prepare a GitHub Copilot implementation prompt."
+  short_description: "Write Copilot prompts with an exact model recommendation"
+  default_prompt: "Use $write-copilot-implementation-prompt to prepare a GitHub Copilot implementation prompt."
