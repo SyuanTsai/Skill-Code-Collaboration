@@ -210,6 +210,10 @@ jobs:
           $priorNpmConfigPrefix = [Environment]::GetEnvironmentVariable('npm_config_prefix', 'Process')
           try {
             Remove-Item -LiteralPath 'Env:npm_config_prefix' -ErrorAction SilentlyContinue
+            & git -C $candidateRoot config --local core.autocrlf false
+            if ($LASTEXITCODE -ne 0) { throw 'Could not set candidate Git core.autocrlf to false.' }
+            & git -C $candidateRoot config --local core.eol lf
+            if ($LASTEXITCODE -ne 0) { throw 'Could not set candidate Git core.eol to lf.' }
             & ./scripts/Validate.ps1 -RepositoryRoot $candidateRoot -ArtifactsRoot $env:RUNNER_TEMP -BaseCommit $baseCommit -ExpectedGoRuntimeVersion $env:STANDARD_GO_RUNTIME_VERSION -OutputPath $outputPath
           }
           finally {
