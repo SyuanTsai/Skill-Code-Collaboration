@@ -291,7 +291,7 @@ $setupClosure = Test-CorePesterClosure -ModuleRoot $verifiedPesterModuleRoot -Lo
 if (-not $setupClosure.IsValid -or $setupClosure.ClosureSha256 -cne [string]$pesterReceipt.closureSha256) {
     throw ('Prepared Pester module closure changed after setup: ' + (@($setupClosure.Errors) -join '; '))
 }
-$moduleSearchRoot = Split-Path -Parent (Split-Path -Parent $verifiedPesterManifest)
+$moduleSearchRoot = Join-Path $verifiedPowerShellRuntimeRoot 'Modules'
 $priorPesterModulePath = [Environment]::GetEnvironmentVariable('PSModulePath', 'Process')
 [Environment]::SetEnvironmentVariable('PSModulePath', [IO.Path]::GetFullPath($moduleSearchRoot), 'Process')
 $moduleCandidates = @(Get-Module -ListAvailable -Name Pester | ForEach-Object {
