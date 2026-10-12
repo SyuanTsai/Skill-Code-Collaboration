@@ -31,6 +31,7 @@ catalog/
 docs/
   RELEASE.md
   ROLLBACK.md
+  WINDOWS-SUPPORT.md
 scripts/
   Get-SourcePin.ps1
 tests/
@@ -53,6 +54,8 @@ Consumers should resolve a release tag to an immutable commit SHA and persist th
 ## Validation
 
 The required GitHub gate runs the protected full-source validation path on Windows. It verifies the event-base `Validate.ps1` driver, the immutable candidate checkout, the real ff85 authority Git checkout, and one fresh run-owned tool closure. The current active authority tuple is ff85 with all 32 reviewed file hashes.
+
+Windows is the only supported host for local development, installation, execution, testing, acceptance, and CI. Run repository commands in PowerShell (pwsh); Linux/macOS hosts, WSL, and Linux containers are unsupported. See [Windows support and Skill inventory](docs/WINDOWS-SUPPORT.md) for the complete owned Skill inventory and support boundary.
 
 For a local full-source run, use the same trusted event-base driver, candidate checkout, and verified ff85 authority checkout, then prepare once and validate with the same `source-tools.json`:
 

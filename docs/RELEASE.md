@@ -4,6 +4,10 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Release and source pin contract
 
+## Supported host
+
+Windows is the only supported host for local development, installation, execution, testing, release acceptance, and CI. Run release validation from PowerShell (pwsh) on Windows; Linux/macOS hosts, WSL, and Linux containers are unsupported.
+
 ## Versioning
 
 This repository is versioned independently from any consumer repository. Use SemVer-compatible tags (`vMAJOR.MINOR.PATCH`). Keep the root `VERSION` file equal to the tag version without the leading `v`.

@@ -6,6 +6,8 @@ SPDX-License-Identifier: Apache-2.0
 
 Rollback is source-pin based. Do not rewrite a released tag or force-update a consumer to a different commit under the same version.
 
+Windows is the only supported host for local installation, execution, testing, rollback verification, and CI. Use PowerShell (pwsh) for repository commands; Linux/macOS hosts, WSL, and Linux containers are unsupported.
+
 ## Consumer rollback
 
 1. Stop selecting the affected profile if the Skill must be removed immediately.
