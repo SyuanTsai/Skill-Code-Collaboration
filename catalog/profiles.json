@@ -10,7 +10,7 @@
   "profiles": [
     {
       "id": "copilot",
-      "description": "GitHub Copilot implementation delegation workflow.",
+      "description": "GitHub Copilot implementation delegation workflow supported on Windows hosts.",
       "default": false,
       "includes": [
         "write-copilot-implementation-prompt"
@@ -31,7 +31,7 @@
       ],
       "compatibility": {
         "platforms": [
-          "any"
+          "windows"
         ],
         "shells": [],
         "requiredCapabilities": [],

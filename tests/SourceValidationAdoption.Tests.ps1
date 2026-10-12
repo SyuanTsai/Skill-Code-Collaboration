@@ -19,6 +19,12 @@ Describe 'Protected Standard Core SourceValidation preparation' {
             return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
         }
 
+        function Get-A031TextSha256 {
+            param([Parameter(Mandatory)][AllowEmptyString()][string] $Value)
+            $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Value)
+            return ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))).ToLowerInvariant()
+        }
+
         function New-SourceBindingFixture {
             param([Parameter(Mandatory)][string] $Root)
 
@@ -350,9 +356,12 @@ Describe 'Protected Standard Core SourceValidation preparation' {
                 Copy-Item -LiteralPath $sourcePath -Destination $copyPath -Force
                 $protectedCopyPaths += [IO.Path]::GetFullPath($copyPath)
             }
+            $powerShellPath = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+            $powerShellSha256 = Get-SourceBindingFixtureHash -Path $powerShellPath
             $frozenFiles = @([pscustomobject]@{ path = $manifestPath; sha256 = $manifestHash },
                 [pscustomobject]@{ path = $archivePath; sha256 = $archiveHash },
-                [pscustomobject]@{ path = $sourceIdentityPath; sha256 = Get-SourceBindingFixtureHash -Path $sourceIdentityPath })
+                [pscustomobject]@{ path = $sourceIdentityPath; sha256 = Get-SourceBindingFixtureHash -Path $sourceIdentityPath },
+                [pscustomobject]@{ path = $powerShellPath; sha256 = $powerShellSha256 })
             foreach ($copyPath in $protectedCopyPaths) { $frozenFiles += [pscustomobject]@{ path = $copyPath; sha256 = Get-SourceBindingFixtureHash -Path $copyPath } }
             $toolReceipts = @()
             foreach ($toolName in @('skill-validator', 'skill-tools', 'skillspector')) {
@@ -363,19 +372,252 @@ Describe 'Protected Standard Core SourceValidation preparation' {
                 $toolReceipts += [pscustomobject]@{ path = $receiptPath; sha256 = $receiptHash }
                 $frozenFiles += [pscustomobject]@{ path = $receiptPath; sha256 = $receiptHash }
             }
-            $adapterText = ([ordered]@{ schemaVersion = 2; sourceValidation = [ordered]@{ frozenFiles = @($frozenFiles); toolReceipts = @($toolReceipts) } } | ConvertTo-Json -Depth 30 -Compress) + "`n"
+            $activeSkills = @((Get-Content -LiteralPath (Join-Path $candidateRoot 'catalog/source.json') -Raw | ConvertFrom-Json -Depth 20).skills)
+            $generalArguments = @('-NoProfile', '-NonInteractive', '-File', 'scripts/Invoke-RepositoryCheck.ps1', '-CandidateRevision', $candidateRevision)
+            $pesterArguments = @('-NoProfile', '-NonInteractive', '-File', 'scripts/Invoke-CorePester.ps1', '-CandidateAuthorityAdapterRunId', $runId, '-CandidateRevision', $candidateRevision)
+            $adapterText = ([ordered]@{
+                schemaVersion = 2; adapter = 'standard-core-adapter-v2'; skillsRoot = 'skills'; activeSkills = @($activeSkills)
+                sourceValidation = [ordered]@{ frozenFiles = @($frozenFiles); toolReceipts = @($toolReceipts) }
+                checks = @(
+                    [ordered]@{ id = 'repository-general'; kind = 'general'; executable = $powerShellPath; executableSha256 = $powerShellSha256; arguments = $generalArguments }
+                    [ordered]@{ id = 'repository-pester'; kind = 'pester'; executable = $powerShellPath; executableSha256 = $powerShellSha256; arguments = $pesterArguments }
+                )
+            } | ConvertTo-Json -Depth 30 -Compress) + "`n"
             $retainedAdapterPath = Write-SourceBindingFixtureFile -Path (Join-Path $runRoot 'source-core-adapter.json') -Text $adapterText
             $adapterRoot = Join-Path (Split-Path -Parent $base) ".core-v2-adapter-$runId"
             $adapterPath = Write-SourceBindingFixtureFile -Path (Join-Path $adapterRoot 'standard-core-adapter-v2.json') -Text $adapterText
-            $activeSkills = @((Get-Content -LiteralPath (Join-Path $candidateRoot 'catalog/source.json') -Raw | ConvertFrom-Json -Depth 20).skills)
             return [pscustomobject]@{
                 runId = $runId; candidateRevision = $candidateRevision; artifactRoot = [IO.Path]::GetFullPath($artifactRoot)
                 runRoot = [IO.Path]::GetFullPath($runRoot); candidateRoot = [IO.Path]::GetFullPath($candidateRoot)
                 adapterPath = [IO.Path]::GetFullPath($adapterPath); retainedAdapterPath = [IO.Path]::GetFullPath($retainedAdapterPath)
                 manifestPath = [IO.Path]::GetFullPath($manifestPath); manifestSha256 = Get-SourceBindingFixtureHash -Path $manifestPath
                 sourceOwnedRoot = [IO.Path]::GetFullPath($sourceOwnedRoot); protectedCopyPaths = $protectedCopyPaths
+                powerShellPath = $powerShellPath; powerShellSha256 = $powerShellSha256
                 activeSkills = $activeSkills; wrapperPath = [IO.Path]::GetFullPath((Join-Path $candidateRoot 'scripts/Invoke-RepositoryCheck.ps1'))
             }
+        }
+
+        function Get-A031ProcessArgumentValue {
+            param([Parameter(Mandatory)][string] $Name)
+            $processArguments = [Environment]::GetCommandLineArgs()
+            $matches = [Collections.Generic.List[string]]::new()
+            for ($index = 0; $index -lt $processArguments.Count; $index++) {
+                if ([string]$processArguments[$index] -ceq "-$Name") {
+                    if ($index + 1 -ge $processArguments.Count -or [string]::IsNullOrWhiteSpace([string]$processArguments[$index + 1])) {
+                        throw "The Pester process is missing its actual CLI -$Name value."
+                    }
+                    $matches.Add([string]$processArguments[$index + 1])
+                }
+            }
+            if ($matches.Count -ne 1) { throw "The Pester process must contain exactly one actual CLI -$Name binding." }
+            return $matches[0]
+        }
+
+        function Get-A031AuthoritySupervisorBinding {
+            $authorityRoot = [Environment]::GetEnvironmentVariable('SYP154_CANDIDATE_AUTHORITY_ROOT', 'Process')
+            $expectedSha256 = [Environment]::GetEnvironmentVariable('SYP302_A031_EXPECTED_RUNNER_SHA256', 'Process')
+            $fixtureMode = $null
+            $revision = $null
+            $revisionSource = $null
+            $toolchainPath = $null
+            $toolchainSha256 = $null
+
+            if (-not [string]::IsNullOrWhiteSpace($authorityRoot)) {
+                # Keep the trusted Git-checkout path strict whenever CI supplies its authority root.
+                $fullAuthorityRoot = [IO.Path]::GetFullPath($authorityRoot)
+                $fixtureMode = 'syp154-git-root-head'
+                $git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($null -eq $git) { throw 'The trusted SYP154 authority fixture requires Git to identify its actual checkout revision.' }
+                $rootOutput = @(& $git.Path -C $fullAuthorityRoot rev-parse --show-toplevel 2>$null)
+                $rootExitCode = $LASTEXITCODE
+                if ($rootExitCode -ne 0 -or $rootOutput.Count -ne 1) { throw 'The trusted SYP154 authority fixture is not an identifiable Git checkout.' }
+                $reportedRoot = [IO.Path]::GetFullPath([string]$rootOutput[0]).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+                $expectedRoot = $fullAuthorityRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+                $pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+                if (-not $reportedRoot.Equals($expectedRoot, $pathComparison)) { throw 'The trusted SYP154 authority path is not the root of its Git checkout.' }
+                $revisionOutput = @(& $git.Path -C $fullAuthorityRoot rev-parse HEAD 2>$null)
+                if ($LASTEXITCODE -ne 0 -or $revisionOutput.Count -ne 1 -or [string]$revisionOutput[0] -cnotmatch '^[0-9a-f]{40}$') {
+                    throw 'The trusted SYP154 authority checkout does not have one exact Git HEAD revision.'
+                }
+                $revision = [string]$revisionOutput[0]
+                $revisionSource = 'exact-authority-git-root'
+            }
+            else {
+                # The protected legacy driver may not pass SYP154_CANDIDATE_AUTHORITY_ROOT.
+                # Admit that path only through the existing CLI-bound 8a archive resolver.
+                $fixtureMode = 'verified-driver-archive'
+                $toolchainPath = Get-A031ProcessArgumentValue -Name 'ToolchainPath'
+                $toolchainSha256 = Get-A031ProcessArgumentValue -Name 'ToolchainSha256'
+                if ($toolchainSha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'The actual Pester CLI ToolchainSha256 value is malformed.' }
+                $resolverPath = Join-Path $script:RepositoryRoot 'tests/ResolveLegacyAuthorityArchiveFixture.ps1'
+                $powerShellPath = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+                $resolverOutput = @(& $powerShellPath -NoLogo -NoProfile -NonInteractive -File $resolverPath `
+                    -RepositoryRoot $script:RepositoryRoot -ToolchainPath $toolchainPath -ToolchainSha256 $toolchainSha256 2>&1)
+                $resolverExitCode = $LASTEXITCODE
+                if ($resolverExitCode -ne 0) { throw "Verified legacy archive fixture admission failed: $($resolverOutput -join ' ')" }
+                $receiptText = ($resolverOutput -join "`n").Trim()
+                try { $receipt = $receiptText | ConvertFrom-Json -Depth 30 -ErrorAction Stop }
+                catch { throw 'Verified legacy archive fixture did not emit one parseable receipt.' }
+
+                $authorityConfigPath = Join-Path $script:RepositoryRoot 'config/standard-v1.json'
+                $authorityConfig = Get-Content -LiteralPath $authorityConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 40 -ErrorAction Stop
+                $pinnedRunner = @($authorityConfig.authority.files | Where-Object { [string]$_.path -ceq 'scripts/Invoke-StandardValidation.ps1' })
+                if ([string]$receipt.fixtureMode -cne 'verified-driver-archive' -or
+                    [string]$receipt.authorityRevision -cne [string]$authorityConfig.authority.commit -or
+                    [string]$receipt.authorityRevision -cne '8aabd22694a05771f98639f6d726cc9a620eb94b' -or
+                    [int]$receipt.authorityFileCount -ne 26 -or [int]$receipt.authorityExtraFileCount -lt 1 -or
+                    [IO.Path]::GetFullPath([string]$receipt.toolchainPath) -cne [IO.Path]::GetFullPath($toolchainPath) -or
+                    [string]$receipt.toolchainSha256 -cne $toolchainSha256 -or $pinnedRunner.Count -ne 1) {
+                    throw 'Verified legacy archive receipt does not bind the active exact 8a authority and actual process toolchain CLI.'
+                }
+                $fullAuthorityRoot = [IO.Path]::GetFullPath([string]$receipt.authorityRoot)
+                $revision = [string]$receipt.authorityRevision
+                $revisionSource = 'verified-driver-archive'
+            }
+
+            $runnerPath = [IO.Path]::GetFullPath((Join-Path $fullAuthorityRoot 'scripts/Invoke-StandardValidation.ps1'))
+            if (-not (Test-Path -LiteralPath $runnerPath -PathType Leaf)) {
+                throw 'The admitted candidate authority fixture does not contain scripts/Invoke-StandardValidation.ps1.'
+            }
+            $runnerSha256 = Get-SourceBindingFixtureHash -Path $runnerPath
+            if ($fixtureMode -ceq 'verified-driver-archive' -and $runnerSha256 -cne [string]$pinnedRunner[0].sha256) {
+                throw 'Verified 8a archive runner bytes differ from the active standard-v1 authority pin.'
+            }
+            if (-not [string]::IsNullOrWhiteSpace($expectedSha256) -and $runnerSha256 -cne $expectedSha256) {
+                throw "Trusted A031 supervisor hash differs from the requested immutable fixture: expected=$expectedSha256 actual=$runnerSha256"
+            }
+            return [pscustomobject]@{
+                root = $fullAuthorityRoot
+                path = $runnerPath
+                sha256 = $runnerSha256
+                revision = $revision
+                revisionSource = $revisionSource
+                fixtureMode = $fixtureMode
+                toolchainPath = $toolchainPath
+                toolchainSha256 = $toolchainSha256
+            }
+        }
+
+        function Invoke-A031TrustedSupervisedProcess {
+            param(
+                [Parameter(Mandatory)][string] $RunnerPath,
+                [Parameter(Mandatory)][string] $PowerShellPath,
+                [Parameter(Mandatory)][string[]] $Arguments,
+                [Parameter(Mandatory)][string] $WorkingDirectory,
+                [Parameter(Mandatory)][hashtable] $Environment,
+                [Parameter(Mandatory)][string] $CandidateRoot,
+                [Parameter(Mandatory)][string] $AdapterPath,
+                [Parameter(Mandatory)][string] $ArtifactsRoot,
+                [Parameter(Mandatory)][string] $Revision
+            )
+            . $RunnerPath -CandidateRoot $CandidateRoot -AdapterPath $AdapterPath -ArtifactsRoot $ArtifactsRoot `
+                -SourceRepository 'https://github.com/SyuanTsai/Skill-Code-Collaboration.git' `
+                -SourceRevision $Revision -BaseRevision $Revision -EventName local -DefineFunctionsOnly
+            $processCommand = Get-Command -Name Invoke-StandardValidationProcess -CommandType Function -ErrorAction Stop
+            $expectedRunnerPath = [IO.Path]::GetFullPath($RunnerPath)
+            $boundRunnerPath = [IO.Path]::GetFullPath([string]$processCommand.ScriptBlock.File)
+            $pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+            if (-not $boundRunnerPath.Equals($expectedRunnerPath, $pathComparison)) {
+                throw 'The invoked process supervisor function did not originate from the admitted authority runner.'
+            }
+
+            $processParameters = @{
+                Command = $PowerShellPath
+                Arguments = $Arguments
+                WorkingDirectory = $WorkingDirectory
+                Environment = $Environment
+                TimeoutSeconds = 90
+            }
+            $coreLifecycleOnlyAdmitted = $processCommand.Parameters.ContainsKey('CoreLifecycleOnly')
+            if ($coreLifecycleOnlyAdmitted) { $processParameters.CoreLifecycleOnly = $true }
+            $script:A031LastProcessInvocation = [pscustomobject]@{
+                runnerPath = $expectedRunnerPath
+                functionPath = $boundRunnerPath
+                admittedParameters = @($processCommand.Parameters.Keys | Sort-Object)
+                coreLifecycleOnlyAdmitted = $coreLifecycleOnlyAdmitted
+                coreLifecycleOnlyPassed = $coreLifecycleOnlyAdmitted
+            }
+            return Invoke-StandardValidationProcess @processParameters
+        }
+
+        function Save-A031EvidenceJson {
+            param([Parameter(Mandatory)][string] $Name, [Parameter(Mandatory)] $Value)
+            $text = ($Value | ConvertTo-Json -Depth 80) + "`n"
+            return Save-A031EvidenceBytes -Name $Name -Bytes ([Text.UTF8Encoding]::new($false).GetBytes($text))
+        }
+
+        function Save-A031EvidenceBytes {
+            param([Parameter(Mandatory)][string] $Name, [Parameter(Mandatory)][AllowEmptyCollection()][byte[]] $Bytes)
+            $evidenceRoot = [Environment]::GetEnvironmentVariable('SYP302_A031_EVIDENCE_ROOT', 'Process')
+            if ([string]::IsNullOrWhiteSpace($evidenceRoot)) { return $null }
+            $fullRoot = [IO.Path]::GetFullPath($evidenceRoot)
+            [void](New-Item -ItemType Directory -Path $fullRoot -Force)
+            if ([IO.Path]::GetFileName($Name) -cne $Name -or [string]::IsNullOrWhiteSpace($Name)) {
+                throw "A031 evidence name must be a single file name: $Name"
+            }
+            $path = Join-Path $fullRoot $Name
+            $stream = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+            try { $stream.Write($Bytes, 0, $Bytes.Length) }
+            finally { $stream.Dispose() }
+            return $path
+        }
+
+        function Save-A031EvidenceFile {
+            param([Parameter(Mandatory)][string] $Name, [Parameter(Mandatory)][string] $SourcePath)
+            $source = Get-Item -LiteralPath $SourcePath -Force -ErrorAction Stop
+            if ($source -isnot [IO.FileInfo] -or $source.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                throw "A031 evidence source must be a regular non-reparse file: $SourcePath"
+            }
+            return Save-A031EvidenceBytes -Name $Name -Bytes ([IO.File]::ReadAllBytes($source.FullName))
+        }
+
+        function Save-A031CandidateEvidenceTree {
+            param(
+                [Parameter(Mandatory)][string] $EvidenceSubdirectory,
+                [Parameter(Mandatory)][string] $CandidateRoot,
+                [Parameter(Mandatory)][object[]] $ManifestEntries,
+                [string] $SignalRelativePath,
+                [byte[]] $SignalBytes = [byte[]]@()
+            )
+            $evidenceRoot = [Environment]::GetEnvironmentVariable('SYP302_A031_EVIDENCE_ROOT', 'Process')
+            if ([string]::IsNullOrWhiteSpace($evidenceRoot)) { return $null }
+            $targetRoot = Join-Path ([IO.Path]::GetFullPath($evidenceRoot)) $EvidenceSubdirectory
+            if (Test-Path -LiteralPath $targetRoot) { throw "A031 candidate evidence destination already exists: $targetRoot" }
+            [void](New-Item -ItemType Directory -Path $targetRoot)
+            foreach ($entry in $ManifestEntries) {
+                $relative = [string]$entry.path
+                if ([string]::IsNullOrWhiteSpace($relative) -or $relative.StartsWith('/') -or $relative.Contains('\') -or
+                    @($relative.Split('/') | Where-Object { $_ -in @('', '.', '..') }).Count -gt 0) {
+                    throw "A031 frozen fixture manifest contains an unsafe path: $relative"
+                }
+                $sourcePath = Join-Path $CandidateRoot ($relative -replace '/', [IO.Path]::DirectorySeparatorChar)
+                $source = Get-Item -LiteralPath $sourcePath -Force -ErrorAction Stop
+                if ($source -isnot [IO.FileInfo] -or $source.Attributes -band [IO.FileAttributes]::ReparsePoint -or
+                    (Get-SourceBindingFixtureHash -Path $sourcePath) -cne [string]$entry.sha256) {
+                    throw "A031 candidate fixture differs from its immutable manifest entry: $relative"
+                }
+                $targetPath = Join-Path $targetRoot ($relative -replace '/', [IO.Path]::DirectorySeparatorChar)
+                [void](New-Item -ItemType Directory -Path (Split-Path -Parent $targetPath) -Force)
+                $targetStream = [IO.File]::Open($targetPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                try {
+                    $bytes = [IO.File]::ReadAllBytes($sourcePath)
+                    $targetStream.Write($bytes, 0, $bytes.Length)
+                }
+                finally { $targetStream.Dispose() }
+            }
+            if (-not [string]::IsNullOrWhiteSpace($SignalRelativePath)) {
+                if ($SignalRelativePath.StartsWith('/') -or $SignalRelativePath.Contains('\') -or
+                    @($SignalRelativePath.Split('/') | Where-Object { $_ -in @('', '.', '..') }).Count -gt 0 -or
+                    @($ManifestEntries | Where-Object { [string]$_.path -ceq $SignalRelativePath }).Count -gt 0) {
+                    throw "A031 supervisor signal path conflicts with or escapes the immutable manifest: $SignalRelativePath"
+                }
+                $signalTarget = Join-Path $targetRoot ($SignalRelativePath -replace '/', [IO.Path]::DirectorySeparatorChar)
+                [void](New-Item -ItemType Directory -Path (Split-Path -Parent $signalTarget) -Force)
+                $signalStream = [IO.File]::Open($signalTarget, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                try { $signalStream.Write($SignalBytes, 0, $SignalBytes.Length) }
+                finally { $signalStream.Dispose() }
+            }
+            return [IO.Path]::GetFullPath($targetRoot)
         }
     }
 
@@ -721,27 +963,50 @@ Describe 'Protected Standard Core SourceValidation preparation' {
         $previousRunId = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_CORE_RUN_ID', 'Process')
         $previousCheckId = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_CORE_CHECK_ID', 'Process')
         $previousSkills = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_CORE_SKILLS', 'Process')
+        $previousBootstrapReleasePath = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', 'Process')
+        $previousBootstrapCommand = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', 'Process')
         $pwsh = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+        $foreignBootstrapReleasePath = Join-Path $fixture.sourceOwnedRoot 'a031-foreign-bootstrap-release.sig'
+        $foreignBootstrapCommand = $pwsh
+        $bootstrapEnvironmentRestored = $false
         try {
             [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_CORE_RUN_ID', $fixture.runId, 'Process')
             [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_CORE_CHECK_ID', 'repository-general', 'Process')
             [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_CORE_SKILLS', ($fixture.activeSkills -join ';'), 'Process')
+            # Simulate the outer protected runner's foreign bootstrap context. This direct wrapper
+            # invocation is intentionally unsupervised, so clear exactly those two values temporarily.
+            [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', $foreignBootstrapReleasePath, 'Process')
+            [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', $foreignBootstrapCommand, 'Process')
+            [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', 'Process') | Should -Be $foreignBootstrapReleasePath
+            [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', 'Process') | Should -Be $foreignBootstrapCommand
+            [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', $null, 'Process')
+            [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', $null, 'Process')
             Push-Location -LiteralPath $fixture.candidateRoot
             try {
                 & $pwsh -NoLogo -NoProfile -NonInteractive -File $fixture.wrapperPath `
                     -CandidateRevision $fixture.candidateRevision 1> $stdoutPath 2> $stderrPath
                 $exitCode = $LASTEXITCODE
             }
-            finally { Pop-Location }
+            finally {
+                Pop-Location
+                [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', $foreignBootstrapReleasePath, 'Process')
+                [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', $foreignBootstrapCommand, 'Process')
+            }
+            [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', 'Process') | Should -Be $foreignBootstrapReleasePath
+            [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', 'Process') | Should -Be $foreignBootstrapCommand
+            $bootstrapEnvironmentRestored = $true
         }
         finally {
             [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_CORE_RUN_ID', $previousRunId, 'Process')
             [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_CORE_CHECK_ID', $previousCheckId, 'Process')
             [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_CORE_SKILLS', $previousSkills, 'Process')
+            [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', $previousBootstrapReleasePath, 'Process')
+            [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', $previousBootstrapCommand, 'Process')
         }
 
         $stderr = Get-Content -LiteralPath $stderrPath -Raw -Encoding UTF8
         $stdout = Get-Content -LiteralPath $stdoutPath -Raw -Encoding UTF8
+        $bootstrapEnvironmentRestored | Should -BeTrue
         if ($exitCode -ne 0) { throw "General wrapper failed with exit $exitCode. stderr=$stderr stdout=$stdout" }
         $exitCode | Should -Be 0
         $stderr | Should -BeNullOrEmpty
@@ -771,6 +1036,626 @@ Describe 'Protected Standard Core SourceValidation preparation' {
         [int]$repositoryReport.activeSkillCount | Should -Be $fixture.activeSkills.Count
         [int]$catalogReport.activeSkillCount | Should -Be $fixture.activeSkills.Count
         (Test-Path -LiteralPath (Join-Path $runRoot 'candidate-git-entry-modes.json')) | Should -BeFalse
+    }
+
+    # Scenario: the trusted validation supervisor creates its real release signal inside the candidate working directory before launching the general wrapper.
+    # Purpose: require the general wrapper to consume only that verified signal before inventory while preserving every frozen candidate entry.
+    It 'InterT60_consumes_only_the_real_supervisor_signal_before_general_inventory' {
+        $supervisor = Get-A031AuthoritySupervisorBinding
+        $fixture = New-GeneralWrapperFixture -Root (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))
+        $probePath = Join-Path $fixture.sourceOwnedRoot 'a031-general-inventory-probe.ps1'
+        $observationPath = Join-Path $fixture.runRoot 'a031-general-inventory-observation.json'
+        $probeText = @'
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory)][string] $CandidateRoot,
+    [Parameter(Mandatory)][string] $WrapperPath,
+    [Parameter(Mandatory)][string] $CandidateRevision,
+    [Parameter(Mandatory)][string] $ManifestPath,
+    [Parameter(Mandatory)][string] $RetainedAdapterPath,
+    [Parameter(Mandatory)][string] $ObservationPath
+)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$candidateFull = [IO.Path]::GetFullPath($CandidateRoot)
+$comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+$releaseValue = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', 'Process')
+$releasePath = if ([string]::IsNullOrWhiteSpace($releaseValue)) { '' } else { [IO.Path]::GetFullPath($releaseValue) }
+$insideCandidate = -not [string]::IsNullOrWhiteSpace($releasePath) -and $releasePath.StartsWith($candidateFull.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar, $comparison)
+$signalExistsAtEntry = -not [string]::IsNullOrWhiteSpace($releasePath) -and (Test-Path -LiteralPath $releasePath -PathType Leaf)
+$signalBytes = if ($signalExistsAtEntry) { [IO.File]::ReadAllBytes($releasePath) } else { [byte[]]@() }
+$signalItem = if ($signalExistsAtEntry) { Get-Item -LiteralPath $releasePath -Force } else { $null }
+$manifest = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 40
+$adapter = Get-Content -LiteralPath $RetainedAdapterPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 80
+$generalCheck = @($adapter.checks | Where-Object { [string]$_.id -ceq 'repository-general' })
+$actualInventory = @(Get-ChildItem -LiteralPath $candidateFull -File -Force -Recurse -ErrorAction Stop | Sort-Object -Property FullName -CaseSensitive | ForEach-Object {
+    [pscustomobject]@{
+        path = [IO.Path]::GetRelativePath($candidateFull, $_.FullName).Replace([IO.Path]::DirectorySeparatorChar, '/').Replace([IO.Path]::AltDirectorySeparatorChar, '/')
+        sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        length = [int64]$_.Length
+    }
+})
+$manifestEntries = @($manifest.entries | Sort-Object -Property path -CaseSensitive | ForEach-Object {
+    [pscustomobject]@{ path = [string]$_.path; sha256 = [string]$_.sha256; mode = [string]$_.mode }
+})
+$manifestNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+foreach ($entry in $manifestEntries) { [void]$manifestNames.Add([string]$entry.path) }
+$inventoryOnly = @($actualInventory | Where-Object { -not $manifestNames.Contains([string]$_.path) })
+$actualByName = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
+foreach ($entry in $actualInventory) { $actualByName.Add([string]$entry.path, $entry) }
+$manifestMissing = @($manifestEntries | Where-Object { -not $actualByName.ContainsKey([string]$_.path) })
+$manifestHashMismatches = @($manifestEntries | Where-Object { $actualByName.ContainsKey([string]$_.path) -and [string]$actualByName[[string]$_.path].sha256 -cne [string]$_.sha256 })
+$bootstrapCommand = [string][Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', 'Process')
+$wrapperExitCode = 0
+$wrapperError = $null
+try {
+    & $WrapperPath -CandidateRevision $CandidateRevision
+}
+catch {
+    $wrapperError = [string]$_.Exception.Message
+    $wrapperExitCode = 1
+}
+$signalPresentAfterWrapper = -not [string]::IsNullOrWhiteSpace($releasePath) -and (Test-Path -LiteralPath $releasePath -PathType Leaf)
+$observation = [ordered]@{
+    candidateRoot = $candidateFull
+    supervisorReleasePath = $releasePath
+    supervisorReleasePathInsideCandidate = $insideCandidate
+    supervisorReleaseNameMatches = [IO.Path]::GetFileName($releasePath) -cmatch '^b-[0-9a-f]{32}\.sig$'
+    supervisorSignalPresentAtEntry = $signalExistsAtEntry
+    supervisorSignalLengthBytes = [int64]$signalBytes.Length
+    supervisorSignalHex = [Convert]::ToHexString($signalBytes).ToLowerInvariant()
+    supervisorSignalBase64 = [Convert]::ToBase64String($signalBytes)
+    supervisorSignalSha256 = ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($signalBytes))).ToLowerInvariant()
+    supervisorSignalAttributes = if ($null -eq $signalItem) { $null } else { [string]$signalItem.Attributes }
+    supervisorSignalIsReparsePoint = if ($null -eq $signalItem) { $null } else { [bool]($signalItem.Attributes -band [IO.FileAttributes]::ReparsePoint) }
+    supervisorBootstrapCommand = $bootstrapCommand
+    generalExecutable = if ($generalCheck.Count -eq 1) { [string]$generalCheck[0].executable } else { $null }
+    generalExecutableSha256 = if ($generalCheck.Count -eq 1) { [string]$generalCheck[0].executableSha256 } else { $null }
+    generalExecutableBindingMatchesSupervisor = $generalCheck.Count -eq 1 -and [string]$generalCheck[0].executable -ceq $bootstrapCommand -and (Get-FileHash -LiteralPath $bootstrapCommand -Algorithm SHA256).Hash.ToLowerInvariant() -ceq [string]$generalCheck[0].executableSha256
+    frozenManifestCount = $manifestEntries.Count
+    frozenManifestEntries = $manifestEntries
+    beforeInventoryCount = $actualInventory.Count
+    beforeInventory = $actualInventory
+    beforeInventoryOnly = $inventoryOnly
+    beforeInventoryMissing = $manifestMissing
+    beforeInventoryHashMismatches = $manifestHashMismatches
+    frozenManifestEntriesUnchanged = $manifestMissing.Count -eq 0 -and $manifestHashMismatches.Count -eq 0
+    wrapperExitCode = $wrapperExitCode
+    wrapperError = $wrapperError
+    supervisorSignalPresentAfterWrapper = $signalPresentAfterWrapper
+}
+[IO.File]::WriteAllText($ObservationPath, (($observation | ConvertTo-Json -Depth 80 -Compress) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+if ($wrapperExitCode -ne 0) { [Console]::Error.WriteLine($wrapperError); exit $wrapperExitCode }
+exit 0
+'@
+        [void](Write-SourceBindingFixtureFile -Path $probePath -Text $probeText)
+        $arguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $probePath,
+            '-CandidateRoot', $fixture.candidateRoot, '-WrapperPath', $fixture.wrapperPath,
+            '-CandidateRevision', $fixture.candidateRevision, '-ManifestPath', $fixture.manifestPath,
+            '-RetainedAdapterPath', $fixture.retainedAdapterPath, '-ObservationPath', $observationPath)
+        $environment = @{
+            STANDARD_VALIDATION_CORE_RUN_ID = $fixture.runId
+            STANDARD_VALIDATION_CORE_CHECK_ID = 'repository-general'
+            STANDARD_VALIDATION_CORE_SKILLS = ($fixture.activeSkills -join ';')
+        }
+        $processResult = Invoke-A031TrustedSupervisedProcess -RunnerPath $supervisor.path `
+            -PowerShellPath $fixture.powerShellPath -Arguments $arguments -WorkingDirectory $fixture.candidateRoot `
+            -Environment $environment -CandidateRoot $fixture.candidateRoot -AdapterPath $fixture.adapterPath `
+            -ArtifactsRoot $fixture.artifactRoot -Revision $fixture.candidateRevision
+        $observation = Get-Content -LiteralPath $observationPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 80
+        $manifestRaw = [IO.File]::ReadAllBytes($fixture.manifestPath)
+        $manifestEntries = @($observation.frozenManifestEntries)
+        $inventoryExtra = @($observation.beforeInventoryOnly)
+        $observedSignalBytes = [Convert]::FromBase64String([string]$observation.supervisorSignalBase64)
+        $expectedSignalBytes = [Text.UTF8Encoding]::new($false).GetBytes('release' + [Environment]::NewLine)
+        $expectedSignalHex = [Convert]::ToHexString($expectedSignalBytes).ToLowerInvariant()
+        $evidence = [ordered]@{
+            scenario = 'supervisor-owned bootstrap release signal during general candidate inventory'
+            authorityRunner = $supervisor
+            candidateRevision = $fixture.candidateRevision
+            runId = $fixture.runId
+            candidateRoot = $fixture.candidateRoot
+            adapterPath = $fixture.retainedAdapterPath
+            adapterSha256 = Get-SourceBindingFixtureHash -Path $fixture.retainedAdapterPath
+            generalExecutablePath = $fixture.powerShellPath
+            generalExecutableSha256 = $fixture.powerShellSha256
+            protectedWrapperPath = $fixture.wrapperPath
+            protectedWrapperSha256 = Get-SourceBindingFixtureHash -Path $fixture.wrapperPath
+            modeManifestPath = $fixture.manifestPath
+            modeManifestSha256 = Get-SourceBindingFixtureHash -Path $fixture.manifestPath
+            modeManifestRawBytes = $manifestRaw.Length
+            modeManifestRawSha256 = (Get-FileHash -LiteralPath $fixture.manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            frozenManifestCount = $manifestEntries.Count
+            frozenManifestEntries = $manifestEntries
+            beforeInventoryCount = [int]$observation.beforeInventoryCount
+            beforeInventory = @($observation.beforeInventory)
+            beforeInventoryOnly = $inventoryExtra
+            beforeInventoryMissing = @($observation.beforeInventoryMissing)
+            beforeInventoryHashMismatches = @($observation.beforeInventoryHashMismatches)
+            frozenManifestEntriesUnchanged = [bool]$observation.frozenManifestEntriesUnchanged
+            expectedSupervisorSignalHex = $expectedSignalHex
+            observedSupervisorSignalLengthBytes = $observedSignalBytes.Length
+            observedSupervisorSignalSha256 = ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($observedSignalBytes))).ToLowerInvariant()
+            observedSupervisorSignalEqualsExpected = [Convert]::ToHexString($observedSignalBytes) -ceq [Convert]::ToHexString($expectedSignalBytes)
+            supervisorStreamsEvidenceEncoding = 'UTF-8 no-BOM re-encoding of the trusted supervisor returned stdout/stderr text; these are not original child byte streams.'
+            supervisorApiCall = $script:A031LastProcessInvocation
+            probePath = $probePath
+            probeSha256 = Get-SourceBindingFixtureHash -Path $probePath
+            observationPath = $observationPath
+            observation = $observation
+            supervisorResult = $processResult
+        }
+        $observedGenuineRed = [int]$observation.frozenManifestCount -gt 0 -and
+            [int]$observation.beforeInventoryCount -eq [int]$observation.frozenManifestCount + 1 -and @($inventoryExtra).Count -eq 1 -and
+            [string]$inventoryExtra[0].path -ceq [string]$observation.supervisorReleasePath.Substring($fixture.candidateRoot.Length + 1).Replace([IO.Path]::DirectorySeparatorChar, '/') -and
+            [bool]$observation.supervisorSignalPresentAtEntry -and [int64]$observation.supervisorSignalLengthBytes -eq $expectedSignalBytes.Length -and
+            [string]$observation.supervisorSignalHex -ceq $expectedSignalHex -and [bool]$observation.frozenManifestEntriesUnchanged -and
+            [bool]$observation.supervisorReleasePathInsideCandidate -and [bool]$observation.supervisorReleaseNameMatches -and
+            [bool]$observation.generalExecutableBindingMatchesSupervisor -and
+            [string]$observation.wrapperError -match 'Candidate snapshot inventory differs from the protected Git entry mode manifest\.' -and
+            [bool]$observation.supervisorSignalPresentAfterWrapper -and
+            [string]$processResult.status -ceq 'failed' -and [int]$processResult.exitCode -ne 0 -and
+            [bool]$processResult.cleanedUp -and -not [bool]$processResult.outputQuotaExceeded
+        $intendedGreen = [int]$observation.frozenManifestCount -gt 0 -and
+            [bool]$observation.frozenManifestEntriesUnchanged -and [bool]$observation.supervisorSignalPresentAtEntry -and
+            [int64]$observation.supervisorSignalLengthBytes -eq $expectedSignalBytes.Length -and [string]$observation.supervisorSignalHex -ceq $expectedSignalHex -and
+            -not [bool]$observation.supervisorSignalPresentAfterWrapper -and [int]$observation.wrapperExitCode -eq 0 -and
+            [string]$processResult.status -ceq 'passed' -and [int]$processResult.exitCode -eq 0 -and
+            [bool]$processResult.cleanedUp -and -not [bool]$processResult.outputQuotaExceeded
+        $evidence.observedGenuineRed = [bool]$observedGenuineRed
+        $evidence.intendedGreenObserved = [bool]$intendedGreen
+        $releaseRelativePath = [string]$observation.supervisorReleasePath.Substring($fixture.candidateRoot.Length + 1).Replace([IO.Path]::DirectorySeparatorChar, '/')
+        $preserved = [ordered]@{}
+        $preserved.candidateInventory = Save-A031CandidateEvidenceTree -EvidenceSubdirectory 'general-candidate-at-wrapper-entry' `
+            -CandidateRoot $fixture.candidateRoot -ManifestEntries $manifestEntries -SignalRelativePath $releaseRelativePath -SignalBytes $observedSignalBytes
+        $preserved.manifest = Save-A031EvidenceFile -Name 'general-mode-manifest.json' -SourcePath $fixture.manifestPath
+        $preserved.retainedAdapter = Save-A031EvidenceFile -Name 'general-retained-adapter.json' -SourcePath $fixture.retainedAdapterPath
+        $preserved.adapterInput = Save-A031EvidenceFile -Name 'general-adapter-input.json' -SourcePath $fixture.adapterPath
+        $preserved.probe = Save-A031EvidenceFile -Name 'general-probe.ps1' -SourcePath $probePath
+        $preserved.observation = Save-A031EvidenceFile -Name 'general-observation.json' -SourcePath $observationPath
+        $preserved.signalBytes = Save-A031EvidenceBytes -Name 'general-observed-release-signal.bin' -Bytes $observedSignalBytes
+        $preserved.supervisorStdout = Save-A031EvidenceBytes -Name 'general-supervisor-stdout-utf8-reencoded.txt' -Bytes ([Text.UTF8Encoding]::new($false).GetBytes([string]$processResult.stdout))
+        $preserved.supervisorStderr = Save-A031EvidenceBytes -Name 'general-supervisor-stderr-utf8-reencoded.txt' -Bytes ([Text.UTF8Encoding]::new($false).GetBytes([string]$processResult.stderr))
+        $evidence.preservedFiles = $preserved
+        [void](Save-A031EvidenceJson -Name 'general-supervisor-red.json' -Value $evidence)
+        $intendedGreen | Should -BeTrue -Because 'the general wrapper must consume that verified signal before binding the full frozen candidate inventory'
+    }
+
+    # Scenario: the source-only relay writes a nested emitter's merged diagnostic to a run-owned sidecar and prints a bounded summary.
+    # Purpose: execute the actual capture, exit-code, sidecar-writer and summary AST under the trusted supervisor without exceeding its quota.
+    It 'InterT61_bounds_the_exact_source_runner_output_relay_under_the_trusted_supervisor' {
+        $supervisor = Get-A031AuthoritySupervisorBinding
+        $fixture = New-GeneralWrapperFixture -Root (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))
+        $validatePath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $validateAst = [System.Management.Automation.Language.Parser]::ParseFile($validatePath, [ref]$tokens, [ref]$parseErrors)
+        if (@($parseErrors).Count -gt 0) { throw ('Validate.ps1 did not parse for the A031 output relay: ' + (@($parseErrors | ForEach-Object { $_.Message }) -join '; ')) }
+        $sourceFunction = $validateAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-CodeSourceValidation' }, $true)
+        if ($null -eq $sourceFunction) { throw 'Invoke-CodeSourceValidation is missing from the exact candidate Validate.ps1.' }
+        $captureStatements = @($sourceFunction.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Extent.Text -match '^\s*\$runnerOutput\s*=\s*@\(&\s*\$powerShell\b'
+        }, $true))
+        $exitStatements = @($sourceFunction.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Extent.Text -match '^\s*\$processExitCode\s*=\s*\$LASTEXITCODE\s*$'
+        }, $true))
+        $diagnosticTextStatements = @($sourceFunction.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Extent.Text -match '^\s*\$runnerDiagnosticText\s*='
+        }, $true))
+        $diagnosticWriteStatements = @($sourceFunction.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Extent.Text -match '^\s*\$runnerDiagnostic\s*=\s*Write-CodeSourceRunnerOutputDiagnostic\b'
+        }, $true))
+        $summaryStatements = @($sourceFunction.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.PipelineAst] -and $node.Extent.Text -match '^\s*\[Console\]::Out\.WriteLine\(\("Source runner diagnostic retained:'
+        }, $true))
+        $writerAst = $validateAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Write-CodeSourceRunnerOutputDiagnostic'
+        }, $true)
+        if ($captureStatements.Count -ne 1 -or $exitStatements.Count -ne 1 -or $diagnosticTextStatements.Count -ne 1 -or
+            $diagnosticWriteStatements.Count -ne 1 -or $summaryStatements.Count -ne 1 -or $null -eq $writerAst) {
+            throw 'The candidate source runner capture, exit preservation, diagnostic write, writer function, or bounded summary AST is not unique.'
+        }
+        $astRecords = @(
+            [pscustomobject]@{ role = 'runner-output-capture'; startLine = $captureStatements[0].Extent.StartLineNumber; endLine = $captureStatements[0].Extent.EndLineNumber; rawText = $captureStatements[0].Extent.Text; sha256 = Get-A031TextSha256 -Value $captureStatements[0].Extent.Text }
+            [pscustomobject]@{ role = 'runner-exit-code'; startLine = $exitStatements[0].Extent.StartLineNumber; endLine = $exitStatements[0].Extent.EndLineNumber; rawText = $exitStatements[0].Extent.Text; sha256 = Get-A031TextSha256 -Value $exitStatements[0].Extent.Text }
+            [pscustomobject]@{ role = 'runner-diagnostic-text'; startLine = $diagnosticTextStatements[0].Extent.StartLineNumber; endLine = $diagnosticTextStatements[0].Extent.EndLineNumber; rawText = $diagnosticTextStatements[0].Extent.Text; sha256 = Get-A031TextSha256 -Value $diagnosticTextStatements[0].Extent.Text }
+            [pscustomobject]@{ role = 'runner-diagnostic-write'; startLine = $diagnosticWriteStatements[0].Extent.StartLineNumber; endLine = $diagnosticWriteStatements[0].Extent.EndLineNumber; rawText = $diagnosticWriteStatements[0].Extent.Text; sha256 = Get-A031TextSha256 -Value $diagnosticWriteStatements[0].Extent.Text }
+            [pscustomobject]@{ role = 'runner-diagnostic-summary'; startLine = $summaryStatements[0].Extent.StartLineNumber; endLine = $summaryStatements[0].Extent.EndLineNumber; rawText = $summaryStatements[0].Extent.Text; sha256 = Get-A031TextSha256 -Value $summaryStatements[0].Extent.Text }
+            [pscustomobject]@{ role = 'runner-diagnostic-writer-function'; startLine = $writerAst.Extent.StartLineNumber; endLine = $writerAst.Extent.EndLineNumber; rawText = $writerAst.Extent.Text; sha256 = Get-A031TextSha256 -Value $writerAst.Extent.Text }
+        )
+        $payloadLength = 2097152
+        $emitterRoot = Join-Path $fixture.sourceOwnedRoot 'a031-output-emitter'
+        [void](New-Item -ItemType Directory -Path $emitterRoot -Force)
+        $payloadPath = Join-Path $emitterRoot 'emitter-payload.bin'
+        $payloadBytes = [byte[]]::new($payloadLength)
+        [Array]::Fill($payloadBytes, [byte]0x41)
+        [IO.File]::WriteAllBytes($payloadPath, $payloadBytes)
+        $emitterPath = Join-Path $emitterRoot 'emit-output.ps1'
+        $emitterText = @'
+[CmdletBinding()]
+param([Parameter(Mandatory)][string] $PayloadPath)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$payload = [IO.File]::ReadAllText($PayloadPath, [Text.Encoding]::ASCII)
+Write-Output $payload
+exit 0
+'@
+        [void](Write-SourceBindingFixtureFile -Path $emitterPath -Text $emitterText)
+        $relayTargetPath = Join-Path $emitterRoot 'execute-source-relay.ps1'
+        $captureReceiptPath = Join-Path $emitterRoot 'capture-receipt.json'
+        $relayParts = @(
+            '[CmdletBinding()]'
+            'param([Parameter(Mandatory)][string] $PowerShellPath, [Parameter(Mandatory)][string] $EmitterPath, [Parameter(Mandatory)][string] $PayloadPath, [Parameter(Mandatory)][string] $RunRoot, [Parameter(Mandatory)][string] $CandidateRoot, [Parameter(Mandatory)][string] $AuthorityRoot, [Parameter(Mandatory)][string] $CaptureReceiptPath)'
+            'Set-StrictMode -Version Latest'
+            '$ErrorActionPreference = ''Stop'''
+            $writerAst.Extent.Text
+            '$powerShell = [IO.Path]::GetFullPath($PowerShellPath)'
+            '$centralRunner = [IO.Path]::GetFullPath($EmitterPath)'
+            '$arguments = @(''-PayloadPath'', [IO.Path]::GetFullPath($PayloadPath))'
+            '$paths = [pscustomobject]@{ artifactsRoot = [IO.Path]::GetFullPath($RunRoot) }'
+            '$RepositoryRoot = [IO.Path]::GetFullPath($CandidateRoot)'
+            '$authority = [pscustomobject]@{ root = [IO.Path]::GetFullPath($AuthorityRoot) }'
+            $captureStatements[0].Extent.Text
+            $exitStatements[0].Extent.Text
+            $diagnosticTextStatements[0].Extent.Text
+            $diagnosticWriteStatements[0].Extent.Text
+            $summaryStatements[0].Extent.Text
+            '$captureReceipt = [ordered]@{ outputCharacters = $runnerDiagnostic.characterCount; outputBytes = $runnerDiagnostic.byteLength; outputSha256 = $runnerDiagnostic.sha256; processExitCode = [int]$runnerDiagnostic.processExitCode; sidecarPath = [IO.Path]::GetFullPath($runnerDiagnostic.path); payloadPath = [IO.Path]::GetFullPath($PayloadPath) }'
+            '[IO.File]::WriteAllText($CaptureReceiptPath, (($captureReceipt | ConvertTo-Json -Depth 20 -Compress) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))'
+            'exit 0'
+        )
+        $relayTargetText = [string]::Join([Environment]::NewLine, [string[]]$relayParts) + [Environment]::NewLine
+        [void](Write-SourceBindingFixtureFile -Path $relayTargetPath -Text $relayTargetText)
+        $diagnosticRunRoot = Join-Path (Split-Path -Parent $fixture.sourceOwnedRoot) "a031-relay-run-$([guid]::NewGuid().ToString('N'))"
+        [void](New-Item -ItemType Directory -Path $diagnosticRunRoot -ErrorAction Stop)
+        $relayArguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $relayTargetPath,
+            '-PowerShellPath', $fixture.powerShellPath, '-EmitterPath', $emitterPath,
+            '-PayloadPath', $payloadPath, '-RunRoot', $diagnosticRunRoot, '-CandidateRoot', $fixture.candidateRoot,
+            '-AuthorityRoot', $supervisor.root, '-CaptureReceiptPath', $captureReceiptPath)
+        $processResult = Invoke-A031TrustedSupervisedProcess -RunnerPath $supervisor.path `
+            -PowerShellPath $fixture.powerShellPath -Arguments $relayArguments -WorkingDirectory $emitterRoot `
+            -Environment @{} -CandidateRoot $fixture.candidateRoot -AdapterPath $fixture.adapterPath `
+            -ArtifactsRoot $fixture.artifactRoot -Revision $fixture.candidateRevision
+        $captureReceipt = Get-Content -LiteralPath $captureReceiptPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 30
+        $capturePath = [IO.Path]::GetFullPath([string]$captureReceipt.sidecarPath)
+        $capturedRaw = [IO.File]::ReadAllBytes($capturePath)
+        $payloadRaw = [IO.File]::ReadAllBytes($payloadPath)
+        $payloadSha256 = (Get-FileHash -LiteralPath $payloadPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $evidence = [ordered]@{
+            scenario = 'actual candidate source capture, CreateNew diagnostic sidecar writer and bounded summary under the trusted supervisor fixture'
+            authorityRunner = $supervisor
+            supervisorStreamsEvidenceEncoding = 'UTF-8 no-BOM re-encoding of the trusted supervisor returned stdout/stderr text; these are not original child byte streams.'
+            supervisorApiCall = $script:A031LastProcessInvocation
+            candidateRevision = $fixture.candidateRevision
+            runnerPath = $validatePath
+            runnerSha256 = Get-SourceBindingFixtureHash -Path $validatePath
+            astStatements = $astRecords
+            emitterPath = $emitterPath
+            emitterSha256 = Get-SourceBindingFixtureHash -Path $emitterPath
+            emitterPayloadPath = $payloadPath
+            emitterPayloadBytes = [IO.FileInfo]::new($payloadPath).Length
+            emitterPayloadSha256 = $payloadSha256
+            targetPath = $relayTargetPath
+            targetSha256 = Get-SourceBindingFixtureHash -Path $relayTargetPath
+            capturedDiagnosticPath = $capturePath
+            capturedDiagnosticBytes = $capturedRaw.Length
+            capturedDiagnosticSha256 = (Get-FileHash -LiteralPath $capturePath -Algorithm SHA256).Hash.ToLowerInvariant()
+            capturedBytesExactlyMatchEmitterPayload = [Linq.Enumerable]::SequenceEqual[byte]($capturedRaw, $payloadRaw)
+            captureReceipt = $captureReceipt
+            supervisorResult = $processResult
+        }
+        $correctDiagnosticCaptured = [int64]$captureReceipt.outputBytes -ge 2097152 -and
+            [string]$captureReceipt.outputSha256 -ceq $payloadSha256 -and [int]$captureReceipt.processExitCode -eq 0 -and
+            [Linq.Enumerable]::SequenceEqual[byte]($capturedRaw, $payloadRaw)
+        $observedQuotaRed = [bool]$processResult.outputQuotaExceeded -and
+            [string]$processResult.status -ceq 'failed' -and [int]$processResult.exitCode -ne 0 -and
+            [bool]$processResult.cleanedUp
+        $intendedGreen = -not [bool]$processResult.outputQuotaExceeded -and
+            [string]$processResult.status -ceq 'passed' -and [int]$processResult.exitCode -eq 0 -and
+            [bool]$processResult.cleanedUp
+        $evidence.correctDiagnosticCaptured = [bool]$correctDiagnosticCaptured
+        $evidence.observedQuotaRed = [bool]$observedQuotaRed
+        $evidence.intendedGreenObserved = [bool]$intendedGreen
+        $fixtureManifest = Get-Content -LiteralPath $fixture.manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 30
+        $preserved = [ordered]@{}
+        $preserved.candidateSnapshot = Save-A031CandidateEvidenceTree -EvidenceSubdirectory 'output-candidate-snapshot' `
+            -CandidateRoot $fixture.candidateRoot -ManifestEntries @($fixtureManifest.entries)
+        $preserved.validateSource = Save-A031EvidenceFile -Name 'output-Validate.ps1' -SourcePath $validatePath
+        $preserved.emitter = Save-A031EvidenceFile -Name 'output-emitter.ps1' -SourcePath $emitterPath
+        $preserved.payload = Save-A031EvidenceFile -Name 'output-payload.bin' -SourcePath $payloadPath
+        $preserved.relayTarget = Save-A031EvidenceFile -Name 'output-relay-target.ps1' -SourcePath $relayTargetPath
+        $preserved.capturedDiagnostic = Save-A031EvidenceFile -Name 'output-captured-diagnostic.txt' -SourcePath $capturePath
+        $preserved.captureReceipt = Save-A031EvidenceFile -Name 'output-capture-receipt.json' -SourcePath $captureReceiptPath
+        $preserved.supervisorStdout = Save-A031EvidenceBytes -Name 'output-supervisor-stdout-utf8-reencoded.txt' -Bytes ([Text.UTF8Encoding]::new($false).GetBytes([string]$processResult.stdout))
+        $preserved.supervisorStderr = Save-A031EvidenceBytes -Name 'output-supervisor-stderr-utf8-reencoded.txt' -Bytes ([Text.UTF8Encoding]::new($false).GetBytes([string]$processResult.stderr))
+        for ($astIndex = 0; $astIndex -lt $astRecords.Count; $astIndex++) {
+            $astRecord = $astRecords[$astIndex]
+            $preserved[$astRecord.role] = Save-A031EvidenceBytes -Name ("output-ast-{0}.ps1" -f $astRecord.role) `
+                -Bytes ([Text.UTF8Encoding]::new($false).GetBytes([string]$astRecord.rawText))
+        }
+        $evidence.preservedFiles = $preserved
+        [void](Save-A031EvidenceJson -Name 'output-relay-supervisor-red.json' -Value $evidence)
+        $correctDiagnosticCaptured | Should -BeTrue -Because 'the current merged output capture must retain the full exact 2 MiB diagnostic before relay'
+        $intendedGreen | Should -BeTrue -Because 'the source-only relay must keep the exact supervisor output below its quota'
+    }
+
+    # Scenario: the trusted process supervisor must preserve a failing child's exit code and cleanup result on small diagnostic output.
+    # Purpose: keep non-zero status and cleanup semantics stable while the source relay moves diagnostic bytes to a sidecar.
+    It 'InterT62_preserves_nonzero_trusted_child_exit_and_cleanup' {
+        $supervisor = Get-A031AuthoritySupervisorBinding
+        $fixture = New-GeneralWrapperFixture -Root (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))
+        $exitPath = Join-Path $fixture.sourceOwnedRoot 'a031-exit-child.ps1'
+        $exitText = "[Console]::Out.WriteLine('A031 owned child exit probe')`nexit 23`n"
+        [void](Write-SourceBindingFixtureFile -Path $exitPath -Text $exitText)
+        $processResult = Invoke-A031TrustedSupervisedProcess -RunnerPath $supervisor.path `
+            -PowerShellPath $fixture.powerShellPath -Arguments @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $exitPath) `
+            -WorkingDirectory $fixture.sourceOwnedRoot -Environment @{} -CandidateRoot $fixture.candidateRoot `
+            -AdapterPath $fixture.adapterPath -ArtifactsRoot $fixture.artifactRoot -Revision $fixture.candidateRevision
+        [void](Save-A031EvidenceJson -Name 'nonzero-child-supervisor.json' -Value ([ordered]@{ authorityRunner = $supervisor; supervisorApiCall = $script:A031LastProcessInvocation; childPath = $exitPath; childSha256 = Get-SourceBindingFixtureHash -Path $exitPath; supervisorResult = $processResult }))
+        [int]$processResult.exitCode | Should -Be 23
+        [bool]$processResult.cleanedUp | Should -BeTrue
+        [bool]$processResult.outputQuotaExceeded | Should -BeFalse
+    }
+
+    # Scenario: the candidate source-only diagnostic writer retains complete diagnostic text and the child exit code.
+    # Purpose: verify the private sidecar contract with a multi-megabyte payload and readback hash.
+    It 'InterT63_retains_large_source_diagnostic_bytes_and_nonzero_child_exit' {
+        $validatePath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $validateAst = [System.Management.Automation.Language.Parser]::ParseFile($validatePath, [ref]$tokens, [ref]$parseErrors)
+        if (@($parseErrors).Count -gt 0) { throw ('Validate.ps1 did not parse for the A031 diagnostic writer: ' + (@($parseErrors | ForEach-Object { $_.Message }) -join '; ')) }
+        $writerAst = $validateAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Write-CodeSourceRunnerOutputDiagnostic' }, $true)
+        if ($null -eq $writerAst) {
+            $false | Should -BeTrue -Because 'Invoke-CodeSourceValidation must expose its private run-owned diagnostic sidecar writer'
+            return
+        }
+        . ([scriptblock]::Create($writerAst.Extent.Text))
+
+        $fixture = New-GeneralWrapperFixture -Root (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))
+        $supervisor = Get-A031AuthoritySupervisorBinding
+        $diagnostic = ('A' * 2097152) + "`r`nfull diagnostic tail Ω"
+        $expectedBytes = [Text.UTF8Encoding]::new($false).GetBytes($diagnostic)
+        $diagnosticRunRoot = Join-Path (Split-Path -Parent $fixture.sourceOwnedRoot) "a031-writer-run-$([guid]::NewGuid().ToString('N'))"
+        [void](New-Item -ItemType Directory -Path $diagnosticRunRoot -ErrorAction Stop)
+        $result = Write-CodeSourceRunnerOutputDiagnostic -OutputText $diagnostic -RunRoot $diagnosticRunRoot `
+            -CandidateRoot $fixture.candidateRoot -AuthorityRoot $supervisor.root -ProcessExitCode 23
+        $sidecarPath = [IO.Path]::GetFullPath([string]$result.path)
+        $actualBytes = [IO.File]::ReadAllBytes($sidecarPath)
+        $actualText = [Text.UTF8Encoding]::new($false).GetString($actualBytes)
+        $expectedHash = ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($expectedBytes))).ToLowerInvariant()
+        $actualHash = (Get-FileHash -LiteralPath $sidecarPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $result.path | Should -Not -BeNullOrEmpty
+        $actualText | Should -BeExactly $diagnostic
+        $actualHash | Should -Be $expectedHash
+        [string]$result.sha256 | Should -Be $expectedHash
+        [int64]$result.characterCount | Should -Be $diagnostic.Length
+        [int64]$result.byteLength | Should -Be $expectedBytes.Length
+        [int]$result.processExitCode | Should -Be 23
+        $sidecarPath.StartsWith($fixture.candidateRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) | Should -BeFalse
+        $sidecarPath.StartsWith($supervisor.root.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) | Should -BeFalse
+
+        $preserved = [ordered]@{
+            validateSource = Save-A031EvidenceFile -Name 'writer-Validate.ps1' -SourcePath $validatePath
+            sidecar = Save-A031EvidenceFile -Name 'writer-large-sidecar.txt' -SourcePath $sidecarPath
+        }
+        $writerEvidence = [ordered]@{
+            authorityRunner = $supervisor; writerAst = $writerAst.Extent.Text; writerAstSha256 = Get-A031TextSha256 -Value $writerAst.Extent.Text
+            diagnosticCharacters = $diagnostic.Length; diagnosticBytes = $expectedBytes.Length; diagnosticSha256 = $expectedHash
+            result = $result; sidecarActualSha256 = $actualHash; preservedFiles = $preserved
+        }
+        [void](Save-A031EvidenceJson -Name 'diagnostic-writer-roundtrip.json' -Value $writerEvidence)
+    }
+
+    # Scenario: the private diagnostic writer must fail closed when its destination overlaps the candidate or authority, uses a file, or follows a reparse point.
+    # Purpose: ensure private sidecar retention cannot become candidate input, protected authority content, or an escaped write.
+    It 'InterT64_rejects_unsafe_diagnostic_writer_destinations' {
+        $validatePath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $validateAst = [System.Management.Automation.Language.Parser]::ParseFile($validatePath, [ref]$tokens, [ref]$parseErrors)
+        if (@($parseErrors).Count -gt 0) { throw ('Validate.ps1 did not parse for the A031 diagnostic writer guards: ' + (@($parseErrors | ForEach-Object { $_.Message }) -join '; ')) }
+        $writerAst = $validateAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Write-CodeSourceRunnerOutputDiagnostic' }, $true)
+        if ($null -eq $writerAst) {
+            $false | Should -BeTrue -Because 'Invoke-CodeSourceValidation must expose its private run-owned diagnostic sidecar writer'
+            return
+        }
+        . ([scriptblock]::Create($writerAst.Extent.Text))
+        $fixture = New-GeneralWrapperFixture -Root (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))
+        $authorityRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        [void](New-Item -ItemType Directory -Path $authorityRoot)
+        $candidateOverlapRoot = Join-Path $fixture.candidateRoot 'a031-unsafe-output-root'
+        [void](New-Item -ItemType Directory -Path $candidateOverlapRoot)
+        { Write-CodeSourceRunnerOutputDiagnostic -OutputText 'x' -RunRoot $candidateOverlapRoot -CandidateRoot $fixture.candidateRoot -AuthorityRoot $authorityRoot -ProcessExitCode 0 } | Should -Throw
+        { Write-CodeSourceRunnerOutputDiagnostic -OutputText 'x' -RunRoot $authorityRoot -CandidateRoot $fixture.candidateRoot -AuthorityRoot $authorityRoot -ProcessExitCode 0 } | Should -Throw
+
+        $existingRunRootFile = Join-Path $fixture.sourceOwnedRoot 'a031-existing-output-root.bin'
+        [IO.File]::WriteAllBytes($existingRunRootFile, [byte[]](0x41, 0x42, 0x43))
+        $existingHash = (Get-FileHash -LiteralPath $existingRunRootFile -Algorithm SHA256).Hash
+        { Write-CodeSourceRunnerOutputDiagnostic -OutputText 'x' -RunRoot $existingRunRootFile -CandidateRoot $fixture.candidateRoot -AuthorityRoot $authorityRoot -ProcessExitCode 0 } | Should -Throw
+        (Get-FileHash -LiteralPath $existingRunRootFile -Algorithm SHA256).Hash | Should -Be $existingHash
+
+        $relativeRunRoot = "a031-relative-diagnostic-run-$([guid]::NewGuid().ToString('N'))"
+        $relativeCandidateRoot = "a031-relative-diagnostic-candidate-$([guid]::NewGuid().ToString('N'))"
+        $relativeAuthorityRoot = "a031-relative-diagnostic-authority-$([guid]::NewGuid().ToString('N'))"
+        $relativeProbePath = Join-Path $fixture.sourceOwnedRoot 'a031-relative-root-guard-probe.bin'
+        [byte[]]$relativeProbeBytes = 0x41, 0x30, 0x33, 0x31
+        [IO.File]::WriteAllBytes($relativeProbePath, $relativeProbeBytes)
+        $relativeProbeHash = Get-SourceBindingFixtureHash -Path $relativeProbePath
+        { Write-CodeSourceRunnerOutputDiagnostic -OutputText 'x' -RunRoot $relativeRunRoot -CandidateRoot $fixture.candidateRoot -AuthorityRoot $authorityRoot -ProcessExitCode 0 } | Should -Throw '*fully qualified absolute paths*'
+        { Write-CodeSourceRunnerOutputDiagnostic -OutputText 'x' -RunRoot $fixture.runRoot -CandidateRoot $relativeCandidateRoot -AuthorityRoot $authorityRoot -ProcessExitCode 0 } | Should -Throw '*fully qualified absolute paths*'
+        { Write-CodeSourceRunnerOutputDiagnostic -OutputText 'x' -RunRoot $fixture.runRoot -CandidateRoot $fixture.candidateRoot -AuthorityRoot $relativeAuthorityRoot -ProcessExitCode 0 } | Should -Throw '*fully qualified absolute paths*'
+        (Get-SourceBindingFixtureHash -Path $relativeProbePath) | Should -Be $relativeProbeHash
+        (Test-Path -LiteralPath $relativeRunRoot) | Should -BeFalse
+        (Test-Path -LiteralPath $relativeCandidateRoot) | Should -BeFalse
+        (Test-Path -LiteralPath $relativeAuthorityRoot) | Should -BeFalse
+
+        $junctionTarget = Join-Path $fixture.sourceOwnedRoot 'a031-junction-target'
+        $junctionRunRoot = Join-Path $fixture.sourceOwnedRoot 'a031-junction-run-root'
+        [void](New-Item -ItemType Directory -Path $junctionTarget -ErrorAction Stop)
+        try {
+            [void](New-Item -ItemType Junction -Path $junctionRunRoot -Target $junctionTarget -ErrorAction Stop)
+            $linkItem = Get-Item -LiteralPath $junctionRunRoot -Force -ErrorAction Stop
+            (($linkItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) | Should -BeTrue
+            { Write-CodeSourceRunnerOutputDiagnostic -OutputText 'x' -RunRoot $junctionRunRoot -CandidateRoot $fixture.candidateRoot -AuthorityRoot $authorityRoot -ProcessExitCode 0 } | Should -Throw '*reparse ancestor*'
+            @(Get-ChildItem -LiteralPath $junctionTarget -Force).Count | Should -Be 0
+        }
+        finally {
+            if (Test-Path -LiteralPath $junctionRunRoot) { Remove-Item -LiteralPath $junctionRunRoot -Force -ErrorAction Stop }
+            if (Test-Path -LiteralPath $junctionTarget) { Remove-Item -LiteralPath $junctionTarget -Force -Recurse -ErrorAction Stop }
+        }
+        (Test-Path -LiteralPath $junctionRunRoot) | Should -BeFalse
+        (Test-Path -LiteralPath $junctionTarget) | Should -BeFalse
+    }
+
+    # Scenario: the general wrapper receives an invalid frozen cleanup binding or a path already committed in the candidate manifest.
+    # Purpose: keep cleanup fail-closed for module path/hash, general executable hash, and tracked-file identity.
+    It 'InterT65_general_cleanup_bindings_and_tracked_path_fail_closed' {
+        function Write-A031GeneralAdapterCopies {
+            param([Parameter(Mandatory)] $Fixture, [Parameter(Mandatory)] $Adapter)
+            $text = ($Adapter | ConvertTo-Json -Depth 80 -Compress) + [Environment]::NewLine
+            $roundTrip = $text | ConvertFrom-Json -Depth 80
+            $roundTripManifestCount = @($roundTrip.sourceValidation.frozenFiles | Where-Object {
+                [IO.Path]::GetFileName([string]$_.path) -ceq 'candidate-git-entry-modes.json'
+            }).Count
+            if ($roundTripManifestCount -ne 1) { throw "A031 test adapter serialization lost the candidate manifest binding (count $roundTripManifestCount)." }
+            [IO.File]::WriteAllText($Fixture.retainedAdapterPath, $text, [Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText($Fixture.adapterPath, $text, [Text.UTF8Encoding]::new($false))
+        }
+
+        function Invoke-A031GeneralWrapperProbe {
+            param([Parameter(Mandatory)] $Fixture, [string] $ReleasePath, [string] $BootstrapCommand)
+            $environmentNames = @('STANDARD_VALIDATION_CORE_RUN_ID', 'STANDARD_VALIDATION_CORE_CHECK_ID',
+                'STANDARD_VALIDATION_CORE_SKILLS', 'STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', 'STANDARD_VALIDATION_BOOTSTRAP_COMMAND')
+            $previousEnvironment = @{}
+            foreach ($name in $environmentNames) { $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
+            $stdoutPath = Join-Path $Fixture.sourceOwnedRoot 'a031-general-guard.stdout.txt'
+            $stderrPath = Join-Path $Fixture.sourceOwnedRoot 'a031-general-guard.stderr.txt'
+            try {
+                [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_CORE_RUN_ID', $Fixture.runId, 'Process')
+                [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_CORE_CHECK_ID', 'repository-general', 'Process')
+                [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_CORE_SKILLS', ($Fixture.activeSkills -join ';'), 'Process')
+                [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', $ReleasePath, 'Process')
+                [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', $BootstrapCommand, 'Process')
+                Push-Location -LiteralPath $Fixture.candidateRoot
+                try {
+                    & $Fixture.powerShellPath -NoLogo -NoProfile -NonInteractive -File $Fixture.wrapperPath `
+                        -CandidateRevision $Fixture.candidateRevision 1> $stdoutPath 2> $stderrPath
+                    $exitCode = $LASTEXITCODE
+                }
+                finally { Pop-Location }
+            }
+            finally {
+                foreach ($name in $environmentNames) { [Environment]::SetEnvironmentVariable($name, $previousEnvironment[$name], 'Process') }
+            }
+            $stdout = if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw -Encoding UTF8 } else { '' }
+            $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw -Encoding UTF8 } else { '' }
+            return [pscustomobject]@{ exitCode = [int]$exitCode; stdout = [string]$stdout; stderr = [string]$stderr; stdoutPath = $stdoutPath; stderrPath = $stderrPath }
+        }
+
+        $results = [Collections.Generic.List[object]]::new()
+        $mutations = @(
+            [pscustomobject]@{
+                name = 'frozen protected module SHA mismatch'
+                expectedError = 'Repository general bootstrap cleanup helper differs from its exact retained frozen module binding.'
+                mutate = {
+                    param($adapter, $fixture)
+                    $modulePath = Join-Path $fixture.sourceOwnedRoot 'runtime/ProtectedSourceChecks/scripts/CorePesterIntegrity.psm1'
+                    $binding = @($adapter.sourceValidation.frozenFiles | Where-Object { [string]$_.path -ceq [IO.Path]::GetFullPath($modulePath) })
+                    if ($binding.Count -ne 1) { throw 'Test fixture does not contain one protected Core integrity module binding.' }
+                    $binding[0].sha256 = '0' * 64
+                }
+            }
+            [pscustomobject]@{
+                name = 'frozen protected module path mismatch'
+                expectedError = 'Repository general bootstrap cleanup helper differs from its exact retained frozen module binding.'
+                mutate = {
+                    param($adapter, $fixture)
+                    $modulePath = Join-Path $fixture.sourceOwnedRoot 'runtime/ProtectedSourceChecks/scripts/CorePesterIntegrity.psm1'
+                    $binding = @($adapter.sourceValidation.frozenFiles | Where-Object { [string]$_.path -ceq [IO.Path]::GetFullPath($modulePath) })
+                    if ($binding.Count -ne 1) { throw 'Test fixture does not contain one protected Core integrity module binding.' }
+                    $binding[0].path = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $modulePath) 'CorePesterIntegrity.alternate.psm1'))
+                }
+            }
+            [pscustomobject]@{
+                name = 'general runtime frozen SHA mismatch'
+                expectedError = 'Repository general PowerShell executable differs from its exact retained frozen binding.'
+                mutate = {
+                    param($adapter, $fixture)
+                    $binding = @($adapter.sourceValidation.frozenFiles | Where-Object { [string]$_.path -ceq $fixture.powerShellPath })
+                    if ($binding.Count -ne 1) { throw 'Test fixture does not contain one frozen current PowerShell executable binding.' }
+                    $binding[0].sha256 = '0' * 64
+                }
+            }
+        )
+        foreach ($mutation in $mutations) {
+            $fixture = New-GeneralWrapperFixture -Root (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))
+            $adapter = Get-Content -LiteralPath $fixture.retainedAdapterPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 80
+            $initialManifestCount = @($adapter.sourceValidation.frozenFiles | Where-Object {
+                [IO.Path]::GetFileName([string]$_.path) -ceq 'candidate-git-entry-modes.json'
+            }).Count
+            $initialManifestCount | Should -Be 1
+            & $mutation.mutate $adapter $fixture
+            Write-A031GeneralAdapterCopies -Fixture $fixture -Adapter $adapter
+            if ($mutation.name -ceq 'frozen protected module SHA mismatch') {
+                [void](Save-A031EvidenceFile -Name 'general-guard-mutated-adapter.json' -SourcePath $fixture.retainedAdapterPath)
+            }
+            $result = Invoke-A031GeneralWrapperProbe -Fixture $fixture
+            $combined = [string]$result.stdout + [Environment]::NewLine + [string]$result.stderr
+            $assertionText = [regex]::Replace($combined, '\r?\n\s*\|\s*', ' ')
+            $assertionText = [regex]::Replace($assertionText, '\s+', ' ').Trim()
+            $result.exitCode | Should -Not -Be 0 -Because $mutation.name
+            $assertionText | Should -Match ([regex]::Escape([string]$mutation.expectedError))
+            $results.Add([pscustomobject]@{
+                name = $mutation.name; expectedError = $mutation.expectedError; exitCode = $result.exitCode
+                stdout = $result.stdout; stderr = $result.stderr; retainedAdapterSha256 = Get-SourceBindingFixtureHash -Path $fixture.retainedAdapterPath
+                frozenFiles = @($adapter.sourceValidation.frozenFiles)
+            })
+        }
+
+        $trackedFixture = New-GeneralWrapperFixture -Root (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))
+        $trackedAdapter = Get-Content -LiteralPath $trackedFixture.retainedAdapterPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 80
+        $trackedRelativePath = "b-$([guid]::NewGuid().ToString('N')).sig"
+        $trackedSignalPath = Join-Path $trackedFixture.candidateRoot $trackedRelativePath
+        $trackedBytes = [Text.UTF8Encoding]::new($false).GetBytes('release' + [Environment]::NewLine)
+        [IO.File]::WriteAllBytes($trackedSignalPath, $trackedBytes)
+        $trackedSignalSha256 = Get-SourceBindingFixtureHash -Path $trackedSignalPath
+        $manifest = Get-Content -LiteralPath $trackedFixture.manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 60
+        $manifest.entries = @($manifest.entries) + @([pscustomobject]@{ path = $trackedRelativePath; mode = '100644'; sha256 = $trackedSignalSha256 })
+        $manifest.entries = @($manifest.entries | Sort-Object -Property path -CaseSensitive)
+        [IO.File]::WriteAllText($trackedFixture.manifestPath, (($manifest | ConvertTo-Json -Depth 60 -Compress) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+        $manifestSha256 = Get-SourceBindingFixtureHash -Path $trackedFixture.manifestPath
+        $identityPath = Join-Path $trackedFixture.sourceOwnedRoot 'source-run-identity.json'
+        $identity = Get-Content -LiteralPath $identityPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 30
+        $identity.candidateManifestSha256 = $manifestSha256
+        [IO.File]::WriteAllText($identityPath, (($identity | ConvertTo-Json -Depth 30 -Compress) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+        foreach ($binding in @($trackedAdapter.sourceValidation.frozenFiles)) {
+            if ([string]$binding.path -ceq $trackedFixture.manifestPath) { $binding.sha256 = $manifestSha256 }
+            elseif ([string]$binding.path -ceq $identityPath) { $binding.sha256 = Get-SourceBindingFixtureHash -Path $identityPath }
+        }
+        Write-A031GeneralAdapterCopies -Fixture $trackedFixture -Adapter $trackedAdapter
+        $trackedBeforeHash = Get-SourceBindingFixtureHash -Path $trackedSignalPath
+        $trackedResult = Invoke-A031GeneralWrapperProbe -Fixture $trackedFixture -ReleasePath $trackedSignalPath `
+            -BootstrapCommand $trackedFixture.powerShellPath
+        $trackedCombined = [string]$trackedResult.stdout + [Environment]::NewLine + [string]$trackedResult.stderr
+        $trackedAssertionText = [regex]::Replace($trackedCombined, '\r?\n\s*\|\s*', ' ')
+        $trackedAssertionText = [regex]::Replace($trackedAssertionText, '\s+', ' ').Trim()
+        $trackedResult.exitCode | Should -Not -Be 0
+        $trackedAssertionText | Should -Match 'Tracked candidate file cannot be consumed as a repository general bootstrap signal\.'
+        (Get-SourceBindingFixtureHash -Path $trackedSignalPath) | Should -Be $trackedBeforeHash
+        $results.Add([pscustomobject]@{
+            name = 'tracked supervisor-shaped signal path'; expectedError = 'Tracked candidate file cannot be consumed as a repository general bootstrap signal.'
+            exitCode = $trackedResult.exitCode; stdout = $trackedResult.stdout; stderr = $trackedResult.stderr
+            signalPath = $trackedSignalPath; signalSha256 = $trackedSignalSha256; signalPreserved = ((Get-SourceBindingFixtureHash -Path $trackedSignalPath) -ceq $trackedBeforeHash)
+            manifestSha256 = $manifestSha256; retainedAdapterSha256 = Get-SourceBindingFixtureHash -Path $trackedFixture.retainedAdapterPath
+        })
+        [void](Save-A031EvidenceJson -Name 'general-cleanup-guard-cases.json' -Value ([ordered]@{ cases = @($results.ToArray()) }))
     }
 
     # Scenario: the protected event-base driver remains on the active 8a authority while candidate tests run.

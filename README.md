@@ -31,6 +31,7 @@ catalog/
 docs/
   RELEASE.md
   ROLLBACK.md
+  WINDOWS-SUPPORT.md
 scripts/
   Get-SourcePin.ps1
 tests/
@@ -51,6 +52,8 @@ Direct paths are stable within a pinned version:
 Consumers should resolve a release tag to an immutable commit SHA and persist that SHA plus a reproducible repository content hash. The source-pin metadata helper produces the pin evidence used for that purpose.
 
 ## Validation
+
+Windows is the only supported host for local development, installation, execution, testing, acceptance, and CI. Run repository commands in PowerShell (pwsh); Linux/macOS hosts, WSL, and Linux containers are unsupported. See [Windows support and Skill inventory](docs/WINDOWS-SUPPORT.md) for the tracked inventory and support boundary.
 
 Run from the repository root:
 

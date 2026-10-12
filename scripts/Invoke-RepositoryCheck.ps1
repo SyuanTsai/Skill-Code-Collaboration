@@ -160,6 +160,64 @@ foreach ($entry in @($manifest.entries)) {
     $manifestEntries.Add($relativePath, $entry)
 }
 
+# Bind bootstrap-signal cleanup to the exact protected Core helper and runtime.
+# The candidate is immutable input: consume only the one-shot signal named by
+# the trusted supervisor, and never hide arbitrary b-*.sig files from inventory.
+$pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+$generalChecks = @($adapter.checks | Where-Object { [string]$_.id -ceq 'repository-general' })
+if ($generalChecks.Count -ne 1 -or [string]$generalChecks[0].kind -cne 'general' -or
+    -not [IO.Path]::IsPathFullyQualified([string]$generalChecks[0].executable) -or
+    [string]$generalChecks[0].executableSha256 -cnotmatch '^[0-9a-f]{64}$') {
+    throw 'Repository general check requires one retained protected PowerShell executable binding.'
+}
+$generalExecutablePath = [IO.Path]::GetFullPath([string]$generalChecks[0].executable)
+$generalExecutableSha256 = [string]$generalChecks[0].executableSha256
+$currentExecutablePath = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+$executableFrozenBindings = @($sourceSpec.frozenFiles | Where-Object {
+    [IO.Path]::GetFullPath([string]$_.path).Equals($generalExecutablePath, $pathComparison)
+})
+if ($executableFrozenBindings.Count -ne 1 -or
+    [string]$executableFrozenBindings[0].sha256 -cne $generalExecutableSha256 -or
+    -not $generalExecutablePath.Equals($currentExecutablePath, $pathComparison) -or
+    -not (Test-Path -LiteralPath $generalExecutablePath -PathType Leaf) -or
+    (Get-FileSha256 -Path $generalExecutablePath) -cne $generalExecutableSha256) {
+    throw 'Repository general PowerShell executable differs from its exact retained frozen binding.'
+}
+
+$integrityModulePath = [IO.Path]::GetFullPath((Join-Path $sourceOwnedRoot 'runtime/ProtectedSourceChecks/scripts/CorePesterIntegrity.psm1'))
+$integrityModuleBindings = @($sourceSpec.frozenFiles | Where-Object {
+    [IO.Path]::GetFullPath([string]$_.path).Equals($integrityModulePath, $pathComparison)
+})
+if ($integrityModuleBindings.Count -ne 1 -or -not (Test-Path -LiteralPath $integrityModulePath -PathType Leaf) -or
+    [string]$integrityModuleBindings[0].sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+    (Get-FileSha256 -Path $integrityModulePath) -cne [string]$integrityModuleBindings[0].sha256) {
+    throw 'Repository general bootstrap cleanup helper differs from its exact retained frozen module binding.'
+}
+Import-Module -Name $integrityModulePath -Function Remove-CorePesterConsumedBootstrapSignal -Force -ErrorAction Stop
+
+$bootstrapReleasePath = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', 'Process')
+$bootstrapCommand = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', 'Process')
+$hasBootstrapReleasePath = -not [string]::IsNullOrWhiteSpace($bootstrapReleasePath)
+$hasBootstrapCommand = -not [string]::IsNullOrWhiteSpace($bootstrapCommand)
+if ($hasBootstrapReleasePath -xor $hasBootstrapCommand) {
+    throw 'Repository general bootstrap signal requires both trusted supervisor release path and command.'
+}
+if ($hasBootstrapReleasePath) {
+    if (-not [IO.Path]::IsPathFullyQualified($bootstrapReleasePath) -or
+        -not [IO.Path]::IsPathFullyQualified($bootstrapCommand) -or
+        -not [IO.Path]::GetFullPath($bootstrapCommand).Equals($generalExecutablePath, $pathComparison)) {
+        throw 'Repository general bootstrap command differs from the retained general PowerShell executable.'
+    }
+    $bootstrapSignalPath = [IO.Path]::GetFullPath($bootstrapReleasePath)
+    $bootstrapSignalRelativePath = [IO.Path]::GetRelativePath($candidateRoot, $bootstrapSignalPath).
+        Replace([IO.Path]::DirectorySeparatorChar, '/').Replace([IO.Path]::AltDirectorySeparatorChar, '/')
+    if ($manifestEntries.ContainsKey($bootstrapSignalRelativePath)) {
+        throw 'Tracked candidate file cannot be consumed as a repository general bootstrap signal.'
+    }
+    Remove-CorePesterConsumedBootstrapSignal -CandidateRoot $candidateRoot -ReleasePath $bootstrapReleasePath `
+        -BootstrapCommand $bootstrapCommand -VerifiedPowerShellExecutable $generalExecutablePath
+}
+
 $candidateInventory = [Collections.Generic.SortedDictionary[string, object]]::new([StringComparer]::Ordinal)
 foreach ($file in @(Get-ChildItem -LiteralPath $candidateRoot -Recurse -File -Force -ErrorAction Stop)) {
     if ($file -isnot [IO.FileInfo]) { throw 'Candidate snapshot contains a non-regular file entry.' }

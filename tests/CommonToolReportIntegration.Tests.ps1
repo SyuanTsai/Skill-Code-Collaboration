@@ -108,6 +108,7 @@ Describe 'Code child uses central package tool report rules' {
         }
 
         $validationPath = if ([string]::IsNullOrWhiteSpace($env:SYP154_TEST_VALIDATE_SOURCE)) { Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts/Validate.ps1' } else { [string]$env:SYP154_TEST_VALIDATE_SOURCE }
+        $script:validationPath = $validationPath
         $script:validationSource = Get-Content -LiteralPath $validationPath -Raw
         $script:childMatch = [regex]::Match($script:validationSource, '(?ms)^\$childRunnerText = @''\r?\n(?<body>.*?)^''@')
         if (-not $script:childMatch.Success) { throw 'Code child runner source was not found.' }
@@ -631,6 +632,105 @@ $root = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_RUN_OWNED_ROO
         $child = Invoke-IntegrationChildProcess -Arguments @('-NoProfile', '-NonInteractive', '-File', $script:childPath, '-Mode', 'skill-validator', '-ToolchainPath', $script:toolchainPath, '-ToolchainSha256', $script:toolchainHash, '-SourceRevision', ('c' * 40), '-GitEntryModeManifestPath', $script:manifestPath, '-GitEntryModeManifestSha256', $script:manifestHash)
         $child.exitCode | Should -Be 1
         ($child.output -join "`n") | Should -Match 'category|required string field'
+    }
+
+    # Scenario: changed Skill content requires central semantic review after the Static pass.
+    # Purpose: prove the real child emits its typed trigger after one no-LLM scan and leaves consent handling to Stage 6.
+    It 'InterT60_keeps_the_real_static_child_no_llm_and_returns_the_central_semantic_trigger' {
+        $spyPath = Join-Path $script:testRoot 'skillspector-static-spy-calls.jsonl'
+        $spyToolPath = Join-Path $script:testRoot 'skillspector-static-spy.ps1'
+        $staticToolchainPath = Join-Path $script:testRoot 'static-toolchain.json'
+        $spySource = @'
+$callArguments = @($args | ForEach-Object { [string]$_ })
+$line = ConvertTo-Json -InputObject ([pscustomobject]@{ arguments = $callArguments }) -Compress -Depth 5
+[IO.File]::AppendAllText($env:SYP154_TEST_STATIC_SPY, $line + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+if ($callArguments -notcontains '--no-llm') {
+    [Console]::Error.WriteLine('TEST_SPY_REJECTED_SEMANTIC_INVOCATION')
+    $global:LASTEXITCODE = 97
+    return
+}
+$outputIndex = [Array]::IndexOf($callArguments, '--output')
+if ($outputIndex -lt 0 -or $outputIndex + 1 -ge $callArguments.Count) {
+    [Console]::Error.WriteLine('TEST_SPY_REJECTED_MISSING_OUTPUT_PATH')
+    $global:LASTEXITCODE = 98
+    return
+}
+$skillRoot = [string]$callArguments[1]
+$componentPaths = @(
+    Get-ChildItem -LiteralPath $skillRoot -Recurse -File -Force |
+        ForEach-Object { $_.FullName.Substring($skillRoot.Length).TrimStart([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar).Replace([IO.Path]::DirectorySeparatorChar, '/') }
+)
+[Array]::Sort($componentPaths, [StringComparer]::Ordinal)
+$components = @($componentPaths | ForEach-Object { [pscustomobject]@{ path = [string]$_ } })
+$report = [ordered]@{
+    execution_successful = $true
+    analysis_completeness = [ordered]@{
+        execution_successful = $true
+        is_complete = $true
+        status = 'complete'
+        coverage_percent = 100
+        ledger_exceptions = @()
+        scope_exclusions = @()
+        limitations = @()
+    }
+    skill = [ordered]@{ name = 'demo'; source = $skillRoot }
+    components = @($components)
+    issues = @()
+}
+$outputPath = [string]$callArguments[$outputIndex + 1]
+[IO.File]::WriteAllText($outputPath, (ConvertTo-Json -InputObject $report -Depth 20 -Compress), [Text.UTF8Encoding]::new($false))
+$global:LASTEXITCODE = 0
+'@
+        [IO.File]::WriteAllText($spyToolPath, $spySource, [Text.UTF8Encoding]::new($false))
+        $toolchain = [ordered]@{
+            skillSpectorPath = $spyToolPath
+            skillSpectorSha256 = (Get-FileHash -LiteralPath $spyToolPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        [IO.File]::WriteAllText($staticToolchainPath, (ConvertTo-Json -InputObject $toolchain -Compress), [Text.UTF8Encoding]::new($false))
+        $staticToolchainHash = (Get-FileHash -LiteralPath $staticToolchainPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $previousSpy = [Environment]::GetEnvironmentVariable('SYP154_TEST_STATIC_SPY')
+        [Environment]::SetEnvironmentVariable('SYP154_TEST_STATIC_SPY', $spyPath)
+        try {
+            $rawBefore = @(Get-ChildItem -LiteralPath $script:testRoot -File -Filter 'native-raw-skillspector-*' | ForEach-Object { $_.FullName })
+            $child = Invoke-IntegrationChildProcess -Arguments @(
+                '-NoProfile', '-NonInteractive', '-File', $script:childPath,
+                '-Mode', 'static', '-SemanticRequired', 'true',
+                '-ToolchainPath', $staticToolchainPath, '-ToolchainSha256', $staticToolchainHash,
+                '-SourceRevision', ('c' * 40),
+                '-GitEntryModeManifestPath', $script:manifestPath,
+                '-GitEntryModeManifestSha256', $script:manifestHash
+            )
+            $calls = @()
+            if (Test-Path -LiteralPath $spyPath -PathType Leaf) {
+                $calls = @([IO.File]::ReadAllLines($spyPath) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_ | ConvertFrom-Json -Depth 5 })
+            }
+            $newRaw = @(Get-ChildItem -LiteralPath $script:testRoot -File -Filter 'native-raw-skillspector-*' | Where-Object { $rawBefore -cnotcontains $_.FullName })
+            $stdoutFiles = @($newRaw | Where-Object { $_.Name -match '\.stdout\.txt$' })
+            $stderrFiles = @($newRaw | Where-Object { $_.Name -match '\.stderr\.txt$' })
+            $child.exitCode | Should -Be 0 -Because ($child.output -join "`n")
+            $calls.Count | Should -Be 1
+            @($calls[0].arguments | Where-Object { $_ -ceq '--no-llm' }).Count | Should -Be 1
+            $envelope = ($child.output -join "`n") | ConvertFrom-Json -Depth 20
+            $envelope.status | Should -Be 'passed'
+            $envelope.decision | Should -Be 'PASS'
+            $envelope.scannerIdentity | Should -Be 'SkillSpector'
+            $envelope.analyzerCompleteness | Should -Be 'complete'
+            $envelope.semanticRequired | Should -BeOfType ([bool])
+            $envelope.semanticRequired | Should -BeTrue
+            $envelope.semanticScan.triggered | Should -BeTrue
+            $envelope.semanticScan.status | Should -Be 'not-run'
+            $envelope.semanticScan.findingCount | Should -Be 0
+            @($envelope.findings).Count | Should -Be 0
+            @($envelope.nativeReports).Count | Should -Be 1
+            $native = $envelope.nativeReports[0]
+            $native.arguments | Should -Contain '--no-llm'
+            [int]$native.exitCode | Should -Be 0
+            $stdoutFiles.Count | Should -Be 1
+            $stderrFiles.Count | Should -Be 1
+        }
+        finally {
+            [Environment]::SetEnvironmentVariable('SYP154_TEST_STATIC_SPY', $previousSpy)
+        }
     }
 
     # Scenario: the extracted authority archive contains unpinned repository files alongside the exact selected closure.
