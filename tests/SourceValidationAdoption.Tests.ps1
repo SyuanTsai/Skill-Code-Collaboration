@@ -622,7 +622,7 @@ Describe 'Protected Standard Core SourceValidation preparation' {
     }
 
     # Scenario: the source authority allowlist exposes the reviewed ff85 commit and all 32 closure records.
-    # Purpose: bind the future SourceValidation path to the complete reviewed authority tuple while the active config stays pinned to 8a.
+    # Purpose: bind the active config to the complete adopted ff85 authority tuple.
     It 'UnitT10_accepts_only_the_complete_prepared_authority_closure' {
         Test-Path -LiteralPath $script:DriverPath -PathType Leaf | Should -BeTrue
         Import-Module -Name $script:DriverPath -Force
@@ -634,8 +634,9 @@ Describe 'Protected Standard Core SourceValidation preparation' {
         $pin.files.Count | Should -Be 32
 
         $active = Get-Content -LiteralPath $script:ConfigPath -Raw | ConvertFrom-Json -Depth 20
-        $active.authority.commit | Should -Be '8aabd22694a05771f98639f6d726cc9a620eb94b'
-        $active.authority.archiveSha256 | Should -Be 'd92df1a8f0aa342970dc9c66a77b6211955b4708de12119cb7f9a360fd265311'
+        $active.authority.commit | Should -Be 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
+        $active.authority.archiveSha256 | Should -Be '3dc38613f2e2316ad8fcc79d4bf48d0b03fd8398f8dacc72d156abcbce95ea9d'
+        Assert-CodeSourceAuthorityConfig -Config $active
     }
 
     # Scenario: the prepared tuple has one missing, repeated, reordered, mixed, or altered identity member.
