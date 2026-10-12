@@ -1905,6 +1905,84 @@ function Read-CodeSourcePreparedTools {
     return $prepared
 }
 
+function Write-CodeSourceRunnerOutputDiagnostic {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string] $OutputText,
+        [Parameter(Mandatory)][string] $RunRoot,
+        [Parameter(Mandatory)][string] $CandidateRoot,
+        [Parameter(Mandatory)][string] $AuthorityRoot,
+        [Parameter(Mandatory)][int] $ProcessExitCode
+    )
+
+    foreach ($root in @($RunRoot, $CandidateRoot, $AuthorityRoot)) {
+        if ([string]::IsNullOrWhiteSpace($root) -or -not [IO.Path]::IsPathFullyQualified($root)) {
+            throw 'Source runner diagnostic roots must be fully qualified absolute paths.'
+        }
+    }
+    $fullRunRoot = [IO.Path]::GetFullPath($RunRoot)
+    if (-not (Test-Path -LiteralPath $fullRunRoot -PathType Container)) {
+        throw 'Source runner diagnostic root must be an existing run-owned directory.'
+    }
+    $pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    $withinOrEqual = {
+        param([string] $PathToCheck, [string] $BoundaryRoot)
+        $fullPath = [IO.Path]::GetFullPath($PathToCheck)
+        $fullBoundary = [IO.Path]::GetFullPath($BoundaryRoot)
+        $trimmedBoundary = $fullBoundary.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+        if ([string]::IsNullOrWhiteSpace($trimmedBoundary)) { $trimmedBoundary = [IO.Path]::GetPathRoot($fullBoundary) }
+        $prefix = $trimmedBoundary.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+        return $fullPath.Equals($fullBoundary, $pathComparison) -or $fullPath.StartsWith($prefix, $pathComparison)
+    }
+    foreach ($boundary in @($CandidateRoot, $AuthorityRoot)) {
+        if ([string]::IsNullOrWhiteSpace($boundary)) { throw 'Source runner diagnostic boundaries must be absolute roots.' }
+        $insideRun = & $withinOrEqual -PathToCheck $fullRunRoot -BoundaryRoot $boundary
+        $boundaryInsideRun = & $withinOrEqual -PathToCheck $boundary -BoundaryRoot $fullRunRoot
+        if ($insideRun -or $boundaryInsideRun) { throw 'Source runner diagnostic root overlaps the candidate or authority.' }
+    }
+
+    $cursor = $fullRunRoot
+    while (-not [string]::IsNullOrWhiteSpace($cursor)) {
+        if (-not (Test-Path -LiteralPath $cursor)) { throw 'Source runner diagnostic root ancestry is missing.' }
+        $entry = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+        if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "Source runner diagnostic root has a reparse ancestor: $cursor"
+        }
+        $parent = [IO.Path]::GetDirectoryName($cursor)
+        if ([string]::IsNullOrWhiteSpace($parent) -or $parent -ceq $cursor) { break }
+        $cursor = $parent
+    }
+
+    $encoding = [Text.UTF8Encoding]::new($false, $true)
+    $expectedBytes = $encoding.GetBytes($OutputText)
+    $sidecarPath = [IO.Path]::GetFullPath((Join-Path $fullRunRoot ("source-runner-output-$([guid]::NewGuid().ToString('N')).txt")))
+    $stream = [IO.FileStream]::new($sidecarPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+    try {
+        $stream.Write($expectedBytes, 0, $expectedBytes.Length)
+        $stream.Flush($true)
+    }
+    finally { $stream.Dispose() }
+
+    $sidecarItem = Get-Item -LiteralPath $sidecarPath -Force -ErrorAction Stop
+    if ($sidecarItem.PSIsContainer -or ($sidecarItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+        -not (& $withinOrEqual -PathToCheck $sidecarPath -BoundaryRoot $fullRunRoot)) {
+        throw 'Source runner diagnostic sidecar is not a regular file inside its run-owned root.'
+    }
+    $actualBytes = [IO.File]::ReadAllBytes($sidecarPath)
+    if (-not [Linq.Enumerable]::SequenceEqual[byte]($actualBytes, $expectedBytes) -or
+        -not $encoding.GetString($actualBytes).Equals($OutputText, [StringComparison]::Ordinal)) {
+        throw 'Source runner diagnostic sidecar readback differs from the captured merged output.'
+    }
+    $sha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($actualBytes)).ToLowerInvariant()
+    return [pscustomobject]@{
+        path = $sidecarPath
+        sha256 = $sha256
+        characterCount = [int64]$OutputText.Length
+        byteLength = [int64]$actualBytes.Length
+        processExitCode = [int]$ProcessExitCode
+    }
+}
+
 function Invoke-CodeSourceValidation {
     param([Parameter(Mandatory)][string] $GitPath, [Parameter(Mandatory)][string] $PowerShellPath,
         [Parameter(Mandatory)][string] $RepositoryRoot, [Parameter(Mandatory)][string] $CandidateRevision,
@@ -2037,7 +2115,12 @@ function Invoke-CodeSourceValidation {
             $centralRunnerTimer.Stop()
             $centralRunnerSeconds = [Math]::Round($centralRunnerTimer.Elapsed.TotalSeconds, 3)
         }
-        $runnerOutput | Out-Host
+        $runnerDiagnosticText = [string]::Join([Environment]::NewLine, [string[]]@($runnerOutput | ForEach-Object { [string]$_ }))
+        $runnerDiagnostic = Write-CodeSourceRunnerOutputDiagnostic -OutputText $runnerDiagnosticText `
+            -RunRoot $paths.artifactsRoot -CandidateRoot $RepositoryRoot -AuthorityRoot $authority.root `
+            -ProcessExitCode $processExitCode
+        [Console]::Out.WriteLine(("Source runner diagnostic retained: path={0}; bytes={1}; sha256={2}; processExitCode={3}" -f `
+            $runnerDiagnostic.path, $runnerDiagnostic.byteLength, $runnerDiagnostic.sha256, $runnerDiagnostic.processExitCode))
         if ($processExitCode -eq 0) {
             $reportRunnerContext = [ordered]@{
                 CandidateRoot = $RepositoryRoot
