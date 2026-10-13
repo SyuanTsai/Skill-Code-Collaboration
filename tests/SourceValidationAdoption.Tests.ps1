@@ -25,8 +25,55 @@ Describe 'Protected Standard Core SourceValidation preparation' {
             return ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))).ToLowerInvariant()
         }
 
+        function New-SourceAuthorityConfigFixture {
+            param([Parameter(Mandatory)] $Pin)
+
+            return [pscustomobject]@{
+                schemaVersion = 1
+                standardVersion = 'v1'
+                authority = [pscustomobject]@{
+                    repository = $Pin.repository
+                    commit = $Pin.commit
+                    archiveUrl = $Pin.archiveUrl
+                    archiveSha256 = $Pin.archiveSha256
+                    files = @($Pin.files.GetEnumerator() | ForEach-Object {
+                        [pscustomobject]@{ path = [string]$_.Key; sha256 = [string]$_.Value }
+                    })
+                }
+            }
+        }
+
+        function New-FormalSourceAuthorityPinFixture {
+            # Start from the checked-in ff85 config fixture, not the production getter,
+            # so the formal tuple expectation independently checks all 32 returned hashes.
+            $baseConfig = Get-Content -LiteralPath $script:ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+            $basePin = $baseConfig.authority
+            if ([string]$basePin.repository -cne 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git' -or
+                [string]$basePin.commit -cne 'ff85d5f80fe795b96354e753074b5ce59ad04ecd' -or
+                [string]$basePin.archiveSha256 -cne '3dc38613f2e2316ad8fcc79d4bf48d0b03fd8398f8dacc72d156abcbce95ea9d' -or
+                @($basePin.files).Count -ne 32) {
+                throw 'The checked-in ff85 config fixture does not match the established 32-file authority tuple.'
+            }
+            $files = [ordered]@{}
+            foreach ($entry in @($basePin.files)) { $files[[string]$entry.path] = [string]$entry.sha256 }
+            $files['docs/standards/skill-repository-standard.md'] = 'f7457bc6dbc13b475bcffc532b75961ff838e8d184162188dbbb1c766fd17e98'
+            $files['scripts/Invoke-StandardAuthorityGate.ps1'] = 'c4609b7f88f9b88be8583cc52f939837d49f2fa5e784977156cfe3d7c752082e'
+            $files['scripts/Invoke-StandardValidation.ps1'] = 'd13cea68b471aea60142665ee787a1bb2111d5ea7f8d45dfea14e0a2a59409b8'
+            $commit = '8e627baf54bd6e47862e6291b25e71cc45a2f2b7'
+            return [pscustomobject]@{
+                repository = $basePin.repository
+                commit = $commit
+                archiveUrl = "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/$commit"
+                archiveSha256 = '9aa4a7fc8fc7c7f0ff9e774c79c77a64077b4003212a523dda519d034ff99989'
+                files = $files
+            }
+        }
+
         function New-SourceBindingFixture {
-            param([Parameter(Mandatory)][string] $Root)
+            param(
+                [Parameter(Mandatory)][string] $Root,
+                [string] $AuthorityRevision = 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
+            )
 
             Import-Module -Name $script:DriverPath -Force
             $base = [IO.Path]::GetFullPath($Root)
@@ -47,7 +94,7 @@ Describe 'Protected Standard Core SourceValidation preparation' {
             $manifestPath = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot 'candidate-git-entry-modes.json') -Text '{"schemaVersion":3,"candidateCommit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","entries":[{"path":"skills/demo/SKILL.md","mode":"100644","sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}'
             $sourceIdentityPath = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot 'source-run-identity.json') -Text (([ordered]@{
                 schemaVersion = 1; runId = $runId; sourceRevision = $candidateRevision
-                authorityRevision = 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
+                authorityRevision = $AuthorityRevision
                 candidateManifestPath = [IO.Path]::GetFullPath($manifestPath); candidateManifestSha256 = Get-SourceBindingFixtureHash -Path $manifestPath
                 candidateArchivePath = [IO.Path]::GetFullPath($candidateArchivePath); candidateArchiveSha256 = Get-SourceBindingFixtureHash -Path $candidateArchivePath
             } | ConvertTo-Json -Depth 20 -Compress) + "`n")
@@ -147,7 +194,7 @@ Describe 'Protected Standard Core SourceValidation preparation' {
             [void](New-Item -ItemType Directory -Path $trustedRoot -Force)
             $prepared = [pscustomobject]@{
                 schemaVersion = 1; preparation = 'code-collaboration-source-tools'; runId = $runId
-                sourceRevision = $candidateRevision; authorityRevision = 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
+                sourceRevision = $candidateRevision; authorityRevision = $AuthorityRevision
                 ownedRoot = [IO.Path]::GetFullPath($ownedRoot)
                 candidateArchivePath = [IO.Path]::GetFullPath($candidateArchivePath)
                 candidateArchiveSha256 = Get-SourceBindingFixtureHash -Path $candidateArchivePath
@@ -168,7 +215,7 @@ Describe 'Protected Standard Core SourceValidation preparation' {
                 root = $base; runId = $runId; candidateRevision = $candidateRevision
                 prepared = $prepared; preparedPath = [IO.Path]::GetFullPath($preparedPath)
                 runtimeRoot = [IO.Path]::GetFullPath($runtimeRoot); runtimeExecutable = [IO.Path]::GetFullPath($runtimeExecutable)
-                manifestPath = [IO.Path]::GetFullPath($manifestPath); authorityRevision = 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
+                manifestPath = [IO.Path]::GetFullPath($manifestPath); authorityRevision = $AuthorityRevision
                 toolClosurePaths = $toolClosurePaths; receiptPaths = $receiptPaths
             }
         }
@@ -661,6 +708,113 @@ Describe 'Protected Standard Core SourceValidation preparation' {
         Assert-CodeSourceAuthorityConfig -Config $active
     }
 
+    # Scenario: the protected reader selects the exact delivered 8e627 tuple while callers omit the revision or name ff85.
+    # Purpose: preserve ff85 as the default and keep the formally delivered authority bound to its complete ordered closure.
+    It 'UnitT15_selects_and_accepts_the_exact_formal_authority_tuple' {
+        Import-Module -Name $script:DriverPath -Force
+        $formalRevision = '8e627baf54bd6e47862e6291b25e71cc45a2f2b7'
+        $expectedFormalPin = New-FormalSourceAuthorityPinFixture
+        $defaultPin = Get-PreparedSourceAuthorityPin
+        $defaultPin.commit | Should -Be 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
+
+        $formalPin = Get-PreparedSourceAuthorityPin -AuthorityRevision $formalRevision
+        $formalPin.repository | Should -Be 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
+        $formalPin.commit | Should -Be $expectedFormalPin.commit
+        $formalPin.archiveUrl | Should -Be $expectedFormalPin.archiveUrl
+        $formalPin.archiveSha256 | Should -Be $expectedFormalPin.archiveSha256
+        $formalPin.files.Count | Should -Be 32
+        foreach ($path in $expectedFormalPin.files.Keys) {
+            $formalPin.files.Contains([string]$path) | Should -BeTrue
+            $formalPin.files[[string]$path] | Should -Be $expectedFormalPin.files[[string]$path]
+        }
+
+        $formalConfig = New-SourceAuthorityConfigFixture -Pin $expectedFormalPin
+        $selectedPin = Assert-CodeSourceAuthorityConfig -Config $formalConfig
+        $selectedPin.commit | Should -Be $formalRevision
+        Assert-CodeSourceRunRequest -ExecutionMode Run -PrepareSourceTools -SourceToolsPath 'C:\temp\source.json' `
+            -AdapterVersion 2 -AuthorityCommit $formalRevision | Should -Be 'PrepareSourceTools'
+        Assert-CodeSourceRunRequest -ExecutionMode Run -SourceValidation -SourceToolsPath 'C:\temp\source.json' `
+            -AdapterVersion 2 -AuthorityCommit $formalRevision -RunId ('a' * 32) | Should -Be 'SourceValidation'
+    }
+
+    # Scenario: a candidate authority changes one identity member or closure record from the delivered 8e627 tuple.
+    # Purpose: reject unknown, mixed, partial, reordered, and wrong-hash data instead of admitting by commit alone.
+    It 'UnitT16_rejects_unknown_and_malformed_formal_authority_tuples' {
+        Import-Module -Name $script:DriverPath -Force
+        $formalRevision = '8e627baf54bd6e47862e6291b25e71cc45a2f2b7'
+        $formalPin = New-FormalSourceAuthorityPinFixture
+        $formalConfig = New-SourceAuthorityConfigFixture -Pin $formalPin
+
+        $unknown = ConvertFrom-Json -InputObject ($formalConfig | ConvertTo-Json -Depth 20 -Compress) -Depth 20
+        $unknown.authority.commit = '0' * 40
+        { Assert-CodeSourceAuthorityConfig -Config $unknown } | Should -Throw
+
+        $mixed = ConvertFrom-Json -InputObject ($formalConfig | ConvertTo-Json -Depth 20 -Compress) -Depth 20
+        $mixed.authority.commit = 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
+        { Assert-CodeSourceAuthorityConfig -Config $mixed } | Should -Throw
+
+        $partial = ConvertFrom-Json -InputObject ($formalConfig | ConvertTo-Json -Depth 20 -Compress) -Depth 20
+        $partial.authority.files = @($partial.authority.files | Select-Object -SkipLast 1)
+        { Assert-CodeSourceAuthorityConfig -Config $partial } | Should -Throw
+
+        $reordered = ConvertFrom-Json -InputObject ($formalConfig | ConvertTo-Json -Depth 20 -Compress) -Depth 20
+        $reordered.authority.files = @($reordered.authority.files[1], $reordered.authority.files[0]) + @($reordered.authority.files | Select-Object -Skip 2)
+        { Assert-CodeSourceAuthorityConfig -Config $reordered } | Should -Throw
+
+        $wrongHash = ConvertFrom-Json -InputObject ($formalConfig | ConvertTo-Json -Depth 20 -Compress) -Depth 20
+        $wrongHash.authority.files[7].sha256 = '0' * 64
+        { Assert-CodeSourceAuthorityConfig -Config $wrongHash } | Should -Throw
+
+        { Assert-CodeSourceRunRequest -ExecutionMode Run -PrepareSourceTools -SourceToolsPath 'C:\temp\source.json' `
+            -AdapterVersion 2 -AuthorityCommit ('f' * 40) } | Should -Throw
+    }
+
+    # Scenario: the protected Validate reader sees a formal source authority alongside its retained 8a and ff85 fixtures.
+    # Purpose: ensure protected-driver validation admits only the complete reviewed source tuples and preserves legacy 8a.
+    It 'UnitT18_protected_driver_accepts_formal_source_authority_and_retains_previous_authorities' {
+        Import-Module -Name $script:DriverPath -Force
+        $validatePath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $validateAst = [System.Management.Automation.Language.Parser]::ParseFile($validatePath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $functionAst = $validateAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Assert-ProtectedDriverAuthorityConfig'
+        }, $true)
+        $functionAst | Should -Not -BeNullOrEmpty
+
+        $shimRoot = Join-Path $TestDrive "protected-driver-$([guid]::NewGuid().ToString('N'))"
+        [void](New-Item -ItemType Directory -Path $shimRoot -Force)
+        Copy-Item -LiteralPath $script:DriverPath -Destination (Join-Path $shimRoot 'StandardSourceDriver.psm1')
+        $shimPath = Join-Path $shimRoot 'ProtectedDriverReader.ps1'
+        $shimContent = @'
+$script:AuthorityCommit = '8aabd22694a05771f98639f6d726cc9a620eb94b'
+function Assert-AuthorityConfig { param([Parameter(Mandatory)] $Config) }
+'@ + "`n" + $functionAst.Extent.Text + "`n"
+        [IO.File]::WriteAllText($shimPath, $shimContent, [Text.UTF8Encoding]::new($false))
+        $testModule = New-Module -Name "ProtectedDriverReader_$([guid]::NewGuid().ToString('N'))" -ArgumentList $shimPath -ScriptBlock {
+            param($readerPath)
+            . $readerPath
+        }
+        try {
+            $legacyConfig = [pscustomobject]@{ authority = [pscustomobject]@{ commit = '8aabd22694a05771f98639f6d726cc9a620eb94b' } }
+            { & $testModule { param($Config) Assert-ProtectedDriverAuthorityConfig -Config $Config } $legacyConfig } | Should -Not -Throw
+
+            $ff85Pin = Get-PreparedSourceAuthorityPin
+            $ff85Config = New-SourceAuthorityConfigFixture -Pin $ff85Pin
+            { & $testModule { param($Config) Assert-ProtectedDriverAuthorityConfig -Config $Config } $ff85Config } | Should -Not -Throw
+
+            $formalPin = New-FormalSourceAuthorityPinFixture
+            $formalConfig = New-SourceAuthorityConfigFixture -Pin $formalPin
+            { & $testModule { param($Config) Assert-ProtectedDriverAuthorityConfig -Config $Config } $formalConfig } | Should -Not -Throw
+        }
+        finally {
+            Remove-Module -ModuleInfo $testModule -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     # Scenario: the prepared tuple has one missing, repeated, reordered, mixed, or altered identity member.
     # Purpose: prevent tuple comparison or PowerShell collection semantics from admitting partial authority closure.
     It 'UnitT20_rejects_partial_duplicate_reordered_mixed_and_wrong_hash_authority_tuples' {
@@ -711,6 +865,28 @@ Describe 'Protected Standard Core SourceValidation preparation' {
         { Assert-CodeSourceRunRequest -ExecutionMode Run -SourceValidation -SourceToolsPath 'C:\temp\source.json' -AdapterVersion 2 -AuthorityCommit 'ff85d5f80fe795b96354e753074b5ce59ad04ecd' -RunId 'bad' } | Should -Throw
         { Assert-CodeSourceRunRequest -ExecutionMode Run -SourceValidation -SourceToolsPath 'C:\temp\source.json' -AdapterVersion 2 -AuthorityCommit '8aabd22694a05771f98639f6d726cc9a620eb94b' -RunId ('a' * 32) } | Should -Throw
         { Assert-CodeSourceRunRequest -ExecutionMode Run -SourceToolsPath 'C:\temp\source.json' -AdapterVersion 2 -AuthorityCommit 'ff85d5f80fe795b96354e753074b5ce59ad04ecd' } | Should -Throw
+    }
+
+    # Scenario: a prepared receipt names either reviewed authority, while the source reader is given its independently selected revision.
+    # Purpose: accept both exact bindings and reject a prepared self-report that differs from the selected authority.
+    It 'UnitT35_binds_prepared_metadata_to_the_selected_authority_revision' {
+        Import-Module -Name $script:DriverPath -Force
+        $formalRevision = '8e627baf54bd6e47862e6291b25e71cc45a2f2b7'
+        $formalFixture = New-SourceBindingFixture -Root (Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))) `
+            -AuthorityRevision $formalRevision
+        { Assert-CodeSourcePreparedBindings -Prepared $formalFixture.prepared -PreparedPath $formalFixture.preparedPath `
+            -CandidateRevision $formalFixture.candidateRevision -PowerShellPath $formalFixture.runtimeExecutable `
+            -SourceRepository 'https://github.com/SyuanTsai/Skill-Code-Collaboration.git' `
+            -ExpectedAuthorityRevision $formalRevision } | Should -Not -Throw
+
+        $ff85Fixture = New-SourceBindingFixture -Root (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))
+        { Assert-CodeSourcePreparedBindings -Prepared $ff85Fixture.prepared -PreparedPath $ff85Fixture.preparedPath `
+            -CandidateRevision $ff85Fixture.candidateRevision -PowerShellPath $ff85Fixture.runtimeExecutable `
+            -SourceRepository 'https://github.com/SyuanTsai/Skill-Code-Collaboration.git' `
+            -ExpectedAuthorityRevision $formalRevision } | Should -Throw
+        { Assert-CodeSourcePreparedBindings -Prepared $ff85Fixture.prepared -PreparedPath $ff85Fixture.preparedPath `
+            -CandidateRevision $ff85Fixture.candidateRevision -PowerShellPath $ff85Fixture.runtimeExecutable `
+            -SourceRepository 'https://github.com/SyuanTsai/Skill-Code-Collaboration.git' } | Should -Not -Throw
     }
 
     # Scenario: the source-tools setup sender publishes the run-owned Pester root.

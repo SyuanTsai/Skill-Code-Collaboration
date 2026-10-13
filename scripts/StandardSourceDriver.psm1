@@ -40,14 +40,67 @@ $script:PreparedSourceAuthorityFiles = [ordered]@{
     'docs/standards/schemas/third-party-raw-skill-source-v1.schema.json' = '9d8585d95c606486f947a3f89e39341af840335376e86910eb7f4ed25bdc16ed'
     'docs/standards/examples/third-party-raw-skill-source-v1.json' = 'decbf276cbeea33c60d8b36b7b16838babe951cd84d13ae4a8a7a8261dc6d9c8'
 }
+$script:FormalSourceAuthorityCommit = '8e627baf54bd6e47862e6291b25e71cc45a2f2b7'
+$script:FormalSourceAuthorityArchiveSha256 = '9aa4a7fc8fc7c7f0ff9e774c79c77a64077b4003212a523dda519d034ff99989'
+$script:FormalSourceAuthorityFiles = [ordered]@{
+    'docs/standards/README.md' = '43c1526ac55302f62b706688905be160d9805cc3a6a800189d689e66fa727b71'
+    'docs/standards/managed-skill-lifecycle.md' = '70950cf8bdd02819efae6f6e06ac5be1da3e70f809c23e3c6f8d3b217797416c'
+    'docs/standards/schemas/managed-skill-lifecycle-v1.schema.json' = '9a7f4c02588d2b88194e953a41766a72a9426fa89d4c3781c5750dcc22d35863'
+    'docs/standards/schemas/openai-agent-metadata.schema.json' = '23c1aaee28a54fea1946a61d6122a2097906ffa5bdd66c8014fc6b1625c9062a'
+    'docs/standards/schemas/source-inventory-v2.schema.json' = '084550944b4141ab5535f58fb6e99730a5c34b56103f6b59fd5a352679caa98e'
+    'docs/standards/schemas/validation-security-gate-v1.schema.json' = 'ac58302e0e350c1ab4ba4dad8a33cd3abce12d592537fbdb23dfb1936d064e91'
+    'docs/standards/skill-repository-review-matrix.md' = '299925aabe3cab360827baad9bdeb1f0f56fc320dad967e49fe0b6bf9cdf8f8a'
+    'docs/standards/skill-repository-standard.md' = 'f7457bc6dbc13b475bcffc532b75961ff838e8d184162188dbbb1c766fd17e98'
+    'docs/standards/upstream-interoperability.md' = '4329e8586e88713027bcd95c7537331e050a89b004f2361223efdc01bf44370e'
+    'docs/standards/validation-security-gate.json' = '657122dde340f1f7f4442780cc27ffcb00b60c0d2afdcea22d63fbf7dbfdca7d'
+    'docs/standards/validation-toolchain.json' = '1dddbf4c5736e22e56f6ecb298542f41d39e116ab00ca24ad18beb7a3eab40ed'
+    'scripts/Invoke-StandardAuthorityGate.ps1' = 'c4609b7f88f9b88be8583cc52f939837d49f2fa5e784977156cfe3d7c752082e'
+    'scripts/Resolve-PythonWheelClosure.py' = 'f9fcd99c408849f98564fbc4c30f3d7e6ad8148b60cb4d8f58fc29b040c4519c'
+    'scripts/Resolve-StandardValidationTool.ps1' = '71e6d5b191b74202e96f34a856d3317efb18662e17c8368d112d89b7d6795b15'
+    'docs/standards/schemas/standard-validation-adapter-v1.schema.json' = '11aa88fc25716d748bd4f514f1a44f02390ad1745dd5a5c5beee07f642fd5639'
+    'docs/standards/schemas/standard-validation-evidence-v1.schema.json' = '8ed4a9d7158273d7a1e9d898acf07f57e9170822cb7cbb70f1e2eec7195867ee'
+    'docs/standards/standard-validation-contract-v1.json' = '707edf8945ad9a7097df1dfb22a8f05ce47d0e0a66e2e44381036d630e854da0'
+    'docs/standards/pr12-source-merge-adoption.json' = '4c5262f2a11d228195230c15fa4faaf9614af6b59f110e5d9c08f242ce809175'
+    'docs/standards/trust-anchors/human-approval-public-key.xml' = '1e46153b72d02f3ce2fb26becd449df4f1590d8e5cb441b1954006a5602bbd9b'
+    'docs/standards/trust-anchors/trusted-supervisor-public-key.xml' = '4d550851f43405920156f40c9fc648d99a69dd73efc200f6968d8a837e7fbf27'
+    'scripts/Invoke-StandardValidation.ps1' = 'd13cea68b471aea60142665ee787a1bb2111d5ea7f8d45dfea14e0a2a59409b8'
+    'docs/standards/schemas/standard-semantic-consent-evidence-v2.schema.json' = '109091979d0a47e2035d3d8b20963fcdb85680e5da737bf1f27121608115d430'
+    'scripts/StandardSemanticBridge.psm1' = 'daf90f703898cc56fc3310e1eec462bafa6552edcac0de4f08a3cd4b9f63a429'
+    'docs/standards/schemas/upstream-adapter-v1.schema.json' = '3cff6246463188a91cc54c6a46315a949314767a759c6214e5b28e4db95ac8d7'
+    'docs/standards/upstream-adapter.json' = 'c4f5133b24841bb9c66182dc3d5a027596f864ec28e410d47249a67b3b97ad31'
+    'scripts/Validate-UpstreamAdapter.ps1' = '3b6e6474690b1ae9f9486544b68f50ca29b96f5dbe6aa8d6c6cd8570afad500b'
+    'docs/standards/standard-core-validation-v2.json' = '2ba91aec827a642517fd90d294524e0dfc3fed9ae19c27d867d442d73b4915d6'
+    'docs/standards/schemas/standard-core-adapter-v2.schema.json' = '7399980e8765528b759a3734a133447eb9581ac24a9c4780dc8faadd6af0c1c5'
+    'docs/standards/schemas/standard-core-evidence-v2.schema.json' = '4a8c61f32484bfe928e4f15f6422de7dc7b63d9d1fc95bca4f8f5c4c37334d24'
+    'docs/standards/third-party-raw-skill-sources.md' = '18649fd56eada4a94a5d47de778669b0ebcecfb85b84f5c581d283b21979f7ac'
+    'docs/standards/schemas/third-party-raw-skill-source-v1.schema.json' = '9d8585d95c606486f947a3f89e39341af840335376e86910eb7f4ed25bdc16ed'
+    'docs/standards/examples/third-party-raw-skill-source-v1.json' = 'decbf276cbeea33c60d8b36b7b16838babe951cd84d13ae4a8a7a8261dc6d9c8'
+}
 
 function Get-PreparedSourceAuthorityPin {
+    [CmdletBinding()]
+    param([string] $AuthorityRevision = $script:PreparedSourceAuthorityCommit)
+
+    if ($AuthorityRevision -ceq $script:PreparedSourceAuthorityCommit) {
+        $commit = $script:PreparedSourceAuthorityCommit
+        $archiveSha256 = $script:PreparedSourceAuthorityArchiveSha256
+        $files = $script:PreparedSourceAuthorityFiles
+    }
+    elseif ($AuthorityRevision -ceq $script:FormalSourceAuthorityCommit) {
+        $commit = $script:FormalSourceAuthorityCommit
+        $archiveSha256 = $script:FormalSourceAuthorityArchiveSha256
+        $files = $script:FormalSourceAuthorityFiles
+    }
+    else {
+        throw 'Source authority revision is not one of the exact reviewed pins.'
+    }
+
     return [pscustomobject]@{
         repository = $script:SourceAuthorityRepository
-        commit = $script:PreparedSourceAuthorityCommit
-        archiveUrl = "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/$($script:PreparedSourceAuthorityCommit)"
-        archiveSha256 = $script:PreparedSourceAuthorityArchiveSha256
-        files = $script:PreparedSourceAuthorityFiles
+        commit = $commit
+        archiveUrl = "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/$commit"
+        archiveSha256 = $archiveSha256
+        files = $files
     }
 }
 
@@ -75,24 +128,27 @@ function Assert-CodeSourceAuthorityConfig {
         throw 'config/standard-v1.json authority has an invalid property set.'
     }
 
-    $pin = Get-PreparedSourceAuthorityPin
+    if ($authority.commit -isnot [string]) {
+        throw 'config/standard-v1.json authority revision must be a string.'
+    }
+    $pin = Get-PreparedSourceAuthorityPin -AuthorityRevision ([string]$authority.commit)
     foreach ($field in @('repository', 'commit', 'archiveUrl', 'archiveSha256')) {
         if ($authority.PSObject.Properties[$field].Value -isnot [string] -or [string]$authority.$field -cne [string]$pin.$field) {
             throw "config/standard-v1.json authority '$field' does not match the exact prepared source tuple."
         }
     }
-    if ($authority.files -isnot [array] -or @($authority.files).Count -ne $script:PreparedSourceAuthorityFiles.Count) {
+    if ($authority.files -isnot [array] -or @($authority.files).Count -ne $pin.files.Count) {
         throw 'config/standard-v1.json authority file closure must contain the exact 32 approved records.'
     }
 
-    $expectedPaths = @($script:PreparedSourceAuthorityFiles.Keys)
+    $expectedPaths = @($pin.files.Keys)
     for ($index = 0; $index -lt $expectedPaths.Count; $index++) {
         $file = @($authority.files)[$index]
         $fileProperties = @($file.PSObject.Properties | ForEach-Object { [string]$_.Name })
         if ($fileProperties.Count -ne 2 -or $fileProperties -cnotcontains 'path' -or $fileProperties -cnotcontains 'sha256' -or
             $file.path -isnot [string] -or $file.sha256 -isnot [string] -or
             [string]$file.path -cne [string]$expectedPaths[$index] -or
-            [string]$file.sha256 -cne [string]$script:PreparedSourceAuthorityFiles[$expectedPaths[$index]]) {
+            [string]$file.sha256 -cne [string]$pin.files[$expectedPaths[$index]]) {
             throw "config/standard-v1.json authority file identity mismatch at index $index."
         }
     }
@@ -125,9 +181,7 @@ function Assert-CodeSourceRunRequest {
     if ($AdapterVersion -ne 2 -or $CompleteLifecycle -or $DevelopmentHarness) {
         throw 'SourceValidation requires Core adapter v2 and cannot be combined with a legacy lifecycle or development harness.'
     }
-    if ($AuthorityCommit -cne $script:PreparedSourceAuthorityCommit) {
-        throw 'Source setup and validation require the exact approved ff85 authority tuple.'
-    }
+    [void](Get-PreparedSourceAuthorityPin -AuthorityRevision $AuthorityCommit)
     if ($source -and $RunId -cnotmatch '^[0-9a-f]{32}$') {
         throw 'SourceValidation requires the fresh setup RunId as exactly 32 lowercase hexadecimal characters.'
     }
@@ -406,9 +460,11 @@ function Assert-CodeSourcePreparedBindings {
         [Parameter(Mandatory = $true)][string] $PreparedPath,
         [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{40}$')][string] $CandidateRevision,
         [Parameter(Mandatory = $true)][string] $PowerShellPath,
-        [Parameter(Mandatory = $true)][string] $SourceRepository
+        [Parameter(Mandatory = $true)][string] $SourceRepository,
+        [string] $ExpectedAuthorityRevision = $script:PreparedSourceAuthorityCommit
     )
 
+    $expectedAuthorityPin = Get-PreparedSourceAuthorityPin -AuthorityRevision $ExpectedAuthorityRevision
     $topFields = @('schemaVersion', 'preparation', 'runId', 'sourceRevision', 'authorityRevision', 'ownedRoot', 'candidateArchivePath', 'candidateArchiveSha256', 'sourceValidation', 'pesterRuntime')
     $topProperties = @($Prepared.PSObject.Properties | ForEach-Object { [string]$_.Name })
     if ($topProperties.Count -ne $topFields.Count -or
@@ -416,7 +472,7 @@ function Assert-CodeSourcePreparedBindings {
         @($topProperties | Where-Object { $topFields -cnotcontains $_ }).Count -gt 0 -or
         [int]$Prepared.schemaVersion -ne 1 -or $Prepared.preparation -cne 'code-collaboration-source-tools' -or
         [string]$Prepared.runId -cnotmatch '^[0-9a-f]{32}$' -or [string]$Prepared.sourceRevision -cne $CandidateRevision -or
-        [string]$Prepared.authorityRevision -cne $script:PreparedSourceAuthorityCommit -or
+        [string]$Prepared.authorityRevision -cne [string]$expectedAuthorityPin.commit -or
         [string]$Prepared.candidateArchivePath -cnotmatch '^(?:[A-Za-z]:\\|/)' -or
         [string]$Prepared.candidateArchiveSha256 -cnotmatch '^[0-9a-f]{64}$') {
         throw 'Prepared source tools do not bind the exact source, authority and setup run.'
