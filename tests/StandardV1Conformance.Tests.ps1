@@ -6,6 +6,7 @@ Describe 'Code Collaboration Standard v1 conformance' {
         $script:SourcePath = Join-Path $script:RepositoryRoot 'catalog/source.json'
         $script:AdapterPath = Join-Path $script:RepositoryRoot 'config/standard-v1.json'
         $script:ValidatorPath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
+        $script:DriverPath = Join-Path $script:RepositoryRoot 'scripts/StandardSourceDriver.psm1'
     }
 
     It 'UnitT00_uses_the_canonical_schema_v2_source_inventory_and_source_root' {
@@ -42,18 +43,23 @@ Describe 'Code Collaboration Standard v1 conformance' {
     }
 
     # Scenario: The Code config is read from the extracted candidate.
-    # Purpose: Keep the reviewed 8a authority bundle complete without adding local security policy.
+    # Purpose: Keep the reviewed active ff85 authority bundle complete without adding local security policy.
     It 'UnitT10_pins_exact_authority_without_local_security_policy' {
-        # Scenario: a consumer pins an earlier or partial Standard v1 snapshot.
-        # Purpose: require the same immutable authority bundle used by the merged P02/P03/P04 implementations.
+        # Scenario: a consumer pins an earlier, partial, or reordered Standard v1 snapshot.
+        # Purpose: require the exact protected ff85 source tuple without changing the v1 adapter schema.
         $adapter = Get-Content -LiteralPath $script:AdapterPath -Raw | ConvertFrom-Json -Depth 20
+        Import-Module -Name $script:DriverPath -Force
+        $pin = Get-PreparedSourceAuthorityPin
         @($adapter.PSObject.Properties.Name) | Should -Be @('schemaVersion', 'standardVersion', 'authority')
         $adapter.schemaVersion | Should -Be 1
         $adapter.standardVersion | Should -Be 'v1'
         $adapter.authority.repository | Should -Be 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-        $adapter.authority.commit | Should -Be '8aabd22694a05771f98639f6d726cc9a620eb94b'
-        $adapter.authority.archiveSha256 | Should -Be 'd92df1a8f0aa342970dc9c66a77b6211955b4708de12119cb7f9a360fd265311'
-        @($adapter.authority.files).Count | Should -Be 26
+        $adapter.authority.commit | Should -Be 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
+        $adapter.authority.archiveUrl | Should -Be 'https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/ff85d5f80fe795b96354e753074b5ce59ad04ecd'
+        $adapter.authority.archiveSha256 | Should -Be '3dc38613f2e2316ad8fcc79d4bf48d0b03fd8398f8dacc72d156abcbce95ea9d'
+        @($adapter.authority.files).Count | Should -Be 32
+        @($adapter.authority.files.path) | Should -Be @($pin.files.Keys)
+        foreach ($entry in @($adapter.authority.files)) { $entry.sha256 | Should -Be $pin.files[$entry.path] }
         @($adapter.PSObject.Properties.Name) | Should -Not -Contain 'security'
         @($adapter.PSObject.Properties.Name) | Should -Not -Contain 'deviations'
     }
@@ -104,7 +110,15 @@ Describe 'Code Collaboration Standard v1 conformance' {
         $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') -Raw
         $workflow | Should -Not -Match 'git rev-parse HEAD\^'
         $workflow | Should -Match "else \{\s*''\s*\}"
-        $workflow | Should -Match 'BaseCommit \$baseCommit'
+        foreach ($stepName in @('Prepare source tools once', 'Run full source validation')) {
+            $escapedName = [regex]::Escape($stepName)
+            $step = [regex]::Match($workflow, "(?ms)- name: $escapedName(?<body>.*?)(?=^      - name:|^  [A-Za-z0-9_-]+:)")
+            $step.Success | Should -BeTrue
+            $body = $step.Groups['body'].Value
+            $body | Should -Match 'if \(-not \[string\]::IsNullOrWhiteSpace\(\$baseCommit\)\)'
+            $body | Should -Match ([regex]::Escape("`$baseArguments = @('-BaseCommit', `$baseCommit)"))
+            $body | Should -Match '\+ \$baseArguments'
+        }
     }
 
     It 'keeps public validation documentation on the canonical entry point' {
@@ -113,7 +127,6 @@ Describe 'Code Collaboration Standard v1 conformance' {
         $readme = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'README.md') -Raw
         $readme | Should -Match 'scripts/Validate\.ps1'
         $readme | Should -Not -Match 'scripts/(?:Invoke-StandardValidation|Test-Repository)\.ps1'
-        $readme | Should -Not -Match 'scripts/Get-SourcePin\.ps1'
         $readme | Should -Not -Match '(?i)\b(?:Invoke-Pester|pytest|skill-validator|skill-tools|skillspector)\b'
 
         $release = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'docs/RELEASE.md') -Raw

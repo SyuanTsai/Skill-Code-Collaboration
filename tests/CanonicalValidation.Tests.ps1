@@ -36,9 +36,9 @@ __TERMINAL_EXIT__
             $output = @(& $pwshPath -NoLogo -NoProfile -NonInteractive -File $runnerPath -CleanupRoot $CleanupRoot -InitialExitCode $InitialExitCode 2>&1)
             return [pscustomobject]@{ exitCode = [int]$LASTEXITCODE; output = $output }
         }
-        $script:ExpectedAuthorityCommit = '8aabd22694a05771f98639f6d726cc9a620eb94b'
-        $script:ExpectedAuthorityArchiveSha256 = 'd92df1a8f0aa342970dc9c66a77b6211955b4708de12119cb7f9a360fd265311'
-        $script:ExpectedAuthorityFiles = [ordered]@{
+        $script:ExpectedLegacyAuthorityCommit = '8aabd22694a05771f98639f6d726cc9a620eb94b'
+        $script:ExpectedLegacyAuthorityArchiveSha256 = 'd92df1a8f0aa342970dc9c66a77b6211955b4708de12119cb7f9a360fd265311'
+        $script:ExpectedLegacyAuthorityFiles = [ordered]@{
             'docs/standards/README.md' = '5e1ddd737d26a5ec1ff1ebd08e158376ddaf1ea21008bb987fc7f51376923f7c'
             'docs/standards/managed-skill-lifecycle.md' = '70950cf8bdd02819efae6f6e06ac5be1da3e70f809c23e3c6f8d3b217797416c'
             'docs/standards/schemas/managed-skill-lifecycle-v1.schema.json' = '9a7f4c02588d2b88194e953a41766a72a9426fa89d4c3781c5750dcc22d35863'
@@ -66,22 +66,33 @@ __TERMINAL_EXIT__
             'docs/standards/upstream-adapter.json' = 'c4f5133b24841bb9c66182dc3d5a027596f864ec28e410d47249a67b3b97ad31'
             'scripts/Validate-UpstreamAdapter.ps1' = '3b6e6474690b1ae9f9486544b68f50ca29b96f5dbe6aa8d6c6cd8570afad500b'
         }
+        Import-Module -Name (Join-Path $script:RepositoryRoot 'scripts/StandardSourceDriver.psm1') -Force
+        $script:ExpectedAuthorityPin = Get-PreparedSourceAuthorityPin
+        $script:ExpectedAuthorityCommit = 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
+        $script:ExpectedAuthorityArchiveSha256 = '3dc38613f2e2316ad8fcc79d4bf48d0b03fd8398f8dacc72d156abcbce95ea9d'
+        $script:ExpectedAuthorityFiles = $script:ExpectedAuthorityPin.files
     }
 
-    # Scenario: The Code adapter and validator are loaded with the reviewed 8a authority inventory.
-    # Purpose: Reject mismatched commit, archive, or required-file hashes before validation.
+    # Scenario: The active Code adapter and protected source driver use the reviewed 32-file ff85 authority inventory.
+    # Purpose: Reject mismatched commit, archive, order, or required-file hashes before validation.
     It 'UnitT10_pins_exact_authority_without_local_deviation_policy' {
-        # Scenario: a consumer repository changes the authority pin or silently adds a local policy.
-        # Purpose: require the complete approved P02 bundle and keep policy ownership in the central authority.
+        # Scenario: a consumer repository changes the active authority pin or silently adds a local policy.
+        # Purpose: require the complete ff85 closure and keep policy ownership in the central authority.
         @($script:Adapter.PSObject.Properties.Name) | Should -Be @('schemaVersion', 'standardVersion', 'authority')
+        $script:ExpectedAuthorityPin.commit | Should -Be $script:ExpectedAuthorityCommit
+        $script:ExpectedAuthorityPin.archiveSha256 | Should -Be $script:ExpectedAuthorityArchiveSha256
         $script:Adapter.authority.commit | Should -Be $script:ExpectedAuthorityCommit
         $script:Adapter.authority.archiveUrl | Should -Be "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/$($script:ExpectedAuthorityCommit)"
         $script:Adapter.authority.archiveSha256 | Should -Be $script:ExpectedAuthorityArchiveSha256
         @($script:Adapter.authority.files).Count | Should -Be $script:ExpectedAuthorityFiles.Count
+        @($script:Adapter.authority.files.path) | Should -Be @($script:ExpectedAuthorityFiles.Keys)
         foreach ($file in @($script:Adapter.authority.files)) {
             $script:ExpectedAuthorityFiles.Contains($file.path) | Should -BeTrue
             $file.sha256 | Should -Be $script:ExpectedAuthorityFiles[$file.path]
         }
+        $script:ExpectedLegacyAuthorityCommit | Should -Be '8aabd22694a05771f98639f6d726cc9a620eb94b'
+        $script:ExpectedLegacyAuthorityArchiveSha256 | Should -Be 'd92df1a8f0aa342970dc9c66a77b6211955b4708de12119cb7f9a360fd265311'
+        $script:ExpectedLegacyAuthorityFiles.Count | Should -Be 26
         $script:Adapter.PSObject.Properties.Name | Should -Not -Contain 'deviations'
     }
 

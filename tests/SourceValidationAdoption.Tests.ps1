@@ -644,7 +644,7 @@ Describe 'Protected Standard Core SourceValidation preparation' {
     }
 
     # Scenario: the source authority allowlist exposes the reviewed ff85 commit and all 32 closure records.
-    # Purpose: bind the future SourceValidation path to the complete reviewed authority tuple while the active config stays pinned to 8a.
+    # Purpose: bind the active config to the complete adopted ff85 authority tuple.
     It 'UnitT10_accepts_only_the_complete_prepared_authority_closure' {
         Test-Path -LiteralPath $script:DriverPath -PathType Leaf | Should -BeTrue
         Import-Module -Name $script:DriverPath -Force
@@ -656,8 +656,9 @@ Describe 'Protected Standard Core SourceValidation preparation' {
         $pin.files.Count | Should -Be 32
 
         $active = Get-Content -LiteralPath $script:ConfigPath -Raw | ConvertFrom-Json -Depth 20
-        $active.authority.commit | Should -Be '8aabd22694a05771f98639f6d726cc9a620eb94b'
-        $active.authority.archiveSha256 | Should -Be 'd92df1a8f0aa342970dc9c66a77b6211955b4708de12119cb7f9a360fd265311'
+        $active.authority.commit | Should -Be 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
+        $active.authority.archiveSha256 | Should -Be '3dc38613f2e2316ad8fcc79d4bf48d0b03fd8398f8dacc72d156abcbce95ea9d'
+        Assert-CodeSourceAuthorityConfig -Config $active
     }
 
     # Scenario: the prepared tuple has one missing, repeated, reordered, mixed, or altered identity member.
@@ -1767,27 +1768,74 @@ exit 0
         [void](Save-A031EvidenceJson -Name 'general-cleanup-guard-cases.json' -Value ([ordered]@{ cases = @($results.ToArray()) }))
     }
 
-    # Scenario: the protected event-base driver remains on the active 8a authority while candidate tests run.
-    # Purpose: keep the legacy gate compatible with its existing Validate.ps1 parameters and provide its child an exact, verified authority fixture without network resolution.
-    It 'InterT20_preserves_the_legacy_8a_gate_and_supplies_its_verified_fixture' {
+    # Scenario: canonical CI validates the immutable candidate through the protected event-base source gate.
+    # Purpose: require the Windows source route, same-run setup and validation, retained evidence, and existing mirror contexts.
+    It 'InterT20_runs_the_full_source_gate_from_the_protected_event_base' {
         $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') -Raw
         $integrationTest = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'tests/CommonToolReportIntegration.Tests.ps1') -Raw
 
         $workflow | Should -Match ([regex]::Escape('ref: ${{ github.event.pull_request.base.sha || (github.event.before != ''0000000000000000000000000000000000000000'' && github.event.before) || github.sha }}'))
         $workflow | Should -Match ([regex]::Escape('ref: ${{ github.event.pull_request.head.sha || github.sha }}'))
         $workflow | Should -Not -Match 'github\.event\.pull_request\.merge_commit_sha'
-        $workflow | Should -Match 'Checkout immutable legacy 8a authority fixture'
-        $workflow | Should -Match 'ref:\s*8aabd22694a05771f98639f6d726cc9a620eb94b'
-        $workflow | Should -Match 'SYP154_CANDIDATE_AUTHORITY_ROOT:\s*\$\{\{\s*github\.workspace\s*\}\}/authority-8a'
+        $workflow | Should -Match 'runs-on:\s*windows-latest'
+        $workflow | Should -Match 'Checkout immutable ff85 authority fixture'
+        $workflow | Should -Match 'ref:\s*ff85d5f80fe795b96354e753074b5ce59ad04ecd'
+        $workflow | Should -Match 'path:\s*authority-ff85'
+        $workflow | Should -Match 'fetch-depth:\s*0'
+        $workflow | Should -Match 'PULL_REQUEST_BASE_SHA:\s*\$\{\{\s*github\.event\.pull_request\.base\.sha\s*\}\}'
+        $workflow | Should -Match 'PULL_REQUEST_HEAD_SHA:\s*\$\{\{\s*github\.event\.pull_request\.head\.sha\s*\}\}'
+        $workflow | Should -Match 'PUSH_BEFORE_SHA:\s*\$\{\{\s*github\.event\.before\s*\}\}'
         $workflow | Should -Match 'persist-credentials:\s*false'
         $workflow | Should -Match 'GIT_CONFIG_KEY_0:\s*core\.autocrlf'
         $workflow | Should -Match 'GIT_CONFIG_VALUE_0:\s*''false'''
+        $workflow | Should -Match 'GIT_CONFIG_KEY_1:\s*core\.eol'
+        $workflow | Should -Match 'GIT_CONFIG_VALUE_1:\s*lf'
         $workflow | Should -Match 'ls-tree -r --full-tree'
         $workflow | Should -Match 'hash-object --no-filters'
-        $legacyRun = [regex]::Match($workflow, '(?ms)- name: Run canonical Standard v1 validation(?<body>.*?)(?=\r?\n  # These jobs|\z)')
-        $legacyRun.Success | Should -BeTrue
-        $legacyRun.Groups['body'].Value | Should -Match '(?m)^\s*&\s+\./scripts/Validate\.ps1\s+-RepositoryRoot\s+\$candidateRoot'
-        $legacyRun.Groups['body'].Value | Should -Not -Match '(?m)^\s*&\s+\./scripts/Validate\.ps1[^\r\n]*\s-(PrepareSourceTools|SourceValidation|SourceToolsPath)\b'
+        $workflow | Should -Match 'merge-base --is-ancestor'
+        $workflow | Should -Match 'A supplied BaseCommit must resolve to a distinct candidate ancestor'
+        $workflow | Should -Match 'TimeoutSeconds 10800'
+        $workflow | Should -Match 'actions/upload-artifact@[0-9a-f]{40}'
+        $workflow | Should -Match 'if:\s*\$\{\{\s*always\(\)\s*\}\}'
+        $uploadBlock = [regex]::Match($workflow, '(?ms)- name: Upload source validation evidence(?<body>.*?)(?=^\s{2}[A-Za-z0-9_-]+:)')
+        $uploadBlock.Success | Should -BeTrue
+        $uploadBlock.Groups['body'].Value | Should -Match '\$\{\{\s*runner\.temp\s*\}\}/code-collaboration/'
+        $uploadBlock.Groups['body'].Value | Should -Match '!\$\{\{\s*runner\.temp\s*\}\}/code-collaboration/source-tools/source-tools-\*/runtime/\*\*'
+        $uploadBlock.Groups['body'].Value | Should -Match '!\$\{\{\s*runner\.temp\s*\}\}/code-collaboration/source-tools/source-tools-\*/installed/\*\*'
+        $uploadBlock.Groups['body'].Value | Should -Not -Match '!.*(?:core-v2|runs|repository-pester-case-inventory)'
+        $sourceToolsSetup = [regex]::Match($workflow, '(?ms)- name: Prepare source tools once(?<body>.*?)(?=^      - name: Run full source validation)')
+        $sourceValidation = [regex]::Match($workflow, '(?ms)- name: Run full source validation(?<body>.*?)(?=^      - name: Upload source validation evidence)')
+        $sourceToolsSetup.Success | Should -BeTrue
+        $sourceValidation.Success | Should -BeTrue
+        foreach ($step in @($sourceToolsSetup.Groups['body'].Value, $sourceValidation.Groups['body'].Value)) {
+            $step | Should -Match '\$protectedDriver'
+            $step | Should -Match '\$candidateRoot'
+            $step | Should -Match '\$authorityRoot'
+            $step | Should -Match '\$sourceToolsPath'
+            $step | Should -Match '\$baseCommit'
+            $step | Should -Match 'TimeoutSeconds 10800'
+        }
+        $sourceToolsSetup.Groups['body'].Value | Should -Match '\-PrepareSourceTools'
+        $sourceValidation.Groups['body'].Value | Should -Match '\-SourceValidation'
+        $sourceToolsSetup.Groups['body'].Value | Should -Not -Match '\-RunId\b'
+        $sourceToolsSetup.Groups['body'].Value | Should -Match 'source-tools-setup-completed'
+        $sourceToolsSetup.Groups['body'].Value | Should -Match '\[string\]\$prepared\.ownedRoot.*setup-timing\.json'
+        $sourceToolsSetup.Groups['body'].Value | Should -Match 'prepared\.sourceValidation\.frozenFiles'
+        $sourceToolsSetup.Groups['body'].Value | Should -Match 'setupTimingPath -NotePropertyValue \$setupTimingPath'
+        $sourceValidation.Groups['body'].Value | Should -Match 'source-validation-timing'
+        $sourceValidation.Groups['body'].Value | Should -Match 'standard-core-validation-v2-report'
+        $sourceValidation.Groups['body'].Value | Should -Match 'Split-Path -Parent \$artifactsRoot.*source-validation-timing'
+        $sourceValidation.Groups['body'].Value | Should -Match '\$report\.sourceValidation\.pesterCaseInventory'
+        $sourceValidation.Groups['body'].Value | Should -Match '\$report\.artifacts\.runRoot'
+        $sourceValidation.Groups['body'].Value | Should -Match 'reportedCounts\.Passed'
+        $sourceValidation.Groups['body'].Value | Should -Match '\$caseLedger\.containerFileInventory'
+        $sourceValidation.Groups['body'].Value | Should -Match 'combinedSetupToValidationSeconds'
+        $sourceValidation.Groups['body'].Value | Should -Match '\$setupTimingPath = Join-Path \$ownedRoot ''setup-timing\.json'''
+        $sourceValidation.Groups['body'].Value | Should -Match 'prepared\.sourceValidation\.frozenFiles'
+        $sourceValidation.Groups['body'].Value | Should -Match 'source-validation\.stdout\.txt'
+        $sourceValidation.Groups['body'].Value | Should -Match 'source-validation\.stderr\.txt'
+        $sourceValidation.Groups['body'].Value | Should -Match 'if \(-not \[string\]::IsNullOrWhiteSpace\(\$baseCommit\)\)'
+        $sourceValidation.Groups['body'].Value | Should -Match ([regex]::Escape("@('-BaseCommit', `$baseCommit)"))
 
         $integrationTest | Should -Match 'SYP154_CANDIDATE_AUTHORITY_ROOT'
         $integrationTest | Should -Match 'rev-parse HEAD'
@@ -1795,7 +1843,12 @@ exit 0
         $integrationTest | Should -Match 'raw SHA-256 differs'
         $integrationTest | Should -Match 'exact HEAD Git blob'
         $integrationTest | Should -Match 'InterT35_rejects_a_crlf_only_authority_fixture_change'
+        $integrationTest | Should -Match 'git -C \$script:sourceAuthorityRoot archive --format=zip'
         $integrationTest | Should -Not -Match 'Invoke-WebRequest|Invoke-RestMethod'
+
+        foreach ($context in @('repository-contract', 'skill-validator', 'skill-tools')) {
+            $workflow | Should -Match ("(?m)^  " + [regex]::Escape($context) + ':\r?$')
+        }
     }
 
     # Scenario: CI receives a candidate branch whose driver and workflow have changed.
@@ -1804,9 +1857,14 @@ exit 0
         $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') -Raw
         $workflow | Should -Match 'path:\s*candidate'
         $workflow | Should -Match 'Checkout protected base driver'
-        $workflow | Should -Match 'RepositoryRoot\s+\$candidateRoot'
+        $workflow | Should -Match 'protectedDriver\s*=\s*Join-Path\s+\$baseRoot\s+''scripts/Validate\.ps1'''
+        $workflow | Should -Match ([regex]::Escape("'-RepositoryRoot', `$candidateRoot"))
+        $workflow | Should -Match ([regex]::Escape("'-BaseCommit', `$baseCommit"))
         $workflow | Should -Match 'persist-credentials:\s*false'
-        $workflow | Should -Match 'SourceValidation|candidateRoot'
+        $workflow | Should -Match '\-PrepareSourceTools'
+        $workflow | Should -Match '\-SourceValidation'
+        $workflow | Should -Match ([regex]::Escape("'-SourceToolsPath', `$sourceToolsPath"))
+        $workflow | Should -Match ([regex]::Escape("'-AuthorityRepositoryRoot', `$authorityRoot"))
         $workflow | Should -Not -Match 'CompleteLifecycle|DevelopmentHarness'
     }
 }

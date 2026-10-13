@@ -122,19 +122,66 @@ Describe 'Code child uses central package tool report rules' {
         [IO.File]::WriteAllText($script:fakeToolPath, 'Get-Content -LiteralPath $env:SYP154_TEST_TOOL_REPORT -Raw; $global:LASTEXITCODE = 0')
         $repositoryRoot = Split-Path -Parent $PSScriptRoot
         $script:pwshPath = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
-        $authority = (Get-Content -LiteralPath (Join-Path $repositoryRoot 'config/standard-v1.json') -Raw | ConvertFrom-Json -Depth 20).authority
+        $activeConfig = Get-Content -LiteralPath (Join-Path $repositoryRoot 'config/standard-v1.json') -Raw | ConvertFrom-Json -Depth 20
+        $authority = $activeConfig.authority
         $expectedRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-        $expectedCommit = '8aabd22694a05771f98639f6d726cc9a620eb94b'
-        $expectedArchiveSha256 = 'd92df1a8f0aa342970dc9c66a77b6211955b4708de12119cb7f9a360fd265311'
+        Import-Module -Name (Join-Path $repositoryRoot 'scripts/StandardSourceDriver.psm1') -Force
+        $activePin = Get-PreparedSourceAuthorityPin
+        $expectedCommit = 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
+        $expectedArchiveSha256 = '3dc38613f2e2316ad8fcc79d4bf48d0b03fd8398f8dacc72d156abcbce95ea9d'
+        $activePaths = @($authority.files | ForEach-Object { [string]$_.path })
+        $pinnedPaths = @($activePin.files.Keys | ForEach-Object { [string]$_ })
         if ($authority.repository -cne $expectedRepository -or $authority.commit -cne $expectedCommit -or
             $authority.archiveUrl -cne "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/$expectedCommit" -or
-            $authority.archiveSha256 -cne $expectedArchiveSha256 -or @($authority.files).Count -ne 26) {
-            throw 'The Pester child fixture is only valid while the active authority config remains the exact 8a tuple.'
+            $authority.archiveSha256 -cne $expectedArchiveSha256 -or @($authority.files).Count -ne 32 -or
+            $activePin.commit -cne $expectedCommit -or $activePin.archiveSha256 -cne $expectedArchiveSha256 -or
+            [string]::Join('|', $activePaths) -cne [string]::Join('|', $pinnedPaths)) {
+            throw 'The Pester child fixture requires the exact active ff85 authority tuple and ordered 32-file closure.'
+        }
+        foreach ($entry in @($authority.files)) {
+            if ([string]$entry.sha256 -cne [string]$activePin.files[[string]$entry.path]) {
+                throw "The active authority file differs from the protected source driver pin: $($entry.path)"
+            }
         }
 
+        $legacyCommitMatch = [regex]::Match($script:validationSource, "(?m)^\`$script:AuthorityCommit\s*=\s*'(?<value>[0-9a-f]{40})'\s*$")
+        $legacyArchiveMatch = [regex]::Match($script:validationSource, "(?m)^\`$script:AuthorityArchiveSha256\s*=\s*'(?<value>[0-9a-f]{64})'\s*$")
+        $legacyFilesBlock = [regex]::Match($script:validationSource, '(?ms)^\$script:AuthorityFiles\s*=\s*\[ordered\]@\{\r?\n(?<body>.*?)^\}')
+        if (-not $legacyCommitMatch.Success -or -not $legacyArchiveMatch.Success -or -not $legacyFilesBlock.Success) {
+            throw 'The protected driver legacy 8a authority fixture was not found.'
+        }
+        $legacyFileMatches = [regex]::Matches($legacyFilesBlock.Groups['body'].Value, '(?m)^\s*''(?<path>[^'']+)''\s*=\s*''(?<sha>[0-9a-f]{64})''\s*$')
+        $legacyFiles = [ordered]@{}
+        foreach ($legacyFile in $legacyFileMatches) {
+            $legacyPath = $legacyFile.Groups['path'].Value
+            if ($legacyFiles.Contains($legacyPath)) {
+                throw 'The protected driver legacy 8a authority dictionary repeats a path.'
+            }
+            $legacyFiles[$legacyPath] = $legacyFile.Groups['sha'].Value
+        }
+        $script:legacyAuthorityCommit = $legacyCommitMatch.Groups['value'].Value
+        $script:legacyAuthorityArchiveSha256 = $legacyArchiveMatch.Groups['value'].Value
+        if ($script:legacyAuthorityCommit -cne '8aabd22694a05771f98639f6d726cc9a620eb94b' -or
+            $script:legacyAuthorityArchiveSha256 -cne 'd92df1a8f0aa342970dc9c66a77b6211955b4708de12119cb7f9a360fd265311' -or
+            $legacyFiles.Count -ne 26) {
+            throw 'The protected driver no longer contains the exact historical 8a tuple and 26-file dictionary.'
+        }
+        $script:legacyAuthorityConfig = [pscustomobject]@{
+            schemaVersion = 1; standardVersion = 'v1'
+            authority = [pscustomobject]@{
+                repository = $expectedRepository; commit = $script:legacyAuthorityCommit
+                archiveUrl = "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/$($script:legacyAuthorityCommit)"
+                archiveSha256 = $script:legacyAuthorityArchiveSha256
+                files = @($legacyFiles.GetEnumerator() | ForEach-Object { [pscustomobject]@{ path = [string]$_.Key; sha256 = [string]$_.Value } })
+            }
+        }
+
+        if ([string]::IsNullOrWhiteSpace($env:SYP154_CANDIDATE_AUTHORITY_ROOT)) {
+            throw 'The common tool report integration requires the active ff85 authority checkout supplied by SourceValidation.'
+        }
         if (-not [string]::IsNullOrWhiteSpace($env:SYP154_CANDIDATE_AUTHORITY_ROOT)) {
-            # Keep the SourceValidation path's real Git checkout admission strict.
-            # The archive fallback below is only for the protected legacy driver.
+            # Admit the active ff85 checkout used by SourceValidation, then use
+            # its complete Git history to build the distinct historical 8a fixture.
             $script:authorityFixtureMode = 'verified-git-checkout'
             $moduleRoot = [IO.Path]::GetFullPath([string]$env:SYP154_CANDIDATE_AUTHORITY_ROOT)
             $gitRoot = ((& git -C $moduleRoot rev-parse --show-toplevel 2>$null) -join "`n").Trim()
@@ -173,24 +220,29 @@ Describe 'Code child uses central package tool report rules' {
                 Assert-IntegrationAuthorityFileIdentity -AuthorityRoot $moduleRoot -Entry $entry -GitEntry $script:authorityGitEntries[$relativePath]
             }
         }
-        else {
-            $script:authorityFixtureMode = 'verified-driver-archive'
-            $processArguments = [Environment]::GetCommandLineArgs()
-            $processToolchainPath = Get-IntegrationProcessArgumentValue -ProcessArguments $processArguments -Name 'ToolchainPath'
-            $processToolchainSha = Get-IntegrationProcessArgumentValue -ProcessArguments $processArguments -Name 'ToolchainSha256'
-            $resolverPath = Join-Path $PSScriptRoot 'ResolveLegacyAuthorityArchiveFixture.ps1'
-            $archiveOutput = @(& $script:pwshPath -NoLogo -NoProfile -NonInteractive -File $resolverPath `
-                -RepositoryRoot $repositoryRoot -ToolchainPath $processToolchainPath -ToolchainSha256 $processToolchainSha 2>&1)
-            $archiveExitCode = $LASTEXITCODE
-            if ($archiveExitCode -ne 0) { throw "Legacy archive fixture admission failed: $($archiveOutput -join ' ')" }
-            $archiveReceipt = ($archiveOutput -join "`n") | ConvertFrom-Json -Depth 20 -ErrorAction Stop
-            if ([string]$archiveReceipt.fixtureMode -cne 'verified-driver-archive' -or [string]$archiveReceipt.authorityRevision -cne $expectedCommit -or
-                [int]$archiveReceipt.authorityFileCount -ne 26 -or [int]$archiveReceipt.authorityExtraFileCount -lt 1) {
-                throw 'Legacy archive fixture receipt does not bind the selected 8a closure inside a full archive extraction.'
-            }
-            $moduleRoot = [IO.Path]::GetFullPath([string]$archiveReceipt.authorityRoot)
-            $script:authorityGitEntries = $null
+        $script:sourceAuthorityRoot = [IO.Path]::GetFullPath([string]$env:SYP154_CANDIDATE_AUTHORITY_ROOT)
+        $legacyArchivePath = Join-Path $script:testRoot "authority-8a-$([guid]::NewGuid().ToString('N')).zip"
+        $legacyPrefix = "SyuanTsai-AI-Instructions-$($script:legacyAuthorityCommit)/"
+        & git -C $script:sourceAuthorityRoot archive --format=zip "--output=$legacyArchivePath" "--prefix=$legacyPrefix" $script:legacyAuthorityCommit
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $legacyArchivePath -PathType Leaf)) {
+            throw 'The active authority checkout does not contain the verified historical 8a Git objects needed for the legacy fixture.'
         }
+        $legacyArchiveRoot = Join-Path $script:testRoot 'authority-8a-archive'
+        [void](New-Item -ItemType Directory -Path $legacyArchiveRoot -Force)
+        Expand-Archive -LiteralPath $legacyArchivePath -DestinationPath $legacyArchiveRoot -Force
+        $script:legacyAuthorityArchivePath = [IO.Path]::GetFullPath($legacyArchivePath)
+        $script:legacyAuthorityRoot = Join-Path $legacyArchiveRoot "SyuanTsai-AI-Instructions-$($script:legacyAuthorityCommit)"
+        if (-not (Test-Path -LiteralPath $script:legacyAuthorityRoot -PathType Container)) {
+            throw 'The Git archive did not extract to the exact historical 8a repository root.'
+        }
+        foreach ($entry in @($script:legacyAuthorityConfig.authority.files)) {
+            [void](Assert-IntegrationAuthorityRawFileIdentity -AuthorityRoot $script:legacyAuthorityRoot -Entry $entry)
+        }
+        $legacyArchiveFileCount = @(Get-ChildItem -LiteralPath $script:legacyAuthorityRoot -File -Recurse -Force).Count
+        if ($legacyArchiveFileCount -le @($script:legacyAuthorityConfig.authority.files).Count) {
+            throw 'The historical 8a Git archive fixture did not retain unselected repository files.'
+        }
+        $moduleRoot = $script:sourceAuthorityRoot
         $script:moduleRoot = [IO.Path]::GetFullPath($moduleRoot)
         $script:runnerPath = Join-Path $script:moduleRoot 'scripts/Invoke-StandardValidation.ps1'
         $env:STANDARD_VALIDATION_ACTIVE_SKILLS = 'demo'
@@ -737,29 +789,18 @@ $global:LASTEXITCODE = 0
     # Purpose: exercise the fallback helper through its real CLI bindings, including missing-hash and raw-file tamper rejection.
     It 'InterT40_accepts_full_archive_extras_and_rejects_missing_or_tampered_bindings' {
         $repositoryRoot = Split-Path -Parent $PSScriptRoot
-        $authority = (Get-Content -LiteralPath (Join-Path $repositoryRoot 'config/standard-v1.json') -Raw | ConvertFrom-Json -Depth 20).authority
+        $authority = $script:legacyAuthorityConfig.authority
         $runId = [guid]::NewGuid().ToString('N')
         $toolsRoot = Join-Path $script:testRoot "skcv1-tools-$runId"
         $authorityRoot = Join-Path (Join-Path $toolsRoot 'authority') "SyuanTsai-AI-Instructions-$($authority.commit)"
         $resolvedToolsRoot = Join-Path (Split-Path -Parent $toolsRoot) "skcv1-resolved-tools-$runId"
-        [void](New-Item -ItemType Directory -Path $authorityRoot -Force)
+        $authorityContainer = Split-Path -Parent $authorityRoot
+        [void](New-Item -ItemType Directory -Path $authorityContainer -Force)
         [void](New-Item -ItemType Directory -Path $resolvedToolsRoot -Force)
-        $approvedPaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-        foreach ($entry in @($authority.files)) {
-            $relative = [string]$entry.path
-            [void]$approvedPaths.Add($relative)
-            $sourcePath = Join-Path $script:moduleRoot ($relative -replace '/', [IO.Path]::DirectorySeparatorChar)
-            $destinationPath = Join-Path $authorityRoot ($relative -replace '/', [IO.Path]::DirectorySeparatorChar)
-            if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { throw "The verified fixture source is missing: $relative" }
-            [void](New-Item -ItemType Directory -Path (Split-Path -Parent $destinationPath) -Force)
-            [IO.File]::Copy($sourcePath, $destinationPath, $true)
-        }
-        # The production archive includes unrelated repository files. Their contents are
-        # intentionally not part of the selected authority closure, so model one harmless
-        # extra directly in this owned extraction fixture rather than relying on the
-        # independently verified source checkout to be non-sparse.
-        $extraArchivePath = Join-Path $authorityRoot 'archive-extra.txt'
-        [IO.File]::WriteAllText($extraArchivePath, 'unselected archive file', [Text.UTF8Encoding]::new($false))
+        $ownedAuthorityArchive = Join-Path $toolsRoot 'authority-8a-git-archive.zip'
+        [IO.File]::Copy($script:legacyAuthorityArchivePath, $ownedAuthorityArchive, $true)
+        Expand-Archive -LiteralPath $ownedAuthorityArchive -DestinationPath $authorityContainer -Force
+        if (-not (Test-Path -LiteralPath $authorityRoot -PathType Container)) { throw 'The full historical 8a Git archive did not extract to the expected root.' }
 
         function Get-IntegrationFixtureSha256 {
             param([Parameter(Mandatory = $true)][string] $Path)
@@ -812,7 +853,7 @@ $global:LASTEXITCODE = 0
             $receipt = ($output -join "`n") | ConvertFrom-Json -Depth 20 -ErrorAction Stop
             $receipt.fixtureMode | Should -Be 'verified-driver-archive'
             $receipt.authorityFileCount | Should -Be 26
-            $receipt.authorityExtraFileCount | Should -Be 1
+            $receipt.authorityExtraFileCount | Should -BeGreaterThan 0
             $receipt.authorityRevision | Should -Be $authority.commit
 
             $withoutHash = @(& $script:pwshPath -NoLogo -NoProfile -NonInteractive -File $resolverPath `
@@ -841,7 +882,7 @@ $global:LASTEXITCODE = 0
     It 'InterT35_rejects_a_crlf_only_authority_fixture_change' {
         $activeConfig = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'config/standard-v1.json') -Raw | ConvertFrom-Json -Depth 20
         $entry = @($activeConfig.authority.files)[0]
-        $sourcePath = Join-Path $script:moduleRoot ([string]$entry.path)
+        $sourcePath = Join-Path $script:sourceAuthorityRoot ([string]$entry.path)
         $sourceText = [Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($sourcePath))
         $sourceText.Contains("`r") | Should -BeFalse
         $tamperRoot = Join-Path $script:testRoot 'crlf-authority'
@@ -874,14 +915,7 @@ $global:LASTEXITCODE = 0
     # Purpose: prove the extracted real driver guard accepts a valid pin before
     # counting its rejection cases as coverage.
     It 'UnitT35_accepts_exact_candidate_authority_config' {
-        $config = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'config/standard-v1.json') -Raw | ConvertFrom-Json
-        $config.authority.commit = '8aabd22694a05771f98639f6d726cc9a620eb94b'
-        $config.authority.archiveUrl = 'https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/8aabd22694a05771f98639f6d726cc9a620eb94b'
-        $config.authority.archiveSha256 = 'd92df1a8f0aa342970dc9c66a77b6211955b4708de12119cb7f9a360fd265311'
-        ($config.authority.files | Where-Object path -CEQ 'scripts/Resolve-PythonWheelClosure.py').sha256 = 'd209c973f331fdbb82a4d546bda18b1d485bcd1e446dd446b6d8bc4360b5ce35'
-        ($config.authority.files | Where-Object path -CEQ 'scripts/Resolve-StandardValidationTool.ps1').sha256 = '86540ff07e1b73177d179ae6a9ee2f0fef8029e27286604d68a9a98d0d205ec2'
-        ($config.authority.files | Where-Object path -CEQ 'docs/standards/standard-validation-contract-v1.json').sha256 = '6fa3233e86ec7918aebf1413d41a6d1712f55eb2d1b09262fe18e53ddfbcb8cf'
-        ($config.authority.files | Where-Object path -CEQ 'scripts/Invoke-StandardValidation.ps1').sha256 = 'c127309958226417291b512d633caa2120bbd12a663c98fff1d63106cf5a2677'
+        $config = $script:legacyAuthorityConfig
         $prefix = $script:validationSource.Substring(0, $script:childMatch.Index)
         & {
             param($DriverPrefix, $CandidateConfig)
@@ -901,7 +935,7 @@ $global:LASTEXITCODE = 0
         @{ Field = 'scripts/Invoke-StandardValidation.ps1' }
     ) {
         param($Field)
-        $config = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'config/standard-v1.json') -Raw | ConvertFrom-Json
+        $config = $script:legacyAuthorityConfig | ConvertTo-Json -Depth 20 | ConvertFrom-Json -Depth 20
         if ($Field -eq 'obsoleteRevision') {
             $config.authority.commit = '7c65254d96bd21083ae827e54b9e51afee8ce304'
             $config.authority.archiveUrl = 'https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/7c65254d96bd21083ae827e54b9e51afee8ce304'

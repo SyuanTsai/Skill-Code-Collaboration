@@ -53,7 +53,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Checkout immutable legacy 8a authority fixture
+      - name: Checkout immutable ff85 authority fixture
         uses: *checkout-action-reference # actions/checkout v7
         env:
           GIT_CONFIG_COUNT: 2
@@ -63,42 +63,92 @@ jobs:
           GIT_CONFIG_VALUE_1: lf
         with:
           repository: SyuanTsai/SyuanTsai-AI-Instructions
-          ref: 8aabd22694a05771f98639f6d726cc9a620eb94b
-          path: authority-8a
-          fetch-depth: 1
+          ref: ff85d5f80fe795b96354e753074b5ce59ad04ecd
+          path: authority-ff85
+          fetch-depth: 0
           persist-credentials: false
 
-      - name: Verify immutable legacy 8a authority fixture
+      - name: Verify immutable event base, candidate and ff85 authority
         shell: pwsh
+        env:
+          PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PULL_REQUEST_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $authorityRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'authority-8a'))
+          $baseRoot = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
           $candidateRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'candidate'))
+          $authorityRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'authority-ff85'))
+          $runRoot = Join-Path $env:RUNNER_TEMP 'code-collaboration'
+          [void](New-Item -ItemType Directory -Path $runRoot -Force)
+          $sourceToolsPath = [IO.Path]::GetFullPath((Join-Path (Join-Path $runRoot 'source-tools') 'source-tools.json'))
+          $artifactsRoot = [IO.Path]::GetFullPath((Join-Path $runRoot 'core-v2'))
+          $eventName = $env:GITHUB_EVENT_NAME
+          $pullBase = [string]$env:PULL_REQUEST_BASE_SHA
+          $pushBefore = [string]$env:PUSH_BEFORE_SHA
+          $baseCommit = if ($eventName -eq 'pull_request') { $pullBase }
+            elseif ($eventName -eq 'push' -and -not [string]::IsNullOrWhiteSpace($pushBefore) -and $pushBefore -notmatch '^0+$') { $pushBefore }
+            else { '' }
+          $driverCommit = if ([string]::IsNullOrWhiteSpace($baseCommit)) { [string]$env:GITHUB_SHA } else { $baseCommit }
+          $candidateCommit = if ($eventName -eq 'pull_request') { [string]$env:PULL_REQUEST_HEAD_SHA } else { [string]$env:GITHUB_SHA }
+          $envLines = @(
+            "CODE_SOURCE_BASE_COMMIT=$baseCommit",
+            "CODE_SOURCE_DRIVER_COMMIT=$driverCommit",
+            "CODE_SOURCE_CANDIDATE_COMMIT=$candidateCommit",
+            "CODE_SOURCE_TOOLS_PATH=$sourceToolsPath",
+            "CODE_SOURCE_ARTIFACTS_ROOT=$artifactsRoot"
+          ) -join "`n"
+          [IO.File]::AppendAllText($env:GITHUB_ENV, "$envLines`n", [Text.UTF8Encoding]::new($false))
+          $initialIndex = [ordered]@{
+            schemaVersion = 1; state = 'checkout-verified'; eventName = $eventName
+            baseCommit = $baseCommit; protectedDriverCommit = $driverCommit; candidateCommit = $candidateCommit
+            authorityCommit = 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
+            sourceToolsPath = $sourceToolsPath; artifactsRoot = $artifactsRoot
+          }
+          [IO.File]::WriteAllText((Join-Path $runRoot 'evidence-index.json'), (($initialIndex | ConvertTo-Json -Depth 10 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
           $expectedRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-          $expectedCommit = '8aabd22694a05771f98639f6d726cc9a620eb94b'
-          $expectedArchiveSha256 = 'd92df1a8f0aa342970dc9c66a77b6211955b4708de12119cb7f9a360fd265311'
+          $expectedCommit = 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
+          $expectedArchiveSha256 = '3dc38613f2e2316ad8fcc79d4bf48d0b03fd8398f8dacc72d156abcbce95ea9d'
+
+          $baseHead = ((& git -C $baseRoot rev-parse HEAD 2>$null) -join "`n").Trim()
+          if ($LASTEXITCODE -ne 0 -or $baseHead -cne $driverCommit) { throw 'Protected base checkout does not match the selected event-base driver commit.' }
+          $baseStatus = @(& git -C $baseRoot status --porcelain=v1 --untracked-files=no 2>$null)
+          if ($LASTEXITCODE -ne 0 -or $baseStatus.Count -ne 0) { throw 'Protected base checkout has tracked changes.' }
+          $candidateHead = ((& git -C $candidateRoot rev-parse HEAD 2>$null) -join "`n").Trim()
+          if ($LASTEXITCODE -ne 0 -or $candidateHead -cne $candidateCommit) { throw 'Candidate checkout does not match the immutable event candidate commit.' }
+          $candidateStatus = @(& git -C $candidateRoot status --porcelain=v1 --untracked-files=all 2>$null)
+          if ($LASTEXITCODE -ne 0 -or $candidateStatus.Count -ne 0) { throw 'Candidate checkout is not clean.' }
+          if (-not [string]::IsNullOrWhiteSpace($baseCommit)) {
+            if ($baseCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'Event base commit is not one immutable 40-character SHA.' }
+            $resolvedBase = ((& git -C $candidateRoot rev-parse --verify "$baseCommit^{commit}" 2>$null) -join "`n").Trim()
+            if ($LASTEXITCODE -ne 0 -or $resolvedBase -cne $baseCommit -or $resolvedBase -ceq $candidateCommit) {
+              throw 'A supplied BaseCommit must resolve to a distinct candidate ancestor.'
+            }
+            & git -C $candidateRoot merge-base --is-ancestor $resolvedBase $candidateCommit
+            if ($LASTEXITCODE -ne 0) { throw 'A supplied BaseCommit is not an ancestor of the immutable candidate.' }
+          }
           $config = Get-Content -LiteralPath (Join-Path $candidateRoot 'config/standard-v1.json') -Raw | ConvertFrom-Json -Depth 20
           $authority = $config.authority
           if ($authority.repository -cne $expectedRepository -or $authority.commit -cne $expectedCommit -or
               $authority.archiveUrl -cne "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/$expectedCommit" -or
-              $authority.archiveSha256 -cne $expectedArchiveSha256 -or @($authority.files).Count -ne 26) {
-            throw 'The active config is not the exact approved legacy 8a authority tuple.'
+              $authority.archiveSha256 -cne $expectedArchiveSha256 -or @($authority.files).Count -ne 32) {
+            throw 'The candidate config is not the exact approved ff85 authority tuple.'
           }
           $gitRoot = ((& git -C $authorityRoot rev-parse --show-toplevel 2>$null) -join "`n").Trim()
           if ($LASTEXITCODE -ne 0 -or [IO.Path]::GetFullPath($gitRoot) -cne $authorityRoot) {
-            throw 'The legacy authority fixture is not the root of a Git checkout.'
+            throw 'The ff85 authority fixture is not the root of a Git checkout.'
           }
           $head = ((& git -C $authorityRoot rev-parse HEAD 2>$null) -join "`n").Trim()
-          if ($LASTEXITCODE -ne 0 -or $head -cne $expectedCommit) { throw 'The legacy authority fixture has the wrong Git HEAD.' }
+          if ($LASTEXITCODE -ne 0 -or $head -cne $expectedCommit) { throw 'The ff85 authority fixture has the wrong Git HEAD.' }
           $originUrls = @(& git -C $authorityRoot remote get-url --all origin 2>$null)
           if ($LASTEXITCODE -ne 0 -or $originUrls.Count -ne 1) { throw 'The legacy authority fixture must have exactly one origin URL.' }
           $normalizedOrigin = ([string]$originUrls[0]).TrimEnd('/') -replace '\.git$', ''
           $normalizedExpectedRepository = $expectedRepository.TrimEnd('/') -replace '\.git$', ''
-          if ($normalizedOrigin -cne $normalizedExpectedRepository) { throw 'The legacy authority fixture has the wrong origin.' }
+          if ($normalizedOrigin -cne $normalizedExpectedRepository) { throw 'The ff85 authority fixture has the wrong origin.' }
           $status = @(& git -C $authorityRoot status --porcelain=v1 --untracked-files=all 2>$null)
-          if ($LASTEXITCODE -ne 0 -or $status.Count -ne 0) { throw 'The legacy authority fixture is not clean.' }
+          if ($LASTEXITCODE -ne 0 -or $status.Count -ne 0) { throw 'The ff85 authority fixture is not clean.' }
           $treeRecords = @(& git -C $authorityRoot ls-tree -r --full-tree --format='%(objectmode)%x09%(objectname)%x09%(path)' $expectedCommit 2>$null)
-          if ($LASTEXITCODE -ne 0) { throw 'Could not read the legacy authority HEAD Git tree.' }
+          if ($LASTEXITCODE -ne 0) { throw 'Could not read the ff85 authority HEAD Git tree.' }
           $gitEntries = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
           foreach ($record in $treeRecords) {
             $firstSeparator = $record.IndexOf([char]9)
@@ -128,16 +178,16 @@ jobs:
             $path = [IO.Path]::GetFullPath((Join-Path $authorityRoot $relativePath))
             if (-not $path.StartsWith($rootPrefix, $pathComparison) -or -not (Test-Path -LiteralPath $path -PathType Leaf) -or
                 (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$entry.sha256) {
-              throw "Legacy authority fixture file identity differs: $relativePath"
+              throw "ff85 authority fixture file identity differs: $relativePath"
             }
             if (-not $gitEntries.ContainsKey($relativePath)) { throw "The legacy authority HEAD Git tree omits an approved path: $relativePath" }
             $gitEntry = $gitEntries[$relativePath]
             if ([string]$gitEntry.mode -cne '100644' -or [string]$gitEntry.objectId -cnotmatch '^[0-9a-f]{40}$') {
-              throw "The legacy authority HEAD Git entry has an unexpected mode or object ID: $relativePath"
+              throw "The ff85 authority HEAD Git entry has an unexpected mode or object ID: $relativePath"
             }
             $blobObjectId = ((& git -C $authorityRoot hash-object --no-filters -- $relativePath 2>$null) -join "`n").Trim()
             if ($LASTEXITCODE -ne 0 -or $blobObjectId -cne [string]$gitEntry.objectId) {
-              throw "Legacy authority raw bytes differ from the HEAD Git blob: $relativePath"
+              throw "ff85 authority raw bytes differ from the HEAD Git blob: $relativePath"
             }
           }
 
@@ -152,12 +202,257 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $versionOutput = @(& go version)
-          if ($LASTEXITCODE -ne 0 -or $versionOutput.Count -ne 1 -or
-              [string]$versionOutput[0] -notmatch '^go version go(?<version>[0-9]+\.[0-9]+\.[0-9]+) [^\s]+/[^\s]+$') {
-            throw "setup-go did not provide one stable Go runtime version. Evidence='$($versionOutput -join ' | ')'"
+          # Materialize the selected runtime before the resolver uses GOROOT.
+          function Get-GoRuntimeRawSha256 {
+            param([Parameter(Mandatory)][string] $Path)
+            $item = Get-Item -Force -LiteralPath $Path -ErrorAction Stop
+            if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw "Go runtime payload must be a regular non-reparse file: $Path"
+            }
+            $algorithm = [Security.Cryptography.SHA256]::Create()
+            $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+            try { $hash = [Convert]::ToHexString($algorithm.ComputeHash($stream)).ToLowerInvariant() }
+            finally { $stream.Dispose(); $algorithm.Dispose() }
+            $after = Get-Item -Force -LiteralPath $Path -ErrorAction Stop
+            if ($after.Length -ne $item.Length -or ($after.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw "Go runtime payload changed while hashing: $Path"
+            }
+            return $hash
           }
-          "STANDARD_GO_RUNTIME_VERSION=$($Matches.version)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          function Get-GoRuntimeInventory {
+            param([Parameter(Mandatory)][string] $Root)
+            $rootPath = [IO.Path]::GetFullPath($Root)
+            $rootItem = Get-Item -Force -LiteralPath $rootPath -ErrorAction Stop
+            if (-not $rootItem.PSIsContainer -or ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw "Go runtime inventory root must be a regular non-reparse directory: $rootPath"
+            }
+            $rootPrefix = $rootPath.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+            $pending = [Collections.Generic.Stack[string]]::new()
+            $pending.Push($rootPath)
+            $entryByPath = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+            $fileCount = 0
+            $directoryCount = 0
+            while ($pending.Count -gt 0) {
+              $currentDirectory = $pending.Pop()
+              foreach ($item in @(Get-ChildItem -Force -LiteralPath $currentDirectory -ErrorAction Stop)) {
+                if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                  throw "Go runtime contains a nested reparse point: $($item.FullName)"
+                }
+                $fullPath = [IO.Path]::GetFullPath([string]$item.FullName)
+                if (-not $fullPath.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                  throw "Go runtime inventory entry escaped its physical root: $fullPath"
+                }
+                $relativePath = [IO.Path]::GetRelativePath($rootPath, $fullPath).Replace([char]92, [char]47)
+                $segments = $relativePath.Split('/')
+                if ([string]::IsNullOrWhiteSpace($relativePath) -or [IO.Path]::IsPathRooted($relativePath) -or
+                    $relativePath.Contains([char]92) -or $segments -contains '' -or
+                    $segments -contains '.' -or $segments -contains '..') {
+                  throw "Go runtime contains an unsafe relative path: $relativePath"
+                }
+                if ($item.PSIsContainer) {
+                  $record = [ordered]@{ path = $relativePath; kind = 'directory'; length = 0; sha256 = $null }
+                  $directoryCount++
+                  $pending.Push($fullPath)
+                }
+                else {
+                  $record = [ordered]@{
+                    path = $relativePath
+                    kind = 'file'
+                    length = [long]$item.Length
+                    sha256 = Get-GoRuntimeRawSha256 -Path $fullPath
+                  }
+                  $fileCount++
+                }
+                if (-not $entryByPath.TryAdd($relativePath, [pscustomobject]$record)) {
+                  throw "Go runtime contains a duplicate relative path: $relativePath"
+                }
+              }
+            }
+            $paths = [string[]]@($entryByPath.Keys)
+            [Array]::Sort($paths, [StringComparer]::Ordinal)
+            $records = [Collections.Generic.List[object]]::new()
+            foreach ($path in $paths) { $records.Add($entryByPath[$path]) }
+            $entries = $records.ToArray()
+            $entriesJson = ConvertTo-Json -InputObject $entries -Depth 10 -Compress
+            $entryBytes = [Text.UTF8Encoding]::new($false).GetBytes($entriesJson)
+            $algorithm = [Security.Cryptography.SHA256]::Create()
+            try { $closureSha256 = [Convert]::ToHexString($algorithm.ComputeHash($entryBytes)).ToLowerInvariant() }
+            finally { $algorithm.Dispose() }
+            return [pscustomobject]@{
+              rootPath = $rootPath; entries = $entries; entriesJson = $entriesJson
+              fileCount = $fileCount; directoryCount = $directoryCount; closureSha256 = $closureSha256
+            }
+          }
+
+          function Assert-GoRuntimeDirectoryChain {
+            param([Parameter(Mandatory)][string] $Path)
+            $cursor = [IO.Path]::GetFullPath($Path)
+            while ($true) {
+              $item = Get-Item -Force -LiteralPath $cursor -ErrorAction Stop
+              if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Go runtime destination path must contain only regular non-reparse directories: $cursor"
+              }
+              $pathRoot = [IO.Path]::GetPathRoot($cursor)
+              if ($cursor.Equals($pathRoot, [StringComparison]::OrdinalIgnoreCase)) { break }
+              $parent = [IO.Path]::GetDirectoryName($cursor)
+              if ([string]::IsNullOrWhiteSpace($parent) -or $parent.Equals($cursor, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Could not verify a Go runtime destination ancestor: $cursor"
+              }
+              $cursor = $parent
+            }
+          }
+          if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP) -or [string]::IsNullOrWhiteSpace($env:GITHUB_PATH) -or
+              [string]::IsNullOrWhiteSpace($env:GITHUB_ENV)) {
+            throw 'GitHub runner temporary and environment-file paths are required for Go runtime materialization.'
+          }
+          $goCommand = Get-Command -Name 'go.exe' -CommandType Application -All -ErrorAction Stop | Select-Object -First 1
+          if ($null -eq $goCommand) { throw 'The PATH-first go.exe application was not found.' }
+          $selectedGoPath = [IO.Path]::GetFullPath([string]$goCommand.Source)
+          $selectedBin = [IO.Path]::GetDirectoryName($selectedGoPath)
+          if ([IO.Path]::GetFileName($selectedGoPath) -cne 'go.exe' -or [IO.Path]::GetFileName($selectedBin) -cne 'bin') {
+            throw "PATH-first go.exe is not in its selected runtime bin directory: $selectedGoPath"
+          }
+          $selectedGoRoot = [IO.Path]::GetFullPath([IO.Path]::GetDirectoryName($selectedBin))
+          $selectedRootItem = Get-Item -Force -LiteralPath $selectedGoRoot -ErrorAction Stop
+          if (-not $selectedRootItem.PSIsContainer) { throw "The selected Go runtime root is not a directory: $selectedGoRoot" }
+          $physicalRootItem = $selectedRootItem
+          if (($selectedRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            $physicalRootItem = $selectedRootItem.ResolveLinkTarget($true)
+            if ($null -eq $physicalRootItem -or $physicalRootItem -isnot [IO.DirectoryInfo] -or -not $physicalRootItem.Exists) {
+              throw "The selected Go runtime root junction could not be resolved: $selectedGoRoot"
+            }
+          }
+          $physicalSourceRoot = [IO.Path]::GetFullPath([string]$physicalRootItem.FullName)
+          $physicalSourceItem = Get-Item -Force -LiteralPath $physicalSourceRoot -ErrorAction Stop
+          if (-not $physicalSourceItem.PSIsContainer -or ($physicalSourceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "The physical selected Go runtime root is not a regular directory: $physicalSourceRoot"
+          }
+          $sourceGoPath = [IO.Path]::GetFullPath((Join-Path $physicalSourceRoot 'bin/go.exe'))
+          $selectedGoItem = Get-Item -Force -LiteralPath $selectedGoPath -ErrorAction Stop
+          if ($selectedGoItem.PSIsContainer -or ($selectedGoItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "PATH-first go.exe must be a regular non-reparse file: $selectedGoPath"
+          }
+          $selectedGoSha256 = Get-GoRuntimeRawSha256 -Path $selectedGoPath
+          $sourceGoSha256 = Get-GoRuntimeRawSha256 -Path $sourceGoPath
+          if ($selectedGoSha256 -cne $sourceGoSha256) { throw 'The selected and physical-root Go executables have different bytes.' }
+          $env:GOROOT = $physicalSourceRoot
+          $versionOutput = @(& $selectedGoPath version)
+          $versionExitCode = $LASTEXITCODE
+          $versionParts = if ($versionOutput.Count -eq 1) { ([string]$versionOutput[0]).Split(' ') } else { @() }
+          if ($versionExitCode -ne 0 -or $versionParts.Count -ne 4 -or $versionParts[0] -cne 'go' -or
+              $versionParts[1] -cne 'version' -or $versionParts[2] -cnotmatch '^go[0-9]+[.][0-9]+[.][0-9]+$' -or
+              $versionParts[3] -cne 'windows/amd64') {
+            throw "setup-go did not provide one stable Windows amd64 Go runtime version. Evidence='$($versionOutput -join ' | ')'; exit=$versionExitCode."
+          }
+          $goVersion = $versionParts[2].Substring(2)
+          $sourceInventory = Get-GoRuntimeInventory -Root $physicalSourceRoot
+          $runnerTemp = [IO.Path]::GetFullPath($env:RUNNER_TEMP)
+          Assert-GoRuntimeDirectoryChain -Path $runnerTemp
+          $materializedRoot = [IO.Path]::GetFullPath((Join-Path $runnerTemp "go-runtime-$([Guid]::NewGuid().ToString('N'))"))
+          if (Test-Path -LiteralPath $materializedRoot) { throw 'The fresh Go runtime destination already exists.' }
+          [void][IO.Directory]::CreateDirectory($materializedRoot)
+          Assert-GoRuntimeDirectoryChain -Path $materializedRoot
+          foreach ($entry in @($sourceInventory.entries | Where-Object { $_.kind -ceq 'directory' })) {
+            $relativePath = [string]$entry.path.Replace('/', [IO.Path]::DirectorySeparatorChar)
+            $destinationDirectory = Join-Path $materializedRoot $relativePath
+            [void][IO.Directory]::CreateDirectory($destinationDirectory)
+            Assert-GoRuntimeDirectoryChain -Path $destinationDirectory
+          }
+          foreach ($entry in @($sourceInventory.entries | Where-Object { $_.kind -ceq 'file' })) {
+            $relativePath = [string]$entry.path.Replace('/', [IO.Path]::DirectorySeparatorChar)
+            $sourcePath = [IO.Path]::GetFullPath((Join-Path $physicalSourceRoot $relativePath))
+            $destinationPath = [IO.Path]::GetFullPath((Join-Path $materializedRoot $relativePath))
+            Assert-GoRuntimeDirectoryChain -Path ([IO.Path]::GetDirectoryName($destinationPath))
+            if (Test-Path -LiteralPath $destinationPath) { throw "A Go runtime destination file already exists: $destinationPath" }
+            [IO.File]::Copy($sourcePath, $destinationPath, $false)
+            $destinationFile = Get-Item -Force -LiteralPath $destinationPath -ErrorAction Stop
+            if ($destinationFile.PSIsContainer -or ($destinationFile.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                [long]$destinationFile.Length -ne [long]$entry.length -or
+                (Get-GoRuntimeRawSha256 -Path $destinationPath) -cne [string]$entry.sha256) {
+              throw "A materialized Go runtime file differs from its source inventory: $($entry.path)"
+            }
+          }
+          $sourceAfterCopy = Get-GoRuntimeInventory -Root $physicalSourceRoot
+          $materializedInventory = Get-GoRuntimeInventory -Root $materializedRoot
+          if ($sourceAfterCopy.entriesJson -cne $sourceInventory.entriesJson -or
+              $materializedInventory.entriesJson -cne $sourceInventory.entriesJson -or
+              $materializedInventory.closureSha256 -cne $sourceInventory.closureSha256) {
+            throw 'The materialized Go runtime does not exactly match the complete selected source closure.'
+          }
+          $materializedGoPath = [IO.Path]::GetFullPath((Join-Path $materializedRoot 'bin/go.exe'))
+          $materializedGoSha256 = Get-GoRuntimeRawSha256 -Path $materializedGoPath
+          if ($materializedGoSha256 -cne $selectedGoSha256) { throw 'The materialized go.exe does not match PATH-first Go.' }
+          $env:GOROOT = $materializedRoot
+          $materializedVersionOutput = @(& $materializedGoPath version)
+          $materializedExitCode = $LASTEXITCODE
+          if ($materializedExitCode -ne 0 -or $materializedVersionOutput.Count -ne 1 -or
+              [string]$materializedVersionOutput[0] -cne [string]$versionOutput[0]) {
+            throw "The materialized Go executable reports a different version. Evidence='$($materializedVersionOutput -join ' | ')'; exit=$materializedExitCode."
+          }
+
+          $runRoot = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'code-collaboration'))
+          Assert-GoRuntimeDirectoryChain -Path $runRoot
+          $indexPath = Join-Path $runRoot 'evidence-index.json'
+          $inventoryPath = Join-Path $runRoot 'go-runtime-inventory.json'
+          $identityPath = Join-Path $runRoot 'go-runtime-identity.json'
+          if (-not (Test-Path -LiteralPath $indexPath -PathType Leaf) -or
+              (Test-Path -LiteralPath $inventoryPath) -or (Test-Path -LiteralPath $identityPath)) {
+            throw 'The Go runtime evidence index is missing or Go identity evidence already exists.'
+          }
+          $inventoryDocument = [ordered]@{
+            schemaVersion = 1
+            schema = 'standard-validation-go-runtime-inventory-v1'
+            selectedRoot = $selectedGoRoot
+            physicalSourceRoot = $physicalSourceRoot
+            materializedRoot = $materializedRoot
+            sourceClosureSha256 = $sourceInventory.closureSha256
+            materializedClosureSha256 = $materializedInventory.closureSha256
+            fileCount = $materializedInventory.fileCount
+            directoryCount = $materializedInventory.directoryCount
+            sourceEntries = $sourceInventory.entries
+            materializedEntries = $materializedInventory.entries
+          }
+          $inventoryJson = ($inventoryDocument | ConvertTo-Json -Depth 40 -Compress) + [Environment]::NewLine
+          $inventoryBytes = [Text.UTF8Encoding]::new($false).GetBytes($inventoryJson)
+          $inventoryStream = [IO.File]::Open($inventoryPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+          try { $inventoryStream.Write($inventoryBytes, 0, $inventoryBytes.Length) }
+          finally { $inventoryStream.Dispose() }
+          $inventorySha256 = Get-GoRuntimeRawSha256 -Path $inventoryPath
+          $identityDocument = [ordered]@{
+            schemaVersion = 1
+            schema = 'standard-validation-go-runtime-identity-v1'
+            recordedAtUtc = [DateTime]::UtcNow.ToString('o')
+            selectedGoPath = $selectedGoPath
+            selectedGoRoot = $selectedGoRoot
+            physicalSourceRoot = $physicalSourceRoot
+            materializedRoot = $materializedRoot
+            materializedGoPath = $materializedGoPath
+            versionOutput = [string]$versionOutput[0]
+            version = $goVersion
+            goExecutableSha256 = $materializedGoSha256
+            fileCount = $materializedInventory.fileCount
+            directoryCount = $materializedInventory.directoryCount
+            sourceClosureSha256 = $sourceInventory.closureSha256
+            materializedClosureSha256 = $materializedInventory.closureSha256
+            inventoryPath = $inventoryPath
+            inventorySha256 = $inventorySha256
+          }
+          $identityJson = ($identityDocument | ConvertTo-Json -Depth 20 -Compress) + [Environment]::NewLine
+          $identityBytes = [Text.UTF8Encoding]::new($false).GetBytes($identityJson)
+          $identityStream = [IO.File]::Open($identityPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+          try { $identityStream.Write($identityBytes, 0, $identityBytes.Length) }
+          finally { $identityStream.Dispose() }
+          $evidenceIndex = Get-Content -LiteralPath $indexPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+          if ([int]$evidenceIndex.schemaVersion -ne 1) { throw 'The source-validation evidence index schema is unexpected.' }
+          $evidenceIndex | Add-Member -NotePropertyName goRuntimeIdentityPath -NotePropertyValue $identityPath -Force
+          $evidenceIndex | Add-Member -NotePropertyName goRuntimeIdentitySha256 -NotePropertyValue (Get-GoRuntimeRawSha256 -Path $identityPath) -Force
+          $evidenceIndex | Add-Member -NotePropertyName goRuntimeInventoryPath -NotePropertyValue $inventoryPath -Force
+          $evidenceIndex | Add-Member -NotePropertyName goRuntimeInventorySha256 -NotePropertyValue $inventorySha256 -Force
+          [IO.File]::WriteAllText($indexPath, (($evidenceIndex | ConvertTo-Json -Depth 30 -Compress) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+          [IO.File]::AppendAllText($env:GITHUB_PATH, ([IO.Path]::GetDirectoryName($materializedGoPath) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+          $environmentLines = @("GOROOT=$materializedRoot", "STANDARD_GO_RUNTIME_VERSION=$goVersion") -join [Environment]::NewLine
+          [IO.File]::AppendAllText($env:GITHUB_ENV, ($environmentLines + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
 
       - name: Set up approved Node runtime
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -166,64 +461,285 @@ jobs:
           architecture: 'x64'
           package-manager-cache: false
 
-      - name: Verify resolved Node and npm versions
+      - name: Verify resolved Node and npm runtime
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $nodeVersionOutput = @(& node --version)
+          $expectedNodeVersion = '24.21.0'
+          $expectedNpmVersion = '11.19.0'
+          $expectedNodeSha256 = 'ba4e6d110e8c1592a1ecd390f6b05f3da124b13871a5be62b341a07a853c6c32'
+          $runRoot = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'code-collaboration'))
+          if (-not (Test-Path -LiteralPath $runRoot -PathType Container)) {
+            throw "The source-validation evidence root is missing: $runRoot"
+          }
+          $identityPath = Join-Path $runRoot 'runtime-identity.json'
+          $indexPath = Join-Path $runRoot 'evidence-index.json'
+          if (Test-Path -LiteralPath $identityPath) { throw 'The Node/npm runtime identity already exists for this job.' }
+          if (-not (Test-Path -LiteralPath $indexPath -PathType Leaf)) { throw 'The source-validation evidence index is missing.' }
+
+          $nodeCommand = Get-Command -Name 'node' -CommandType Application -All -ErrorAction Stop | Select-Object -First 1
+          $npmCommand = Get-Command -Name 'npm.cmd' -CommandType Application -All -ErrorAction Stop | Select-Object -First 1
+          if ($null -eq $nodeCommand -or $null -eq $npmCommand) { throw 'The PATH-first Node or npm application was not found.' }
+          $nodePathValue = if ($null -ne $nodeCommand.PSObject.Properties['Path']) { [string]$nodeCommand.Path } else { [string]$nodeCommand.Source }
+          $npmPathValue = if ($null -ne $npmCommand.PSObject.Properties['Path']) { [string]$npmCommand.Path } else { [string]$npmCommand.Source }
+          $nodePath = [IO.Path]::GetFullPath($nodePathValue)
+          $npmPath = [IO.Path]::GetFullPath($npmPathValue)
+          $runtimeRoot = [IO.Path]::GetDirectoryName($nodePath)
+          $npmRuntimeRoot = [IO.Path]::GetDirectoryName($npmPath)
+          if ([IO.Path]::GetFileName($nodePath) -cne 'node.exe' -or [IO.Path]::GetFileName($npmPath) -cne 'npm.cmd' -or
+              -not $runtimeRoot.Equals($npmRuntimeRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'PATH-first node.exe and npm.cmd must be in the same approved Node runtime root.'
+          }
+
+          $nodeVersionOutput = @(& $nodePath --version)
           $nodeExitCode = $LASTEXITCODE
           if ($nodeExitCode -ne 0 -or $nodeVersionOutput.Count -ne 1 -or
-              [string]$nodeVersionOutput[0] -cne 'v24.21.0') {
-            throw "setup-node did not provide Node v24.21.0. Evidence='$($nodeVersionOutput -join ' | ')'; exit=$nodeExitCode."
+              [string]$nodeVersionOutput[0] -cne "v$expectedNodeVersion") {
+            throw "The PATH-first Node runtime must be v$expectedNodeVersion. Evidence='$($nodeVersionOutput -join ' | ')'; exit=$nodeExitCode."
           }
-          $npmVersionOutput = @(& npm.cmd --version)
+          $npmVersionOutput = @(& $npmPath --version)
           $npmExitCode = $LASTEXITCODE
           if ($npmExitCode -ne 0 -or $npmVersionOutput.Count -ne 1 -or
-              [string]$npmVersionOutput[0] -cne '11.19.0') {
-            throw "setup-node did not provide npm 11.19.0. Evidence='$($npmVersionOutput -join ' | ')'; exit=$npmExitCode."
+              [string]$npmVersionOutput[0] -cne $expectedNpmVersion) {
+            throw "The PATH-first npm runtime must be $expectedNpmVersion. Evidence='$($npmVersionOutput -join ' | ')'; exit=$npmExitCode."
           }
-          Write-Output "Verified Node $($nodeVersionOutput[0]) and npm $($npmVersionOutput[0])."
 
-      - name: Run canonical Standard v1 validation
+          $npmCliPath = [IO.Path]::GetFullPath((Join-Path $runtimeRoot 'node_modules/npm/bin/npm-cli.js'))
+          $npmPackagePath = [IO.Path]::GetFullPath((Join-Path $runtimeRoot 'node_modules/npm/package.json'))
+          foreach ($path in @($nodePath, $npmPath, $npmCliPath, $npmPackagePath)) {
+            $item = Get-Item -Force -LiteralPath $path -ErrorAction Stop
+            if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw "The approved Node/npm runtime identity must be a regular non-reparse file: $path"
+            }
+          }
+          $npmPackage = Get-Content -LiteralPath $npmPackagePath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+          if ([string]$npmPackage.name -cne 'npm' -or [string]$npmPackage.version -cne $expectedNpmVersion) {
+            throw 'The npm package metadata does not match the approved PATH-first npm version.'
+          }
+          $nodeSha256 = (Get-FileHash -LiteralPath $nodePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($nodeSha256 -cne $expectedNodeSha256) { throw 'The PATH-first Node executable does not match the approved official SHA-256.' }
+
+          $runtimeIdentity = [ordered]@{
+            schemaVersion = 1
+            recordedAtUtc = [DateTime]::UtcNow.ToString('o')
+            runtimeRoot = $runtimeRoot
+            nodePath = $nodePath
+            nodeVersion = [string]$nodeVersionOutput[0]
+            nodeSha256 = $nodeSha256
+            npmCommand = 'npm.cmd'
+            npmPath = $npmPath
+            npmVersion = [string]$npmVersionOutput[0]
+            npmPackageVersion = [string]$npmPackage.version
+            npmCliPath = $npmCliPath
+            npmPackageJsonPath = $npmPackagePath
+            files = [ordered]@{
+              node = [ordered]@{ path = $nodePath; sha256 = $nodeSha256 }
+              npmCommand = [ordered]@{ path = $npmPath; sha256 = (Get-FileHash -LiteralPath $npmPath -Algorithm SHA256).Hash.ToLowerInvariant() }
+              npmCli = [ordered]@{ path = $npmCliPath; sha256 = (Get-FileHash -LiteralPath $npmCliPath -Algorithm SHA256).Hash.ToLowerInvariant() }
+              npmPackageJson = [ordered]@{ path = $npmPackagePath; sha256 = (Get-FileHash -LiteralPath $npmPackagePath -Algorithm SHA256).Hash.ToLowerInvariant() }
+            }
+          }
+          $identityJson = ($runtimeIdentity | ConvertTo-Json -Depth 20 -Compress) + "`n"
+          $identityBytes = [Text.UTF8Encoding]::new($false).GetBytes($identityJson)
+          $identityStream = [IO.File]::Open($identityPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+          try { $identityStream.Write($identityBytes, 0, $identityBytes.Length) }
+          finally { $identityStream.Dispose() }
+
+          $evidenceIndex = Get-Content -LiteralPath $indexPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+          if ([int]$evidenceIndex.schemaVersion -ne 1) { throw 'The source-validation evidence index schema is unexpected.' }
+          $evidenceIndex | Add-Member -NotePropertyName runtimeIdentityPath -NotePropertyValue $identityPath -Force
+          $evidenceIndex | Add-Member -NotePropertyName runtimeIdentitySha256 -NotePropertyValue (Get-FileHash -LiteralPath $identityPath -Algorithm SHA256).Hash.ToLowerInvariant() -Force
+          [IO.File]::WriteAllText($indexPath, (($evidenceIndex | ConvertTo-Json -Depth 20 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+
+      - name: Prepare source tools once
         shell: pwsh
         env:
+          SYP154_CANDIDATE_AUTHORITY_ROOT: ${{ github.workspace }}/authority-ff85
           GITHUB_TOKEN: ${{ github.token }}
-          PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          PUSH_BEFORE_SHA: ${{ github.event.before }}
-          SYP154_CANDIDATE_AUTHORITY_ROOT: ${{ github.workspace }}/authority-8a
         run: |
           $ErrorActionPreference = 'Stop'
+          $baseRoot = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
           $candidateRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'candidate'))
-          $baseCommit = if ($env:GITHUB_EVENT_NAME -eq 'pull_request') {
-            $env:PULL_REQUEST_BASE_SHA
+          $authorityRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'authority-ff85'))
+          $protectedDriver = Join-Path $baseRoot 'scripts/Validate.ps1'
+          $candidateCommit = [string]$env:CODE_SOURCE_CANDIDATE_COMMIT
+          $sourceToolsPath = [IO.Path]::GetFullPath($env:CODE_SOURCE_TOOLS_PATH)
+          $baseCommit = [string]$env:CODE_SOURCE_BASE_COMMIT
+          $baseArguments = @()
+          if (-not [string]::IsNullOrWhiteSpace($baseCommit)) { $baseArguments = @('-BaseCommit', $baseCommit) }
+          $supervisor = Join-Path $authorityRoot 'scripts/Invoke-StandardValidation.ps1'
+          $supervisorSha256 = (Get-FileHash -LiteralPath $supervisor -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($supervisorSha256 -cne 'a4ee880810171428a6abd2e8fd5db2da1eaeda4abc0fc6c72dc259b4a709174b') { throw 'The ff85 process supervisor differs from its reviewed identity.' }
+          . $supervisor -DefineFunctionsOnly -CandidateRoot $candidateRoot -AdapterPath $protectedDriver `
+            -ArtifactsRoot (Split-Path -Parent $sourceToolsPath) -SourceRepository 'https://github.com/SyuanTsai/Skill-Code-Collaboration.git' `
+            -SourceRevision $candidateCommit -BaseRevision $(if ($baseCommit) { $baseCommit } else { $candidateCommit })
+          $pwshPath = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+          $commandArguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $protectedDriver,
+            '-RepositoryRoot', $candidateRoot, '-AdapterVersion', '2', '-PrepareSourceTools',
+            '-SourceToolsPath', $sourceToolsPath, '-AuthorityRepositoryRoot', $authorityRoot,
+            '-TrustedToolRoot', $PSHOME, '-ExpectedGoRuntimeVersion', $env:STANDARD_GO_RUNTIME_VERSION,
+            '-TimeoutSeconds', '10800') + $baseArguments
+          & git -C $candidateRoot config --local core.autocrlf false
+          if ($LASTEXITCODE -ne 0) { throw 'Could not set candidate-local core.autocrlf=false.' }
+          & git -C $candidateRoot config --local core.eol lf
+          if ($LASTEXITCODE -ne 0) { throw 'Could not set candidate-local core.eol=lf.' }
+          $ownedProcess = Invoke-StandardValidationProcess -Command $pwshPath -Arguments $commandArguments `
+            -WorkingDirectory $baseRoot -Environment @{} -TimeoutSeconds 10800 -CoreLifecycleOnly
+          $runRoot = Split-Path -Parent (Split-Path -Parent $sourceToolsPath)
+          $ownedProcess | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $runRoot 'source-tools-setup-process.json') -Encoding utf8NoBOM
+          [IO.File]::WriteAllText((Join-Path $runRoot 'source-tools-setup.stdout.txt'), [string]$ownedProcess.stdout, [Text.UTF8Encoding]::new($false))
+          [IO.File]::WriteAllText((Join-Path $runRoot 'source-tools-setup.stderr.txt'), [string]$ownedProcess.stderr, [Text.UTF8Encoding]::new($false))
+          if ($ownedProcess.cleanedUp -isnot [bool] -or -not $ownedProcess.cleanedUp) { throw 'Source setup process cleanup was not verified.' }
+          if ([string]$ownedProcess.status -cne 'passed' -or [int]$ownedProcess.exitCode -ne 0) { throw "Source tools preparation failed with status $($ownedProcess.status), exit $($ownedProcess.exitCode)." }
+          $prepared = Get-Content -LiteralPath $sourceToolsPath -Raw | ConvertFrom-Json -Depth 80
+          if ([string]$prepared.runId -cnotmatch '^[0-9a-f]{32}$' -or
+              [string]$prepared.sourceRevision -cne [string]$env:CODE_SOURCE_CANDIDATE_COMMIT -or
+              [string]$prepared.authorityRevision -cne 'ff85d5f80fe795b96354e753074b5ce59ad04ecd') {
+            throw 'Prepared source-tools metadata does not bind the immutable candidate and ff85 authority.'
           }
-          elseif ($env:GITHUB_EVENT_NAME -eq 'push' -and
-              -not [string]::IsNullOrWhiteSpace($env:PUSH_BEFORE_SHA) -and
-              $env:PUSH_BEFORE_SHA -notmatch '^0+$') {
-            $env:PUSH_BEFORE_SHA
+          $setupRoot = Split-Path -Parent $sourceToolsPath
+          $setupTimingPath = Join-Path ([string]$prepared.ownedRoot) 'setup-timing.json'
+          $setupTimingBindings = @($prepared.sourceValidation.frozenFiles | Where-Object {
+            [IO.Path]::GetFullPath([string]$_.path).Equals([IO.Path]::GetFullPath($setupTimingPath), [StringComparison]::OrdinalIgnoreCase)
+          })
+          if ($setupTimingBindings.Count -ne 1 -or -not (Test-Path -LiteralPath $setupTimingPath -PathType Leaf) -or
+              (Get-FileHash -LiteralPath $setupTimingPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$setupTimingBindings[0].sha256) {
+            throw 'Source setup stage timing evidence is missing or differs from its frozen binding.'
           }
-          else {
-            ''
+          $setupCompletedTimingPath = Join-Path $setupRoot "source-tools-setup-completed-$($prepared.runId).json"
+          if (-not (Test-Path -LiteralPath $setupCompletedTimingPath -PathType Leaf)) { throw "Source setup evidence is missing: $setupCompletedTimingPath" }
+          $runRoot = Split-Path -Parent $setupRoot
+          $indexPath = Join-Path $runRoot 'evidence-index.json'
+          $index = Get-Content -LiteralPath $indexPath -Raw | ConvertFrom-Json -Depth 20
+          $index | Add-Member -NotePropertyName runId -NotePropertyValue ([string]$prepared.runId) -Force
+          $index | Add-Member -NotePropertyName setupStatus -NotePropertyValue 'verified' -Force
+          $index | Add-Member -NotePropertyName setupTimingPath -NotePropertyValue $setupTimingPath -Force
+          $index | Add-Member -NotePropertyName setupCompletedTimingPath -NotePropertyValue (Join-Path $setupRoot "source-tools-setup-completed-$($prepared.runId).json") -Force
+          [IO.File]::WriteAllText($indexPath, (($index | ConvertTo-Json -Depth 20 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+
+      - name: Run full source validation
+        shell: pwsh
+        env:
+          SYP154_CANDIDATE_AUTHORITY_ROOT: ${{ github.workspace }}/authority-ff85
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $baseRoot = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+          $candidateRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'candidate'))
+          $authorityRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'authority-ff85'))
+          $protectedDriver = Join-Path $baseRoot 'scripts/Validate.ps1'
+          $sourceToolsPath = [IO.Path]::GetFullPath($env:CODE_SOURCE_TOOLS_PATH)
+          $artifactsRoot = [IO.Path]::GetFullPath($env:CODE_SOURCE_ARTIFACTS_ROOT)
+          $baseCommit = [string]$env:CODE_SOURCE_BASE_COMMIT
+          $baseArguments = @()
+          if (-not [string]::IsNullOrWhiteSpace($baseCommit)) { $baseArguments = @('-BaseCommit', $baseCommit) }
+          $candidateCommit = [string]$env:CODE_SOURCE_CANDIDATE_COMMIT
+          $supervisor = Join-Path $authorityRoot 'scripts/Invoke-StandardValidation.ps1'
+          $supervisorSha256 = (Get-FileHash -LiteralPath $supervisor -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($supervisorSha256 -cne 'a4ee880810171428a6abd2e8fd5db2da1eaeda4abc0fc6c72dc259b4a709174b') { throw 'The ff85 process supervisor differs from its reviewed identity.' }
+          . $supervisor -DefineFunctionsOnly -CandidateRoot $candidateRoot -AdapterPath $protectedDriver `
+            -ArtifactsRoot $artifactsRoot -SourceRepository 'https://github.com/SyuanTsai/Skill-Code-Collaboration.git' `
+            -SourceRevision $candidateCommit -BaseRevision $(if ($baseCommit) { $baseCommit } else { $candidateCommit })
+          $pwshPath = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+          $reportPath = Join-Path $artifactsRoot 'standard-core-validation-v2-report.json'
+          $commandArguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $protectedDriver,
+            '-RepositoryRoot', $candidateRoot, '-AdapterVersion', '2', '-SourceValidation',
+            '-SourceToolsPath', $sourceToolsPath, '-AuthorityRepositoryRoot', $authorityRoot,
+            '-TrustedToolRoot', $PSHOME, '-ArtifactsRoot', $artifactsRoot, '-OutputPath', $reportPath,
+            '-ExpectedGoRuntimeVersion', $env:STANDARD_GO_RUNTIME_VERSION, '-TimeoutSeconds', '10800') + $baseArguments
+          $ownedProcess = Invoke-StandardValidationProcess -Command $pwshPath -Arguments $commandArguments `
+            -WorkingDirectory $baseRoot -Environment @{} -TimeoutSeconds 10800 -CoreLifecycleOnly
+          $runRoot = Split-Path -Parent (Split-Path -Parent $sourceToolsPath)
+          $ownedProcess | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $runRoot 'source-validation-process.json') -Encoding utf8NoBOM
+          [IO.File]::WriteAllText((Join-Path $runRoot 'source-validation.stdout.txt'), [string]$ownedProcess.stdout, [Text.UTF8Encoding]::new($false))
+          [IO.File]::WriteAllText((Join-Path $runRoot 'source-validation.stderr.txt'), [string]$ownedProcess.stderr, [Text.UTF8Encoding]::new($false))
+          if ($ownedProcess.cleanedUp -isnot [bool] -or -not $ownedProcess.cleanedUp) { throw 'Source validation process cleanup was not verified.' }
+          if ([string]$ownedProcess.status -cne 'passed' -or [int]$ownedProcess.exitCode -ne 0) { throw "Full source validation failed with status $($ownedProcess.status), exit $($ownedProcess.exitCode)." }
+          $prepared = Get-Content -LiteralPath $sourceToolsPath -Raw | ConvertFrom-Json -Depth 80
+          $setupRoot = [IO.Path]::GetFullPath((Split-Path -Parent $sourceToolsPath))
+          $ownedRoot = [IO.Path]::GetFullPath([string]$prepared.ownedRoot)
+          $expectedOwnedRoot = [IO.Path]::GetFullPath((Join-Path $setupRoot "source-tools-$($prepared.runId)"))
+          if (-not $ownedRoot.Equals($expectedOwnedRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Prepared source tools are outside the expected run-owned setup root.'
           }
-          $outputPath = Join-Path $env:RUNNER_TEMP 'code-collaboration-conformance-report.json'
-          $hadNpmConfigPrefix = Test-Path -LiteralPath 'Env:npm_config_prefix'
-          $priorNpmConfigPrefix = [Environment]::GetEnvironmentVariable('npm_config_prefix', 'Process')
-          try {
-            Remove-Item -LiteralPath 'Env:npm_config_prefix' -ErrorAction SilentlyContinue
-            & git -C $candidateRoot config --local core.autocrlf false
-            if ($LASTEXITCODE -ne 0) { throw 'Could not set candidate Git core.autocrlf to false.' }
-            & git -C $candidateRoot config --local core.eol lf
-            if ($LASTEXITCODE -ne 0) { throw 'Could not set candidate Git core.eol to lf.' }
-            & ./scripts/Validate.ps1 -RepositoryRoot $candidateRoot -ArtifactsRoot $env:RUNNER_TEMP -BaseCommit $baseCommit -ExpectedGoRuntimeVersion $env:STANDARD_GO_RUNTIME_VERSION -OutputPath $outputPath
+          $setupTimingPath = Join-Path $ownedRoot 'setup-timing.json'
+          $setupCompletedTimingPath = Join-Path $setupRoot "source-tools-setup-completed-$($prepared.runId).json"
+          $setupTimingBindings = @($prepared.sourceValidation.frozenFiles | Where-Object {
+            [IO.Path]::GetFullPath([string]$_.path).Equals([IO.Path]::GetFullPath($setupTimingPath), [StringComparison]::OrdinalIgnoreCase)
+          })
+          if ($setupTimingBindings.Count -ne 1 -or -not (Test-Path -LiteralPath $setupTimingPath -PathType Leaf) -or
+              (Get-FileHash -LiteralPath $setupTimingPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$setupTimingBindings[0].sha256 -or
+              -not (Test-Path -LiteralPath $setupCompletedTimingPath -PathType Leaf)) {
+            throw 'Source setup timing evidence is missing or differs from its frozen run binding.'
           }
-          finally {
-            if ($hadNpmConfigPrefix) {
-              [Environment]::SetEnvironmentVariable('npm_config_prefix', $priorNpmConfigPrefix, 'Process')
-            }
-            else {
-              [Environment]::SetEnvironmentVariable('npm_config_prefix', $null, 'Process')
-            }
+          $reportPath = Join-Path $artifactsRoot 'standard-core-validation-v2-report.json'
+          $sourceTimingPath = Join-Path (Split-Path -Parent $artifactsRoot) "source-validation-timing-$($prepared.runId).json"
+          foreach ($path in @($reportPath, $sourceTimingPath)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Source validation evidence is missing: $path" }
           }
+          $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json -Depth 80
+          if ([string]$report.runId -cne [string]$prepared.runId -or [string]$report.state -cne 'PASS') {
+            throw 'The full Core source report does not show a passing result for the prepared run.'
+          }
+          $expectedCoreRunRoot = [IO.Path]::GetFullPath((Join-Path (Join-Path $artifactsRoot 'runs') ([string]$prepared.runId)))
+          $reportedCoreRunRoot = [IO.Path]::GetFullPath([string]$report.artifacts.runRoot)
+          $caseBinding = $report.sourceValidation.pesterCaseInventory
+          if (-not $reportedCoreRunRoot.Equals($expectedCoreRunRoot, [StringComparison]::OrdinalIgnoreCase) -or
+              $null -eq $caseBinding -or [string]::IsNullOrWhiteSpace([string]$caseBinding.path) -or
+              [string]$caseBinding.sha256 -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'The source report has no exact run-root-bound Pester case inventory.'
+          }
+          $caseLedgerPath = [IO.Path]::GetFullPath([string]$caseBinding.path)
+          $runRootPrefix = $reportedCoreRunRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+          if (-not $caseLedgerPath.StartsWith($runRootPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+              -not (Test-Path -LiteralPath $caseLedgerPath -PathType Leaf) -or
+              (Get-FileHash -LiteralPath $caseLedgerPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$caseBinding.sha256) {
+            throw 'The source report Pester case inventory is outside its Core run root or has a different hash.'
+          }
+          $caseLedger = Get-Content -LiteralPath $caseLedgerPath -Raw | ConvertFrom-Json -Depth 60
+          if ([int]$caseLedger.schemaVersion -ne 1 -or [string]$caseLedger.report -cne 'standard-core-pester-case-inventory-v1' -or
+              [string]$caseLedger.coreRunId -cne [string]$prepared.runId -or $caseLedger.complete -ne $true -or
+              [string]$caseLedger.terminalStatus -cne 'complete' -or
+              [int]$caseLedger.caseDiscoveryCount -ne [int]$caseLedger.caseExecutionCount) {
+            throw 'The Pester case inventory is incomplete or belongs to a different Core run.'
+          }
+          if (-not (Test-Path -LiteralPath $sourceTimingPath -PathType Leaf)) { throw "Source validation evidence is missing: $sourceTimingPath" }
+          $setupTiming = Get-Content -LiteralPath $setupTimingPath -Raw | ConvertFrom-Json -Depth 40
+          $setupCompletedTiming = Get-Content -LiteralPath $setupCompletedTimingPath -Raw | ConvertFrom-Json -Depth 40
+          $sourceTiming = Get-Content -LiteralPath $sourceTimingPath -Raw | ConvertFrom-Json -Depth 40
+          if ([string]$setupTiming.runId -cne [string]$prepared.runId -or
+              [string]$setupCompletedTiming.runId -cne [string]$prepared.runId -or
+              [string]$sourceTiming.runId -cne [string]$prepared.runId -or
+              -not [bool]$sourceTiming.reportAccepted -or -not [bool]$sourceTiming.cleanupSucceeded -or
+              [int]$sourceTiming.processExitCode -ne 0) {
+            throw 'Source timing records do not bind the accepted, cleaned-up prepared run.'
+          }
+          $reportedCounts = $caseLedger.reportedCounts
+          $containerFileCount = @($caseLedger.containerFileInventory).Count
+          $checkSummary = @($report.checks | ForEach-Object { "$($_.kind)=$($_.status)/$($_.exitCode)" }) -join ', '
+          Write-Output "Source validation report: runId=$($prepared.runId) state=$($report.state) checks=[$checkSummary]"
+          Write-Output "Pester case ledger: sha256=$($caseBinding.sha256) discovered=$($caseLedger.caseDiscoveryCount) executed=$($caseLedger.caseExecutionCount) containers=$containerFileCount passed=$($reportedCounts.Passed) failed=$($reportedCounts.Failed) skipped=$($reportedCounts.Skipped) inconclusive=$($reportedCounts.Inconclusive) notRun=$($reportedCounts.NotRun)"
+          Write-Output "Source timing seconds: setup=$($setupCompletedTiming.setupTotalSeconds) validation=$($sourceTiming.sourceValidationTotalSeconds) central=$($sourceTiming.centralRunnerSeconds) combined=$($sourceTiming.combinedSetupToValidationSeconds) diagnosticTarget=$($sourceTiming.diagnosticTargetSeconds) exceeded=$($sourceTiming.diagnosticTargetExceeded)"
+          $runRoot = Split-Path -Parent (Split-Path -Parent $sourceToolsPath)
+          $indexPath = Join-Path $runRoot 'evidence-index.json'
+          $index = Get-Content -LiteralPath $indexPath -Raw | ConvertFrom-Json -Depth 20
+          $index | Add-Member -NotePropertyName validationStatus -NotePropertyValue 'passed' -Force
+          $index | Add-Member -NotePropertyName reportPath -NotePropertyValue $reportPath -Force
+          $index | Add-Member -NotePropertyName caseLedgerPath -NotePropertyValue $caseLedgerPath -Force
+          $index | Add-Member -NotePropertyName sourceValidationTimingPath -NotePropertyValue $sourceTimingPath -Force
+          [IO.File]::WriteAllText($indexPath, (($index | ConvertTo-Json -Depth 20 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+
+      - name: Upload source validation evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: standard-core-source-validation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/code-collaboration/
+            !${{ runner.temp }}/code-collaboration/source-tools/source-tools-*/runtime/**
+            !${{ runner.temp }}/code-collaboration/source-tools/source-tools-*/installed/**
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 30
 
   # These jobs preserve the repository's existing required status contexts while
   # keeping the canonical Standard v1 gate as the only validation policy.

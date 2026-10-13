@@ -53,17 +53,33 @@ Consumers should resolve a release tag to an immutable commit SHA and persist th
 
 ## Validation
 
-Windows is the only supported host for local development, installation, execution, testing, acceptance, and CI. Run repository commands in PowerShell (pwsh); Linux/macOS hosts, WSL, and Linux containers are unsupported. See [Windows support and Skill inventory](docs/WINDOWS-SUPPORT.md) for the tracked inventory and support boundary.
+The required GitHub gate runs the protected full-source validation path on Windows. It verifies the event-base `Validate.ps1` driver, the immutable candidate checkout, the real ff85 authority Git checkout, and one fresh run-owned tool closure. The current active authority tuple is ff85 with all 32 reviewed file hashes.
 
-Run from the repository root:
+Windows is the only supported host for local development, installation, execution, testing, acceptance, and CI. Run repository commands in PowerShell (pwsh); Linux/macOS hosts, WSL, and Linux containers are unsupported. See [Windows support and Skill inventory](docs/WINDOWS-SUPPORT.md) for the complete owned Skill inventory and support boundary.
+
+For a local full-source run, use the same trusted event-base driver, candidate checkout, and verified ff85 authority checkout, then prepare once and validate with the same `source-tools.json`:
 
 ```powershell
-pwsh -File ./scripts/Validate.ps1
+$runRoot = Join-Path (Join-Path $env:TEMP 'code-collaboration') ([guid]::NewGuid().ToString('N'))
+$sourceTools = Join-Path $runRoot 'source-tools.json'
+$baseCommit = '<immutable event-base commit SHA>'
+$protectedDriver = '<trusted event-base checkout>/scripts/Validate.ps1'
+$candidateRoot = '<clean immutable candidate Git checkout>'
+$authorityRoot = '<verified ff85 authority Git checkout>'
+$artifactsRoot = Join-Path $runRoot 'core-v2'
+
+pwsh -File $protectedDriver -RepositoryRoot $candidateRoot -AdapterVersion 2 -PrepareSourceTools `
+  -SourceToolsPath $sourceTools -AuthorityRepositoryRoot $authorityRoot `
+  -TrustedToolRoot $PSHOME -BaseCommit $baseCommit -TimeoutSeconds 10800
+
+pwsh -File $protectedDriver -RepositoryRoot $candidateRoot -AdapterVersion 2 -SourceValidation `
+  -SourceToolsPath $sourceTools -AuthorityRepositoryRoot $authorityRoot `
+  -TrustedToolRoot $PSHOME -BaseCommit $baseCommit -ArtifactsRoot $artifactsRoot -TimeoutSeconds 10800
 ```
 
-The GitHub Actions workflow runs the canonical Standard v1 validation for pull requests and pushes. Component scripts are not additional public validation gates. Generate source-pin metadata separately when producing release evidence.
+The workflow retains the report, raw process output, native reports, Pester case inventory, setup receipts, and timing records. The 1200-second timing target is diagnostic only; the process timeout is 10800 seconds. Component scripts are not additional public validation gates. Generate source-pin metadata separately when producing release evidence.
 
-The protected source-validation route is optional adoption material for a future candidate with the exact approved ff85 authority tuple. It does not change the active 8a pin or the current required workflow gate. See [Protected source-validation adoption](docs/SOURCE-VALIDATION-ADOPTION.md) for its explicit preparation and execution commands and evidence requirements.
+The unqualified `pwsh -File ./scripts/Validate.ps1` command remains the historical legacy route. CI uses explicit `-AdapterVersion 2 -PrepareSourceTools` and `-SourceValidation` calls through the trusted base driver. See [Protected full-source validation](docs/SOURCE-VALIDATION-ADOPTION.md) for the event inputs, preparation rules, and evidence contract.
 
 ## Versioning and rollback
 
