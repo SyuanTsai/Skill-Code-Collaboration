@@ -401,18 +401,18 @@ function Assert-ProtectedDriverAuthorityConfig {
 
     # The protected event-base driver may itself be at either reviewed point
     # in the two-phase rollout. Candidate legacy execution below remains bound
-    # to the current 8a tuple; only explicit SourceValidation selects ff85.
+    # to the current 8a tuple; SourceValidation selects one exact reviewed pin.
     $commit = [string]$Config.authority.commit
     if ($commit -ceq $script:AuthorityCommit) {
         Assert-AuthorityConfig -Config $Config
         return
     }
-    if ($commit -ceq 'ff85d5f80fe795b96354e753074b5ce59ad04ecd') {
+    if (@('ff85d5f80fe795b96354e753074b5ce59ad04ecd', '8e627baf54bd6e47862e6291b25e71cc45a2f2b7') -ccontains $commit) {
         Import-Module -Name (Join-Path $PSScriptRoot 'StandardSourceDriver.psm1') -Force -ErrorAction Stop
         [void](Assert-CodeSourceAuthorityConfig -Config $Config)
         return
     }
-    throw 'Protected driver config must match one exact reviewed 8a or ff85 authority tuple.'
+    throw 'Protected driver config must match one exact reviewed 8a, ff85, or 8e authority tuple.'
 }
 
 function Get-ActiveSkillIds {
@@ -1846,7 +1846,8 @@ function Read-CodeSourcePreparedTools {
         [Parameter(Mandatory)][string] $ProtectedBaseRoot)
 
     $prepared = Read-JsonFile -Path $Path -Context 'Prepared Code-Collaboration source tools'
-    [void](Assert-CodeSourcePreparedBindings -Prepared $prepared -PreparedPath $Path -CandidateRevision $CandidateRevision -PowerShellPath $PowerShellPath -SourceRepository $script:SourceRepository)
+    [void](Assert-CodeSourcePreparedBindings -Prepared $prepared -PreparedPath $Path -CandidateRevision $CandidateRevision `
+        -PowerShellPath $PowerShellPath -SourceRepository $script:SourceRepository -ExpectedAuthorityRevision ([string]$AuthorityPin.commit))
     $ownedRoot = [IO.Path]::GetFullPath([string]$prepared.ownedRoot)
     $manifestPath = Join-Path $ownedRoot 'candidate-git-entry-modes.json'
     $manifestBindings = @($prepared.sourceValidation.frozenFiles | Where-Object { (Test-PathEqual -Left ([string]$_.path) -Right $manifestPath) })
@@ -2015,7 +2016,7 @@ function Invoke-CodeSourceValidation {
     $prepared = Read-CodeSourcePreparedTools -Path $preparedPath -CandidateRevision $CandidateRevision -PowerShellPath $powerShell `
         -AuthorityRoot $authority.root -AuthorityPin $pin -CandidateRoot $RepositoryRoot `
         -ProtectedBaseRoot ([IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot)))
-    if ([string]$prepared.authorityRevision -cne [string]$pin.commit) { throw 'Prepared source tools do not bind the exact ff85 authority revision.' }
+    if ([string]$prepared.authorityRevision -cne [string]$pin.commit) { throw 'Prepared source tools do not bind the exact selected authority revision.' }
     $setupTimingPath = Join-Path ([string]$prepared.ownedRoot) 'setup-timing.json'
     $setupTimingBinding = @($prepared.sourceValidation.frozenFiles | Where-Object {
         (Test-PathEqual -Left ([string]$_.path) -Right $setupTimingPath)
