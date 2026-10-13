@@ -672,15 +672,16 @@ function Assert-CodeSourceReportBinding {
         throw 'Source report Pester case sidecar is missing or changed.'
     }
 
-    function Assert-CodeSourceReportEvidenceFile {
-        param([Parameter(Mandatory)][string] $Path, [Parameter(Mandatory)][string] $Sha256,
-            [Parameter(Mandatory)][string] $RunRoot, [Parameter(Mandatory)][string] $Context)
+    function Assert-CodeSourceReportEvidencePath {
+        param([Parameter(Mandatory)][string] $Path, [Parameter(Mandatory)][string] $RunRoot,
+            [Parameter(Mandatory)][string] $Context)
         $full = [IO.Path]::GetFullPath($Path)
         $root = [IO.Path]::GetFullPath($RunRoot).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
         $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
         $prefix = $root + [IO.Path]::DirectorySeparatorChar
-        if ($Sha256 -cnotmatch '^[0-9a-f]{64}$' -or -not $full.StartsWith($prefix, $comparison) -or
-            -not (Test-Path -LiteralPath $full -PathType Leaf)) { throw "$Context is missing, malformed, or outside the Core run root." }
+        if (-not $full.StartsWith($prefix, $comparison) -or -not (Test-Path -LiteralPath $full -PathType Leaf)) {
+            throw "$Context is missing or outside the Core run root."
+        }
         $cursor = $full
         while (-not $cursor.Equals($root, $comparison)) {
             $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
@@ -690,9 +691,23 @@ function Assert-CodeSourceReportBinding {
                 throw "$Context escaped the Core run root."
             }
         }
+        return $full
+    }
+
+    function Assert-CodeSourceReportEvidenceFile {
+        param([Parameter(Mandatory)][string] $Path, [Parameter(Mandatory)][string] $Sha256,
+            [Parameter(Mandatory)][string] $RunRoot, [Parameter(Mandatory)][string] $Context)
+        if ($Sha256 -cnotmatch '^[0-9a-f]{64}$') { throw "$Context is missing, malformed, or outside the Core run root." }
+        $full = Assert-CodeSourceReportEvidencePath -Path $Path -RunRoot $RunRoot -Context $Context
         if ((Get-FileHash -LiteralPath $full -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() -cne $Sha256) {
             throw "$Context hash differs from its report binding."
         }
+    }
+
+    function Test-CodeSourceIntegerValue {
+        param([AllowNull()][object] $Value)
+        return ($Value -is [sbyte] -or $Value -is [byte] -or $Value -is [int16] -or $Value -is [uint16] -or
+            $Value -is [int] -or $Value -is [uint32] -or $Value -is [long] -or $Value -is [uint64])
     }
 
     $runRoot = [IO.Path]::GetFullPath([string]$Report.artifacts.runRoot)
@@ -703,20 +718,73 @@ function Assert-CodeSourceReportBinding {
     $nativeEventCounts = @{ 'skill-validator' = 0; 'skill-tools' = 0; 'static-analyzer' = 0 }
     foreach ($event in @($source.Value.events)) {
         $toolId = [string]$event.toolId
-        if (-not $nativeEventCounts.ContainsKey($toolId)) { continue }
-        Assert-CodeSourceReportEvidenceFile -Path ([string]$event.outputPath) -Sha256 ([string]$event.outputSha256) -RunRoot $runRoot -Context 'Source native event output'
-        $eventRecord = Get-Content -LiteralPath ([string]$event.outputPath) -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -Depth 60 -ErrorAction Stop
-        if ([int]$eventRecord.schemaVersion -ne 1 -or [string]$eventRecord.toolId -cne $toolId -or
-            [int]$eventRecord.process.exitCode -ne 0 -or [string]$eventRecord.process.status -cne 'passed') {
+        $eventPath = Assert-CodeSourceReportEvidencePath -Path ([string]$event.outputPath) -RunRoot $runRoot -Context 'Source native event output'
+        if ($event.outputSha256 -isnot [string] -or [string]$event.outputSha256 -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'Source native event output hash is missing or malformed.'
+        }
+        $eventRecord = Get-Content -LiteralPath $eventPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -Depth 60 -ErrorAction Stop
+        if ($null -eq $eventRecord -or $null -eq $eventRecord.process) {
             throw 'Source native event output does not bind a clean passing tool process.'
         }
+        foreach ($identityField in @('eventId', 'stageId', 'toolId', 'skillId', 'candidateId')) {
+            $reportIdentity = $event.PSObject.Properties[$identityField]
+            $recordIdentity = $eventRecord.PSObject.Properties[$identityField]
+            if ($null -eq $reportIdentity -or $null -eq $recordIdentity) {
+                throw 'Source native event output does not bind report metadata.'
+            }
+            $reportValue = $reportIdentity.Value
+            $recordValue = $recordIdentity.Value
+            if ($identityField -ceq 'skillId') {
+                if (($null -eq $reportValue) -ne ($null -eq $recordValue) -or
+                    ($null -ne $reportValue -and ($reportValue -isnot [string] -or $recordValue -isnot [string] -or [string]$reportValue -cne [string]$recordValue))) {
+                    throw 'Source native event output does not bind report metadata.'
+                }
+            }
+            elseif ($reportValue -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$reportValue) -or
+                $recordValue -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$recordValue) -or
+                [string]$reportValue -cne [string]$recordValue) {
+                throw 'Source native event output does not bind report metadata.'
+            }
+        }
+        $reportExitCode = $event.PSObject.Properties['exitCode']
+        $processExitCodeProperty = $eventRecord.process.PSObject.Properties['exitCode']
+        $recordSchemaVersion = $eventRecord.PSObject.Properties['schemaVersion']
+        $reportExitCodeValue = if ($null -eq $reportExitCode) { $null } else { $reportExitCode.Value }
+        $processExitCodeValue = if ($null -eq $processExitCodeProperty) { $null } else { $processExitCodeProperty.Value }
+        $schemaVersionValue = if ($null -eq $recordSchemaVersion) { $null } else { $recordSchemaVersion.Value }
+        $reportExitCodeIsZero = $null -ne $reportExitCode -and (Test-CodeSourceIntegerValue -Value $reportExitCodeValue) -and $reportExitCodeValue -eq 0
+        $processExitCodeIsZero = $null -ne $processExitCodeProperty -and (Test-CodeSourceIntegerValue -Value $processExitCodeValue) -and $processExitCodeValue -eq 0
+        $schemaVersionIsOne = $null -ne $recordSchemaVersion -and (Test-CodeSourceIntegerValue -Value $schemaVersionValue) -and $schemaVersionValue -eq 1
+        if (-not $reportExitCodeIsZero -or -not $processExitCodeIsZero -or
+            [string]$event.status -cne 'passed' -or
+            $event.cleanedUp -isnot [bool] -or -not $event.cleanedUp -or
+            -not $schemaVersionIsOne -or
+            [string]$eventRecord.process.status -cne 'passed' -or $eventRecord.process.cleanedUp -isnot [bool] -or
+            -not $eventRecord.process.cleanedUp) {
+            throw 'Source native event output does not bind a clean passing tool process.'
+        }
+        if ($eventRecord.stdout -isnot [string] -or $eventRecord.stderr -isnot [string]) {
+            throw 'Source native event output does not contain raw stdout and stderr strings.'
+        }
+        $combinedOutput = [string]$eventRecord.stdout + "`n---stderr---`n" + [string]$eventRecord.stderr
+        $outputBytes = [Text.UTF8Encoding]::new($false).GetBytes($combinedOutput)
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $outputSha256 = [Convert]::ToHexString($sha.ComputeHash($outputBytes)).ToLowerInvariant() }
+        finally { $sha.Dispose() }
+        if ($outputSha256 -cne [string]$event.outputSha256) {
+            throw 'Source native event output hash differs from its report binding.'
+        }
+        if (-not $nativeEventCounts.ContainsKey($toolId)) { continue }
         $envelope = $null
         try { $envelope = ConvertFrom-Json -InputObject ([string]$eventRecord.stdout) -Depth 60 -ErrorAction Stop }
         catch { throw 'Source native event stdout does not contain a valid tool envelope.' }
         $nativeReports = @($envelope.nativeReports)
         if ($nativeReports.Count -eq 0) { throw 'Source native event omitted its native report inventory.' }
         foreach ($native in $nativeReports) {
-            if ([string]$native.skillId -cnotin $activeSkills -or [int]$native.exitCode -ne 0 -or
+            $nativeExitCode = $native.PSObject.Properties['exitCode']
+            $nativeExitCodeValue = if ($null -eq $nativeExitCode) { $null } else { $nativeExitCode.Value }
+            if ([string]$native.skillId -cnotin $activeSkills -or $null -eq $nativeExitCode -or
+                -not (Test-CodeSourceIntegerValue -Value $nativeExitCodeValue) -or $nativeExitCodeValue -ne 0 -or
                 $native.arguments -isnot [array] -or @($native.arguments).Count -eq 0) {
                 throw 'Source native report does not bind the expected Skill, arguments, or successful exit.'
             }
