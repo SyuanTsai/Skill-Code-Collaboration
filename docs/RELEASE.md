@@ -14,7 +14,7 @@ This repository is versioned independently from any consumer repository. Use Sem
 
 ## Release checklist
 
-1. Pass the required Windows `canonical-validation` workflow, which runs protected full-source validation from the immutable event-base driver against the candidate and verified ff85/32 authority checkout.
+1. Pass the required Windows `canonical-validation` workflow, which runs protected full-source validation from the immutable event-base driver against the candidate and verified 8e/32 authority checkout.
 2. For a local release preflight, invoke `scripts/Validate.ps1` through the trusted event-base driver with `-PrepareSourceTools` once, then `-SourceValidation` using the same fresh `source-tools.json`, clean candidate, and verified authority checkout. Use `-TimeoutSeconds 10800`; the 1200-second target remains diagnostic only.
 3. The repository contract diagnostic and profile catalog regression suite remain internal components, not additional release commands.
 4. Run the source-pin metadata helper for the candidate ref and retain the reported commit and content SHA-256 in release evidence.
@@ -27,7 +27,7 @@ This repository is versioned independently from any consumer repository. Use Sem
 
 ## Required protected full-source gate
 
-The active `config/standard-v1.json` authority is the exact ff85 commit, archive digest, and ordered 32-file closure. The required workflow prepares one fresh run-owned tool closure and uses it for the full Core source validation. It uploads the Core report, Pester case inventory, native raw outputs, resolver receipts, and timing evidence while omitting the bulky installed runtime/tool payloads. See [Protected full-source validation](SOURCE-VALIDATION-ADOPTION.md) for the exact commands, timing records, and evidence requirements.
+The active `config/standard-v1.json` authority is the exact 8e commit, archive digest, and ordered 32-file closure. The required workflow prepares one fresh run-owned tool closure and uses it for the full Core source validation. It uploads the Core report, Pester case inventory, native raw outputs, resolver receipts, and timing evidence while omitting the bulky installed runtime/tool payloads. See [Protected full-source validation](SOURCE-VALIDATION-ADOPTION.md) for the exact commands, timing records, and evidence requirements.
 
 ## Pin invariants
 

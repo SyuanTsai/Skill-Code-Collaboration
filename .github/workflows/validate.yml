@@ -53,7 +53,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Checkout immutable ff85 authority fixture
+      - name: Checkout immutable 8e authority fixture
         uses: *checkout-action-reference # actions/checkout v7
         env:
           GIT_CONFIG_COUNT: 2
@@ -63,12 +63,12 @@ jobs:
           GIT_CONFIG_VALUE_1: lf
         with:
           repository: SyuanTsai/SyuanTsai-AI-Instructions
-          ref: ff85d5f80fe795b96354e753074b5ce59ad04ecd
-          path: authority-ff85
+          ref: 8e627baf54bd6e47862e6291b25e71cc45a2f2b7
+          path: authority-8e627
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Verify immutable event base, candidate and ff85 authority
+      - name: Verify immutable event base, candidate and 8e authority
         shell: pwsh
         env:
           PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -78,7 +78,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $baseRoot = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
           $candidateRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'candidate'))
-          $authorityRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'authority-ff85'))
+          $authorityRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'authority-8e627'))
           $runRoot = Join-Path $env:RUNNER_TEMP 'code-collaboration'
           [void](New-Item -ItemType Directory -Path $runRoot -Force)
           $sourceToolsPath = [IO.Path]::GetFullPath((Join-Path (Join-Path $runRoot 'source-tools') 'source-tools.json'))
@@ -102,13 +102,13 @@ jobs:
           $initialIndex = [ordered]@{
             schemaVersion = 1; state = 'checkout-verified'; eventName = $eventName
             baseCommit = $baseCommit; protectedDriverCommit = $driverCommit; candidateCommit = $candidateCommit
-            authorityCommit = 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
+            authorityCommit = '8e627baf54bd6e47862e6291b25e71cc45a2f2b7'
             sourceToolsPath = $sourceToolsPath; artifactsRoot = $artifactsRoot
           }
           [IO.File]::WriteAllText((Join-Path $runRoot 'evidence-index.json'), (($initialIndex | ConvertTo-Json -Depth 10 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
           $expectedRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-          $expectedCommit = 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
-          $expectedArchiveSha256 = '3dc38613f2e2316ad8fcc79d4bf48d0b03fd8398f8dacc72d156abcbce95ea9d'
+          $expectedCommit = '8e627baf54bd6e47862e6291b25e71cc45a2f2b7'
+          $expectedArchiveSha256 = '9aa4a7fc8fc7c7f0ff9e774c79c77a64077b4003212a523dda519d034ff99989'
 
           $baseHead = ((& git -C $baseRoot rev-parse HEAD 2>$null) -join "`n").Trim()
           if ($LASTEXITCODE -ne 0 -or $baseHead -cne $driverCommit) { throw 'Protected base checkout does not match the selected event-base driver commit.' }
@@ -132,23 +132,23 @@ jobs:
           if ($authority.repository -cne $expectedRepository -or $authority.commit -cne $expectedCommit -or
               $authority.archiveUrl -cne "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/$expectedCommit" -or
               $authority.archiveSha256 -cne $expectedArchiveSha256 -or @($authority.files).Count -ne 32) {
-            throw 'The candidate config is not the exact approved ff85 authority tuple.'
+            throw 'The candidate config is not the exact approved 8e authority tuple.'
           }
           $gitRoot = ((& git -C $authorityRoot rev-parse --show-toplevel 2>$null) -join "`n").Trim()
           if ($LASTEXITCODE -ne 0 -or [IO.Path]::GetFullPath($gitRoot) -cne $authorityRoot) {
-            throw 'The ff85 authority fixture is not the root of a Git checkout.'
+            throw 'The 8e authority fixture is not the root of a Git checkout.'
           }
           $head = ((& git -C $authorityRoot rev-parse HEAD 2>$null) -join "`n").Trim()
-          if ($LASTEXITCODE -ne 0 -or $head -cne $expectedCommit) { throw 'The ff85 authority fixture has the wrong Git HEAD.' }
+          if ($LASTEXITCODE -ne 0 -or $head -cne $expectedCommit) { throw 'The 8e authority fixture has the wrong Git HEAD.' }
           $originUrls = @(& git -C $authorityRoot remote get-url --all origin 2>$null)
           if ($LASTEXITCODE -ne 0 -or $originUrls.Count -ne 1) { throw 'The legacy authority fixture must have exactly one origin URL.' }
           $normalizedOrigin = ([string]$originUrls[0]).TrimEnd('/') -replace '\.git$', ''
           $normalizedExpectedRepository = $expectedRepository.TrimEnd('/') -replace '\.git$', ''
-          if ($normalizedOrigin -cne $normalizedExpectedRepository) { throw 'The ff85 authority fixture has the wrong origin.' }
+          if ($normalizedOrigin -cne $normalizedExpectedRepository) { throw 'The 8e authority fixture has the wrong origin.' }
           $status = @(& git -C $authorityRoot status --porcelain=v1 --untracked-files=all 2>$null)
-          if ($LASTEXITCODE -ne 0 -or $status.Count -ne 0) { throw 'The ff85 authority fixture is not clean.' }
+          if ($LASTEXITCODE -ne 0 -or $status.Count -ne 0) { throw 'The 8e authority fixture is not clean.' }
           $treeRecords = @(& git -C $authorityRoot ls-tree -r --full-tree --format='%(objectmode)%x09%(objectname)%x09%(path)' $expectedCommit 2>$null)
-          if ($LASTEXITCODE -ne 0) { throw 'Could not read the ff85 authority HEAD Git tree.' }
+          if ($LASTEXITCODE -ne 0) { throw 'Could not read the 8e authority HEAD Git tree.' }
           $gitEntries = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
           foreach ($record in $treeRecords) {
             $firstSeparator = $record.IndexOf([char]9)
@@ -178,16 +178,16 @@ jobs:
             $path = [IO.Path]::GetFullPath((Join-Path $authorityRoot $relativePath))
             if (-not $path.StartsWith($rootPrefix, $pathComparison) -or -not (Test-Path -LiteralPath $path -PathType Leaf) -or
                 (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$entry.sha256) {
-              throw "ff85 authority fixture file identity differs: $relativePath"
+              throw "8e authority fixture file identity differs: $relativePath"
             }
             if (-not $gitEntries.ContainsKey($relativePath)) { throw "The legacy authority HEAD Git tree omits an approved path: $relativePath" }
             $gitEntry = $gitEntries[$relativePath]
             if ([string]$gitEntry.mode -cne '100644' -or [string]$gitEntry.objectId -cnotmatch '^[0-9a-f]{40}$') {
-              throw "The ff85 authority HEAD Git entry has an unexpected mode or object ID: $relativePath"
+              throw "The 8e authority HEAD Git entry has an unexpected mode or object ID: $relativePath"
             }
             $blobObjectId = ((& git -C $authorityRoot hash-object --no-filters -- $relativePath 2>$null) -join "`n").Trim()
             if ($LASTEXITCODE -ne 0 -or $blobObjectId -cne [string]$gitEntry.objectId) {
-              throw "ff85 authority raw bytes differ from the HEAD Git blob: $relativePath"
+              throw "8e authority raw bytes differ from the HEAD Git blob: $relativePath"
             }
           }
 
@@ -554,13 +554,13 @@ jobs:
       - name: Prepare source tools once
         shell: pwsh
         env:
-          SYP154_CANDIDATE_AUTHORITY_ROOT: ${{ github.workspace }}/authority-ff85
+          SYP154_CANDIDATE_AUTHORITY_ROOT: ${{ github.workspace }}/authority-8e627
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
           $baseRoot = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
           $candidateRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'candidate'))
-          $authorityRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'authority-ff85'))
+          $authorityRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'authority-8e627'))
           $protectedDriver = Join-Path $baseRoot 'scripts/Validate.ps1'
           $candidateCommit = [string]$env:CODE_SOURCE_CANDIDATE_COMMIT
           $sourceToolsPath = [IO.Path]::GetFullPath($env:CODE_SOURCE_TOOLS_PATH)
@@ -569,7 +569,7 @@ jobs:
           if (-not [string]::IsNullOrWhiteSpace($baseCommit)) { $baseArguments = @('-BaseCommit', $baseCommit) }
           $supervisor = Join-Path $authorityRoot 'scripts/Invoke-StandardValidation.ps1'
           $supervisorSha256 = (Get-FileHash -LiteralPath $supervisor -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($supervisorSha256 -cne 'a4ee880810171428a6abd2e8fd5db2da1eaeda4abc0fc6c72dc259b4a709174b') { throw 'The ff85 process supervisor differs from its reviewed identity.' }
+          if ($supervisorSha256 -cne 'd13cea68b471aea60142665ee787a1bb2111d5ea7f8d45dfea14e0a2a59409b8') { throw 'The 8e process supervisor differs from its reviewed identity.' }
           . $supervisor -DefineFunctionsOnly -CandidateRoot $candidateRoot -AdapterPath $protectedDriver `
             -ArtifactsRoot (Split-Path -Parent $sourceToolsPath) -SourceRepository 'https://github.com/SyuanTsai/Skill-Code-Collaboration.git' `
             -SourceRevision $candidateCommit -BaseRevision $(if ($baseCommit) { $baseCommit } else { $candidateCommit })
@@ -594,8 +594,8 @@ jobs:
           $prepared = Get-Content -LiteralPath $sourceToolsPath -Raw | ConvertFrom-Json -Depth 80
           if ([string]$prepared.runId -cnotmatch '^[0-9a-f]{32}$' -or
               [string]$prepared.sourceRevision -cne [string]$env:CODE_SOURCE_CANDIDATE_COMMIT -or
-              [string]$prepared.authorityRevision -cne 'ff85d5f80fe795b96354e753074b5ce59ad04ecd') {
-            throw 'Prepared source-tools metadata does not bind the immutable candidate and ff85 authority.'
+              [string]$prepared.authorityRevision -cne '8e627baf54bd6e47862e6291b25e71cc45a2f2b7') {
+            throw 'Prepared source-tools metadata does not bind the immutable candidate and 8e authority.'
           }
           $setupRoot = Split-Path -Parent $sourceToolsPath
           $setupTimingPath = Join-Path ([string]$prepared.ownedRoot) 'setup-timing.json'
@@ -620,12 +620,12 @@ jobs:
       - name: Run full source validation
         shell: pwsh
         env:
-          SYP154_CANDIDATE_AUTHORITY_ROOT: ${{ github.workspace }}/authority-ff85
+          SYP154_CANDIDATE_AUTHORITY_ROOT: ${{ github.workspace }}/authority-8e627
         run: |
           $ErrorActionPreference = 'Stop'
           $baseRoot = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
           $candidateRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'candidate'))
-          $authorityRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'authority-ff85'))
+          $authorityRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'authority-8e627'))
           $protectedDriver = Join-Path $baseRoot 'scripts/Validate.ps1'
           $sourceToolsPath = [IO.Path]::GetFullPath($env:CODE_SOURCE_TOOLS_PATH)
           $artifactsRoot = [IO.Path]::GetFullPath($env:CODE_SOURCE_ARTIFACTS_ROOT)
@@ -635,7 +635,7 @@ jobs:
           $candidateCommit = [string]$env:CODE_SOURCE_CANDIDATE_COMMIT
           $supervisor = Join-Path $authorityRoot 'scripts/Invoke-StandardValidation.ps1'
           $supervisorSha256 = (Get-FileHash -LiteralPath $supervisor -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($supervisorSha256 -cne 'a4ee880810171428a6abd2e8fd5db2da1eaeda4abc0fc6c72dc259b4a709174b') { throw 'The ff85 process supervisor differs from its reviewed identity.' }
+          if ($supervisorSha256 -cne 'd13cea68b471aea60142665ee787a1bb2111d5ea7f8d45dfea14e0a2a59409b8') { throw 'The 8e process supervisor differs from its reviewed identity.' }
           . $supervisor -DefineFunctionsOnly -CandidateRoot $candidateRoot -AdapterPath $protectedDriver `
             -ArtifactsRoot $artifactsRoot -SourceRepository 'https://github.com/SyuanTsai/Skill-Code-Collaboration.git' `
             -SourceRevision $candidateCommit -BaseRevision $(if ($baseCommit) { $baseCommit } else { $candidateCommit })

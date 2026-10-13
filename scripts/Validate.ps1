@@ -1336,7 +1336,7 @@ function Assert-CodeSourceAuthorityCheckout {
         throw 'Pinned source authority path is not the root of a Git checkout.'
     }
     $head = Resolve-GitRevision -GitPath $GitPath -Root $root -Revision 'HEAD' -Context 'Pinned source authority HEAD'
-    if ($head -cne [string]$AuthorityPin.commit) { throw 'Pinned source authority HEAD does not match the approved ff85 revision.' }
+    if ($head -cne [string]$AuthorityPin.commit) { throw 'Pinned source authority HEAD does not match the selected approved revision.' }
     $origins = @(& $GitPath -C $root config --local --get-all remote.origin.url 2>$null)
     if ($LASTEXITCODE -ne 0 -or $origins.Count -ne 1) { throw 'Pinned source authority checkout must have exactly one origin URL.' }
     $origin = ([string]$origins[0]).Trim().TrimEnd('/') -replace '\.git$', ''
@@ -1375,11 +1375,11 @@ function New-CodeSourceAuthoritySnapshot {
     }
     $paths = @($AuthorityPin.files.Keys)
     & $GitPath -c "core.hooksPath=$hooksRoot" -C $snapshot sparse-checkout set --no-cone -- $paths
-    if ($LASTEXITCODE -ne 0) { throw 'Could not select the exact approved ff85 authority closure.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Could not select the exact approved authority closure.' }
     & $GitPath -C $snapshot config --local --replace-all remote.origin.url ([string]$AuthorityPin.repository)
     if ($LASTEXITCODE -ne 0) { throw 'Could not bind the source authority snapshot origin.' }
     & $GitPath -c "core.hooksPath=$hooksRoot" -c core.autocrlf=false -C $snapshot checkout --quiet --detach ([string]$AuthorityPin.commit)
-    if ($LASTEXITCODE -ne 0) { throw 'Could not check out the exact ff85 source authority revision.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Could not check out the exact selected source authority revision.' }
     return Assert-CodeSourceAuthorityCheckout -GitPath $GitPath -AuthorityRoot $snapshot -AuthorityPin $AuthorityPin
 }
 
@@ -2247,7 +2247,7 @@ try {
     }
 
     # The protected driver keeps its exact active 8a authority pin. Candidate
-    # source mode may select only the independently reviewed ff85 preparation tuple.
+    # source mode may select only an exact authority tuple accepted by the protected reader.
     $driverRoot = Split-Path -Parent $PSScriptRoot
     $trustedConfig = Read-JsonFile -Path (Join-Path $driverRoot 'config/standard-v1.json') -Context 'protected driver config/standard-v1.json'
     Assert-ProtectedDriverAuthorityConfig -Config $trustedConfig
