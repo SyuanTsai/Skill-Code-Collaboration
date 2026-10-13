@@ -182,24 +182,46 @@ Describe 'Protected Standard Core SourceValidation preparation' {
             [void](New-Item -ItemType Directory -Path $eventRoot -Force)
             $casePath = Write-SourceBindingFixtureFile -Path (Join-Path $artifactRoot 'repository-pester-case-inventory-v1.json') -Text '{"schemaVersion":1,"cases":[]}'
             $events = @()
-            foreach ($toolId in @('skill-validator', 'skill-tools', 'static-analyzer')) {
-                $nativePath = Write-SourceBindingFixtureFile -Path (Join-Path $artifactRoot "$toolId-native.json") -Text '{"fixture":true}'
-                $stdoutPath = Write-SourceBindingFixtureFile -Path (Join-Path $artifactRoot "$toolId.stdout.txt") -Text '{"results":[]}'
-                $stderrPath = Write-SourceBindingFixtureFile -Path (Join-Path $artifactRoot "$toolId.stderr.txt") -Text ''
-                $native = [ordered]@{
-                    skillId = 'demo'; path = $nativePath; sha256 = Get-SourceBindingFixtureHash -Path $nativePath
-                    stdoutPath = $stdoutPath; stdoutSha256 = Get-SourceBindingFixtureHash -Path $stdoutPath
-                    stderrPath = $stderrPath; stderrSha256 = Get-SourceBindingFixtureHash -Path $stderrPath
-                    command = 'fixture-command'; commandSha256 = ('c' * 64); arguments = @('fixture'); exitCode = 0
+            foreach ($eventSpec in @(
+                [pscustomobject]@{ toolId = 'package-adapter'; stageId = 'package-validation'; skillId = $null; hasNativeReports = $false }
+                [pscustomobject]@{ toolId = 'skill-validator'; stageId = 'package-validation'; skillId = 'demo'; hasNativeReports = $true }
+                [pscustomobject]@{ toolId = 'skill-tools'; stageId = 'package-validation'; skillId = 'demo'; hasNativeReports = $true }
+                [pscustomobject]@{ toolId = 'static-analyzer'; stageId = 'skillspector-static'; skillId = $null; hasNativeReports = $true }
+            )) {
+                $toolId = [string]$eventSpec.toolId
+                $stdout = ''
+                if ($eventSpec.hasNativeReports) {
+                    $nativePath = Write-SourceBindingFixtureFile -Path (Join-Path $artifactRoot "$toolId-native.json") -Text '{"fixture":true}'
+                    $stdoutPath = Write-SourceBindingFixtureFile -Path (Join-Path $artifactRoot "$toolId.stdout.txt") -Text '{"results":[]}'
+                    $stderrPath = Write-SourceBindingFixtureFile -Path (Join-Path $artifactRoot "$toolId.stderr.txt") -Text ''
+                    $native = [ordered]@{
+                        skillId = 'demo'; path = $nativePath; sha256 = Get-SourceBindingFixtureHash -Path $nativePath
+                        stdoutPath = $stdoutPath; stdoutSha256 = Get-SourceBindingFixtureHash -Path $stdoutPath
+                        stderrPath = $stderrPath; stderrSha256 = Get-SourceBindingFixtureHash -Path $stderrPath
+                        command = 'fixture-command'; commandSha256 = ('c' * 64); arguments = @('fixture'); exitCode = 0
+                    }
+                    $envelope = [ordered]@{ schemaVersion = 1; status = 'passed'; decision = 'PASS'; nativeReports = @($native) }
+                    $stdout = ($envelope | ConvertTo-Json -Depth 30) + "`r`n"
                 }
-                $envelope = [ordered]@{ schemaVersion = 1; status = 'passed'; decision = 'PASS'; nativeReports = @($native) }
+                $stderr = ''
+                $eventIdentity = [ordered]@{
+                    eventId = [guid]::NewGuid().ToString('D'); stageId = [string]$eventSpec.stageId
+                    toolId = $toolId; skillId = $eventSpec.skillId; candidateId = ('f' * 64)
+                }
                 $eventRecord = [ordered]@{
-                    schemaVersion = 1; toolId = $toolId
+                    schemaVersion = 1; eventId = $eventIdentity.eventId; stageId = $eventIdentity.stageId
+                    toolId = $eventIdentity.toolId; skillId = $eventIdentity.skillId; candidateId = $eventIdentity.candidateId
                     process = [ordered]@{ exitCode = 0; status = 'passed'; cleanedUp = $true }
-                    stdout = ($envelope | ConvertTo-Json -Depth 30 -Compress); stderr = ''
+                    stdout = $stdout; stderr = $stderr
                 }
                 $eventPath = Write-SourceBindingFixtureFile -Path (Join-Path $eventRoot "$toolId-event.json") -Text (($eventRecord | ConvertTo-Json -Depth 30 -Compress) + "`n")
-                $events += [pscustomobject]@{ toolId = $toolId; outputPath = $eventPath; outputSha256 = Get-SourceBindingFixtureHash -Path $eventPath }
+                $outputSha256 = Get-A031TextSha256 -Value ($stdout + "`n---stderr---`n" + $stderr)
+                $events += [pscustomobject]@{
+                    eventId = $eventIdentity.eventId; stageId = $eventIdentity.stageId; toolId = $eventIdentity.toolId
+                    skillId = $eventIdentity.skillId; candidateId = $eventIdentity.candidateId
+                    exitCode = 0; status = 'passed'; cleanedUp = $true
+                    outputPath = $eventPath; outputSha256 = $outputSha256
+                }
             }
             $candidateRevision = $fixture.candidateRevision
             $baseRevision = 'b' * 40
@@ -914,13 +936,29 @@ Describe 'Protected Standard Core SourceValidation preparation' {
         Import-Module -Name $script:DriverPath -Force
         $fixtureRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
         $reportFixture = New-SourceReportFixture -Root $fixtureRoot
-        $arguments = @{
-            Report = $reportFixture.report; Prepared = $reportFixture.fixture.prepared
-            CandidateRevision = $reportFixture.fixture.candidateRevision; BaseRevision = $reportFixture.baseRevision
-            AuthorityRevision = $reportFixture.fixture.authorityRevision; EventName = 'pull_request'
-            ArtifactsRoot = $reportFixture.artifactRoot; OutputPath = $reportFixture.report.artifacts.outputPath
-            ProcessExitCode = 0; CleanupSucceeded = $true
+        function New-UnitT44Arguments {
+            param([Parameter(Mandatory)] $Fixture)
+            return @{
+                Report = $Fixture.report; Prepared = $Fixture.fixture.prepared
+                CandidateRevision = $Fixture.fixture.candidateRevision; BaseRevision = $Fixture.baseRevision
+                AuthorityRevision = $Fixture.fixture.authorityRevision; EventName = 'pull_request'
+                ArtifactsRoot = $Fixture.artifactRoot; OutputPath = $Fixture.report.artifacts.outputPath
+                ProcessExitCode = 0; CleanupSucceeded = $true
+            }
         }
+        function Get-UnitT44EventBinding {
+            param([Parameter(Mandatory)] $Fixture, [Parameter(Mandatory)][string] $ToolId)
+            $event = @($Fixture.report.sourceValidation.events | Where-Object { [string]$_.toolId -ceq $ToolId })[0]
+            $record = Get-Content -LiteralPath ([string]$event.outputPath) -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 60
+            return [pscustomobject]@{ event = $event; record = $record; path = [string]$event.outputPath }
+        }
+        function Save-UnitT44EventRecord {
+            param([Parameter(Mandatory)] $Binding)
+            [IO.File]::WriteAllText($Binding.path, (($Binding.record | ConvertTo-Json -Depth 60 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+        }
+        $arguments = New-UnitT44Arguments -Fixture $reportFixture
+        $formatFixture = Get-UnitT44EventBinding -Fixture $reportFixture -ToolId 'skill-validator'
+        [IO.File]::WriteAllText($formatFixture.path, (($formatFixture.record | ConvertTo-Json -Depth 60) + "`n"), [Text.UTF8Encoding]::new($false))
         { Assert-CodeSourceReportBinding @arguments } | Should -Not -Throw
 
         foreach ($mutation in @(
@@ -948,6 +986,77 @@ Describe 'Protected Standard Core SourceValidation preparation' {
         $cancelled = $arguments.Clone()
         $cancelled.CancellationRequested = $true
         { Assert-CodeSourceReportBinding @cancelled } | Should -Throw '*cancellation, cleanup failure, or a non-zero central exit*'
+
+        foreach ($streamName in @('stdout', 'stderr')) {
+            $streamFixture = New-SourceReportFixture -Root (Join-Path $fixtureRoot "$streamName-tamper")
+            $streamArguments = New-UnitT44Arguments -Fixture $streamFixture
+            $streamBinding = Get-UnitT44EventBinding -Fixture $streamFixture -ToolId 'skill-validator'
+            $streamBinding.record.$streamName = [string]$streamBinding.record.$streamName + 'tampered'
+            Save-UnitT44EventRecord -Binding $streamBinding
+            { Assert-CodeSourceReportBinding @streamArguments } | Should -Throw '*output hash differs from its report binding*'
+        }
+
+        $hashFixture = New-SourceReportFixture -Root (Join-Path $fixtureRoot 'hash-tamper')
+        $hashArguments = New-UnitT44Arguments -Fixture $hashFixture
+        (@($hashFixture.report.sourceValidation.events | Where-Object { $_.toolId -ceq 'skill-validator' })[0]).outputSha256 = '0' * 64
+        { Assert-CodeSourceReportBinding @hashArguments } | Should -Throw '*output hash differs from its report binding*'
+
+        $rawIdentityFixture = New-SourceReportFixture -Root (Join-Path $fixtureRoot 'raw-identity-tamper')
+        $rawIdentityArguments = New-UnitT44Arguments -Fixture $rawIdentityFixture
+        $rawIdentityBinding = Get-UnitT44EventBinding -Fixture $rawIdentityFixture -ToolId 'skill-validator'
+        $rawIdentityBinding.record.candidateId = 'e' * 64
+        Save-UnitT44EventRecord -Binding $rawIdentityBinding
+        { Assert-CodeSourceReportBinding @rawIdentityArguments } | Should -Throw '*does not bind report metadata*'
+
+        $reportIdentityFixture = New-SourceReportFixture -Root (Join-Path $fixtureRoot 'report-identity-tamper')
+        $reportIdentityArguments = New-UnitT44Arguments -Fixture $reportIdentityFixture
+        (@($reportIdentityFixture.report.sourceValidation.events | Where-Object { $_.toolId -ceq 'skill-validator' })[0]).eventId = [guid]::NewGuid().ToString('D')
+        { Assert-CodeSourceReportBinding @reportIdentityArguments } | Should -Throw '*does not bind report metadata*'
+
+        $statusFixture = New-SourceReportFixture -Root (Join-Path $fixtureRoot 'status-tamper')
+        $statusArguments = New-UnitT44Arguments -Fixture $statusFixture
+        $statusBinding = Get-UnitT44EventBinding -Fixture $statusFixture -ToolId 'skill-validator'
+        $statusBinding.record.process.status = 'failed'
+        Save-UnitT44EventRecord -Binding $statusBinding
+        { Assert-CodeSourceReportBinding @statusArguments } | Should -Throw '*clean passing tool process*'
+
+        foreach ($exitCodeSource in @('report', 'process')) {
+            $exitFixture = New-SourceReportFixture -Root (Join-Path $fixtureRoot "$exitCodeSource-exit-code-tamper")
+            $exitArguments = New-UnitT44Arguments -Fixture $exitFixture
+            $exitBinding = Get-UnitT44EventBinding -Fixture $exitFixture -ToolId 'skill-validator'
+            if ($exitCodeSource -ceq 'report') {
+                $exitBinding.event.exitCode = $null
+            }
+            else {
+                $exitBinding.record.process.exitCode = '0'
+                Save-UnitT44EventRecord -Binding $exitBinding
+            }
+            { Assert-CodeSourceReportBinding @exitArguments } | Should -Throw '*clean passing tool process*'
+        }
+
+        $cleanupFixture = New-SourceReportFixture -Root (Join-Path $fixtureRoot 'cleanup-tamper')
+        $cleanupArguments = New-UnitT44Arguments -Fixture $cleanupFixture
+        (@($cleanupFixture.report.sourceValidation.events | Where-Object { $_.toolId -ceq 'skill-validator' })[0]).cleanedUp = 'true'
+        { Assert-CodeSourceReportBinding @cleanupArguments } | Should -Throw '*clean passing tool process*'
+
+        $processCleanupFixture = New-SourceReportFixture -Root (Join-Path $fixtureRoot 'process-cleanup-tamper')
+        $processCleanupArguments = New-UnitT44Arguments -Fixture $processCleanupFixture
+        $processCleanupBinding = Get-UnitT44EventBinding -Fixture $processCleanupFixture -ToolId 'skill-validator'
+        $processCleanupBinding.record.process.cleanedUp = $false
+        Save-UnitT44EventRecord -Binding $processCleanupBinding
+        { Assert-CodeSourceReportBinding @processCleanupArguments } | Should -Throw '*clean passing tool process*'
+
+        $pathFixture = New-SourceReportFixture -Root (Join-Path $fixtureRoot 'path-tamper')
+        $pathArguments = New-UnitT44Arguments -Fixture $pathFixture
+        (@($pathFixture.report.sourceValidation.events | Where-Object { $_.toolId -ceq 'skill-validator' })[0]).outputPath = Join-Path $fixtureRoot 'outside-event.json'
+        { Assert-CodeSourceReportBinding @pathArguments } | Should -Throw '*missing or outside the Core run root*'
+
+        $nativeFixture = New-SourceReportFixture -Root (Join-Path $fixtureRoot 'native-file-tamper')
+        $nativeArguments = New-UnitT44Arguments -Fixture $nativeFixture
+        $nativeBinding = Get-UnitT44EventBinding -Fixture $nativeFixture -ToolId 'skill-validator'
+        $nativeEnvelope = ConvertFrom-Json -InputObject ([string]$nativeBinding.record.stdout) -Depth 60
+        [IO.File]::AppendAllText([string]$nativeEnvelope.nativeReports[0].path, 'tampered', [Text.UTF8Encoding]::new($false))
+        { Assert-CodeSourceReportBinding @nativeArguments } | Should -Throw '*Source native JSON report hash differs from its report binding*'
 
         $caseSidecar = [string]$reportFixture.report.sourceValidation.pesterCaseInventory.path
         [IO.File]::AppendAllText($caseSidecar, 'tampered', [Text.UTF8Encoding]::new($false))
