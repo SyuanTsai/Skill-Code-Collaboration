@@ -728,6 +728,167 @@ jobs:
           $index | Add-Member -NotePropertyName sourceValidationTimingPath -NotePropertyValue $sourceTimingPath -Force
           [IO.File]::WriteAllText($indexPath, (($index | ConvertTo-Json -Depth 20 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
 
+      - name: Capture resident source timing
+        shell: pwsh
+        env:
+          SYP154_CANDIDATE_AUTHORITY_ROOT: ${{ github.workspace }}/authority-ff85
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Invoke-ResidentDriverCompatibilityProbe {
+            param(
+              [Parameter(Mandatory)][string] $DriverPath,
+              [Parameter(Mandatory)][string] $EvidenceRoot,
+              [Parameter(Mandatory)][string] $CandidateRevision,
+              [Parameter(Mandatory)][string] $BaseRevision,
+              [Parameter(Mandatory)][string] $RunId,
+              [string] $ProtectedDriverSha256 = '',
+              [string] $ProtectedDriverRevision = ''
+            )
+
+            $driverFullPath = [IO.Path]::GetFullPath($DriverPath)
+            if (-not (Test-Path -LiteralPath $driverFullPath -PathType Leaf)) { throw 'Protected event-base driver is missing.' }
+            $tokens = $null
+            $parseErrors = $null
+            $driverAst = [System.Management.Automation.Language.Parser]::ParseFile($driverFullPath, [ref]$tokens, [ref]$parseErrors)
+            $parameterNames = @()
+            if ($null -ne $driverAst.ParamBlock) {
+              $parameterNames = @($driverAst.ParamBlock.Parameters | ForEach-Object { [string]$_.Name.VariablePath.UserPath })
+            }
+            $entryFunction = $driverAst.Find({
+              param($node)
+              $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Invoke-CodeSourceResidentTiming'
+            }, $true)
+            $externalScript = $null
+            try { $externalScript = Get-Command -Name $driverFullPath -CommandType ExternalScript -ErrorAction Stop }
+            catch { $externalScript = $null }
+            $metadataParameters = if ($null -eq $externalScript) { @() } else { @($externalScript.Parameters.Keys | ForEach-Object { [string]$_ }) }
+            $requiredParameters = @('SourceResidentTiming', 'ResidentEvidenceRoot')
+            $missingParameters = @($requiredParameters | Where-Object {
+              $parameterNames -cnotcontains $_ -or $metadataParameters -cnotcontains $_
+            })
+            $supported = ($parseErrors.Count -eq 0 -and $null -ne $entryFunction -and $missingParameters.Count -eq 0)
+            if ($supported) {
+              return [pscustomobject]@{ supported = $true; reason = $null; missingParameters = @(); command = $externalScript.Name }
+            }
+
+            $fullEvidenceRoot = [IO.Path]::GetFullPath($EvidenceRoot)
+            if (-not [IO.Path]::IsPathFullyQualified($EvidenceRoot) -or (Test-Path -LiteralPath $fullEvidenceRoot)) {
+              throw 'Protected driver compatibility evidence root must be a new absolute path.'
+            }
+            $cursor = Split-Path -Parent $fullEvidenceRoot
+            while (-not [string]::IsNullOrWhiteSpace($cursor)) {
+              if (Test-Path -LiteralPath $cursor) {
+                $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+                if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Protected driver compatibility evidence has a reparse ancestor.' }
+              }
+              else { throw 'Protected driver compatibility evidence parent is missing.' }
+              $parent = Split-Path -Parent $cursor
+              if ([string]::IsNullOrWhiteSpace($parent) -or $parent -ceq $cursor) { break }
+              $cursor = $parent
+            }
+            [void](New-Item -ItemType Directory -Path $fullEvidenceRoot -ErrorAction Stop)
+            $reason = 'protected-driver-resident-entry-unsupported'
+            $summary = [ordered]@{
+              schemaVersion = 1
+              evidence = 'source-resident-timing-summary-v1'
+              status = 'unsupported'
+              reason = $reason
+              runId = $RunId
+              candidateRevision = $CandidateRevision
+              baseRevision = $BaseRevision
+              protectedDriverRevision = $ProtectedDriverRevision
+              protectedDriverPath = $driverFullPath
+              protectedDriverSha256 = $ProtectedDriverSha256
+              missingParameters = $missingParameters
+              sampleCount = 0
+              nativeProcessLaunched = $false
+              completedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+            }
+            $summaryPath = Join-Path $fullEvidenceRoot 'resident-timing-summary.json'
+            $bytes = [Text.UTF8Encoding]::new($false).GetBytes((($summary | ConvertTo-Json -Depth 20 -Compress) + [Environment]::NewLine))
+            $stream = [IO.File]::Open($summaryPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+            try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) }
+            finally { $stream.Dispose() }
+            return [pscustomobject]@{ supported = $false; reason = $reason; missingParameters = $missingParameters; summaryPath = $summaryPath }
+          }
+
+          function Assert-ResidentDriverPreparedRuntime {
+            param(
+              [Parameter(Mandatory)] $Prepared,
+              [bool] $Windows = [bool]$IsWindows
+            )
+
+            $ownedRoot = [IO.Path]::GetFullPath([string]$Prepared.ownedRoot)
+            $runtimeRoot = [IO.Path]::GetFullPath([string]$Prepared.pesterRuntime.runtimeRoot)
+            $trustedToolRoot = [IO.Path]::GetFullPath([string]$Prepared.pesterRuntime.sourceTrustedToolRoot)
+            $pwshPath = [IO.Path]::GetFullPath([string]$Prepared.pesterRuntime.runtimeExecutablePath)
+            $expectedRuntimeRoot = [IO.Path]::GetFullPath((Join-Path $ownedRoot 'runtime'))
+            $expectedExecutableName = if ($Windows) { 'pwsh.exe' } else { 'pwsh' }
+            $expectedExecutablePath = [IO.Path]::GetFullPath((Join-Path $runtimeRoot $expectedExecutableName))
+            if (-not $runtimeRoot.Equals($expectedRuntimeRoot, [StringComparison]::OrdinalIgnoreCase) -or
+                -not $pwshPath.Equals($expectedExecutablePath, [StringComparison]::OrdinalIgnoreCase) -or
+                -not (Test-Path -LiteralPath $pwshPath -PathType Leaf) -or
+                (Get-FileHash -LiteralPath $pwshPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$Prepared.pesterRuntime.runtimeExecutableSha256 -or
+                -not (Test-Path -LiteralPath $trustedToolRoot -PathType Container)) {
+              throw 'Prepared owned PowerShell runtime does not match its frozen path, hash and trusted root.'
+            }
+            return [pscustomobject]@{
+              runtimeExecutablePath = $pwshPath
+              runtimeRoot = $runtimeRoot
+              trustedToolRoot = $trustedToolRoot
+            }
+          }
+
+          $baseRoot = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+          $candidateRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'candidate'))
+          $authorityRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'authority-ff85'))
+          $protectedDriver = Join-Path $baseRoot 'scripts/Validate.ps1'
+          $sourceToolsPath = [IO.Path]::GetFullPath($env:CODE_SOURCE_TOOLS_PATH)
+          $artifactsRoot = [IO.Path]::GetFullPath($env:CODE_SOURCE_ARTIFACTS_ROOT)
+          $baseCommit = [string]$env:CODE_SOURCE_BASE_COMMIT
+          $candidateCommit = [string]$env:CODE_SOURCE_CANDIDATE_COMMIT
+          $baseArguments = @()
+          if (-not [string]::IsNullOrWhiteSpace($baseCommit)) { $baseArguments = @('-BaseCommit', $baseCommit) }
+          $prepared = Get-Content -LiteralPath $sourceToolsPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 80
+          if ([string]$prepared.runId -cnotmatch '^[0-9a-f]{32}$') { throw 'Prepared source RunId is invalid before resident timing.' }
+          $runRoot = Split-Path -Parent (Split-Path -Parent $sourceToolsPath)
+          $residentEvidenceRoot = [IO.Path]::GetFullPath((Join-Path $runRoot 'source-resident-timing'))
+          $protectedDriverSha256 = (Get-FileHash -LiteralPath $protectedDriver -Algorithm SHA256).Hash.ToLowerInvariant()
+          $driverCapability = Invoke-ResidentDriverCompatibilityProbe -DriverPath $protectedDriver `
+            -EvidenceRoot $residentEvidenceRoot -CandidateRevision $candidateCommit `
+            -BaseRevision $(if ($baseCommit) { $baseCommit } else { $candidateCommit }) -RunId ([string]$prepared.runId) `
+            -ProtectedDriverSha256 $protectedDriverSha256 -ProtectedDriverRevision $(if ($baseCommit) { $baseCommit } else { $candidateCommit })
+          if (-not $driverCapability.supported) {
+            Write-Output "Resident source timing unsupported: $($driverCapability.reason); evidence=$($driverCapability.summaryPath)"
+            return
+          }
+
+          $supervisor = Join-Path $authorityRoot 'scripts/Invoke-StandardValidation.ps1'
+          $supervisorSha256 = (Get-FileHash -LiteralPath $supervisor -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($supervisorSha256 -cne 'a4ee880810171428a6abd2e8fd5db2da1eaeda4abc0fc6c72dc259b4a709174b') { throw 'The ff85 process supervisor differs from its reviewed identity.' }
+          . $supervisor -DefineFunctionsOnly -CandidateRoot $candidateRoot -AdapterPath $protectedDriver `
+            -ArtifactsRoot $artifactsRoot -SourceRepository 'https://github.com/SyuanTsai/Skill-Code-Collaboration.git' `
+            -SourceRevision $candidateCommit -BaseRevision $(if ($baseCommit) { $baseCommit } else { $candidateCommit })
+          $runtimeBinding = Assert-ResidentDriverPreparedRuntime -Prepared $prepared
+          $pwshPath = [string]$runtimeBinding.runtimeExecutablePath
+          $runtimeRoot = [string]$runtimeBinding.runtimeRoot
+          $trustedToolRoot = [string]$runtimeBinding.trustedToolRoot
+          $reportPath = Join-Path $artifactsRoot 'standard-core-validation-v2-report.json'
+          $commandArguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $protectedDriver,
+            '-RepositoryRoot', $candidateRoot, '-AdapterVersion', '2', '-SourceResidentTiming',
+            '-ResidentEvidenceRoot', $residentEvidenceRoot, '-SourceToolsPath', $sourceToolsPath,
+            '-AuthorityRepositoryRoot', $authorityRoot, '-TrustedToolRoot', $trustedToolRoot,
+            '-ArtifactsRoot', $artifactsRoot, '-OutputPath', $reportPath, '-TimeoutSeconds', '10800') + $baseArguments
+          $ownedProcess = Invoke-StandardValidationProcess -Command $pwshPath -Arguments $commandArguments `
+            -WorkingDirectory $baseRoot -Environment @{} -TimeoutSeconds 10800 -CoreLifecycleOnly
+          $ownedProcess | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $runRoot 'source-resident-timing-process.json') -Encoding utf8NoBOM
+          [IO.File]::WriteAllText((Join-Path $runRoot 'source-resident-timing.stdout.txt'), [string]$ownedProcess.stdout, [Text.UTF8Encoding]::new($false))
+          [IO.File]::WriteAllText((Join-Path $runRoot 'source-resident-timing.stderr.txt'), [string]$ownedProcess.stderr, [Text.UTF8Encoding]::new($false))
+          if ($ownedProcess.cleanedUp -isnot [bool] -or -not $ownedProcess.cleanedUp) { throw 'Resident source timing process cleanup was not verified.' }
+          if ([string]$ownedProcess.status -cne 'passed' -or [int]$ownedProcess.exitCode -ne 0) { throw "Resident source timing failed with status $($ownedProcess.status), exit $($ownedProcess.exitCode)." }
+
       - name: Upload source validation evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

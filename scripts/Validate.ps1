@@ -21,7 +21,9 @@ param(
     [string] $SourceToolsPath,
     [string] $AuthorityRepositoryRoot,
     [string] $TrustedToolRoot,
-    [string] $CancellationPath
+    [string] $CancellationPath,
+    [switch] $SourceResidentTiming,
+    [string] $ResidentEvidenceRoot
 )
 
 Set-StrictMode -Version Latest
@@ -1502,7 +1504,8 @@ function Invoke-CodeSourceStandardValidationModule {
 
     $allowedFunctions = @(
         'Invoke-StandardValidationProcess', 'Assert-StandardCoreFrozenFiles',
-        'Assert-StandardCoreSourceToolReceipts', 'Assert-StandardCoreSourceCheckReport'
+        'Assert-StandardCoreSourceToolReceipts', 'Assert-StandardCoreSourceCheckReport',
+        'Get-StandardCoreSourceToolGroups'
     )
     if ($FunctionName -cnotin $allowedFunctions) { throw "Protected Standard Core operation '$FunctionName' is not allowed." }
     $moduleInvoker = {
@@ -1784,14 +1787,31 @@ function Invoke-CodeSourceToolSetup {
         path = [IO.Path]::GetFullPath($setupTimingPath)
         sha256 = Get-FileSha256 -Path $setupTimingPath
     }
-    $frozenRecords = @($sourceFrozenFiles.files) + @($setupTimingRecord)
-    $sourceDispatch.frozenFiles = @($frozenRecords | Sort-Object -Property path -CaseSensitive)
-    $frozenFiles = @($sourceDispatch.frozenFiles)
-    [void](Invoke-CodeSourceStandardValidationModule -Module $runnerModule -FunctionName 'Assert-StandardCoreFrozenFiles' `
-        -Arguments @{ Files = @($sourceDispatch.frozenFiles) })
-    [void](Invoke-CodeSourceStandardValidationModule -Module $runnerModule -FunctionName 'Assert-StandardCoreSourceToolReceipts' `
-        -Arguments @{ Bindings = @($sourceDispatch.toolReceipts); FrozenFiles = @($sourceDispatch.frozenFiles); `
-            RunId = $runId; CandidateRoot = $RepositoryRoot; ArtifactsRoot = $setupRoot })
+    $finalFrozenVerificationSeconds = $null
+    $finalReceiptVerificationSeconds = $null
+    $preparedMetadataWriteSeconds = $null
+    $finalFrozenVerificationTimer = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        $frozenRecords = @($sourceFrozenFiles.files) + @($setupTimingRecord)
+        $sourceDispatch.frozenFiles = @($frozenRecords | Sort-Object -Property path -CaseSensitive)
+        $frozenFiles = @($sourceDispatch.frozenFiles)
+        [void](Invoke-CodeSourceStandardValidationModule -Module $runnerModule -FunctionName 'Assert-StandardCoreFrozenFiles' `
+            -Arguments @{ Files = @($sourceDispatch.frozenFiles) })
+    }
+    finally {
+        $finalFrozenVerificationTimer.Stop()
+        $finalFrozenVerificationSeconds = [Math]::Round($finalFrozenVerificationTimer.Elapsed.TotalSeconds, 3)
+    }
+    $finalReceiptVerificationTimer = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        [void](Invoke-CodeSourceStandardValidationModule -Module $runnerModule -FunctionName 'Assert-StandardCoreSourceToolReceipts' `
+            -Arguments @{ Bindings = @($sourceDispatch.toolReceipts); FrozenFiles = @($sourceDispatch.frozenFiles); `
+                RunId = $runId; CandidateRoot = $RepositoryRoot; ArtifactsRoot = $setupRoot })
+    }
+    finally {
+        $finalReceiptVerificationTimer.Stop()
+        $finalReceiptVerificationSeconds = [Math]::Round($finalReceiptVerificationTimer.Elapsed.TotalSeconds, 3)
+    }
 
     $prepared = [ordered]@{
         schemaVersion = 1; preparation = 'code-collaboration-source-tools'; runId = $runId
@@ -1812,17 +1832,30 @@ function Invoke-CodeSourceToolSetup {
             sourceTrustedToolRoot = [IO.Path]::GetFullPath($trustedRoot)
         }
     }
-    Write-Utf8NoBomCreateNew -Path $preparedPath -Text (($prepared | ConvertTo-Json -Depth 80) + [Environment]::NewLine)
+    $preparedMetadataWriteTimer = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        $preparedJson = ($prepared | ConvertTo-Json -Depth 80) + [Environment]::NewLine
+        Write-Utf8NoBomCreateNew -Path $preparedPath -Text $preparedJson
+    }
+    finally {
+        $preparedMetadataWriteTimer.Stop()
+        $preparedMetadataWriteSeconds = [Math]::Round($preparedMetadataWriteTimer.Elapsed.TotalSeconds, 3)
+    }
     $setupTimer.Stop()
     $setupCompletedAtUtc = [DateTimeOffset]::UtcNow
     $setupCompletedTimingPath = Join-Path $setupRoot "source-tools-setup-completed-$runId.json"
+    $completedSetupStageSeconds = [ordered]@{}
+    foreach ($stageName in $setupStageSeconds.Keys) { $completedSetupStageSeconds[$stageName] = $setupStageSeconds[$stageName] }
+    $completedSetupStageSeconds.finalFrozenVerificationSeconds = $finalFrozenVerificationSeconds
+    $completedSetupStageSeconds.finalReceiptVerificationSeconds = $finalReceiptVerificationSeconds
+    $completedSetupStageSeconds.preparedMetadataWriteSeconds = $preparedMetadataWriteSeconds
     $setupCompletedTiming = [ordered]@{
         schemaVersion = 1
         runId = $runId
         setupStartedAtUtc = $setupStartedAtUtc.ToString('O')
         setupCompletedAtUtc = $setupCompletedAtUtc.ToString('O')
         setupTotalSeconds = [Math]::Round($setupTimer.Elapsed.TotalSeconds, 3)
-        stageSeconds = $setupStageSeconds
+        stageSeconds = $completedSetupStageSeconds
         resolverSeconds = $resolverStageSeconds
         stageTimingPath = [IO.Path]::GetFullPath($setupTimingPath)
         stageTimingSha256 = Get-FileSha256 -Path $setupTimingPath
@@ -1983,65 +2016,75 @@ function Invoke-CodeSourceValidation {
     $sourceValidationStartedAtUtc = [DateTimeOffset]::UtcNow
     $sourceValidationTimer = [Diagnostics.Stopwatch]::StartNew()
     $centralRunnerSeconds = 0.0
+    $sourceStageSeconds = [ordered]@{
+        preadmissionSeconds = $null
+        snapshotAndAdapterSeconds = $null
+        outputRelaySeconds = $null
+        protectedReportReaderSeconds = $null
+        codeReportBindingSeconds = $null
+        cleanupSeconds = $null
+    }
     $cleanupErrorMessage = $null
     $sourceReportAccepted = $false
-    $pin = Assert-CodeSourceAuthorityConfig -Config $AuthorityConfig
-    $authority = Assert-CodeSourceAuthorityCheckout -GitPath $GitPath -AuthorityRoot $AuthorityRepositoryRoot -AuthorityPin $pin
-    $preparedPath = [IO.Path]::GetFullPath($SourceToolsPath)
-    $preparedHint = Read-JsonFile -Path $preparedPath -Context 'Prepared Code-Collaboration source tools'
-    $powerShell = [IO.Path]::GetFullPath([string]$preparedHint.pesterRuntime.runtimeExecutablePath)
-    $trustedRoot = [IO.Path]::GetFullPath([string]$preparedHint.pesterRuntime.runtimeRoot)
-    if (-not [string]::IsNullOrWhiteSpace($TrustedToolRoot) -and
-        -not [IO.Path]::GetFullPath($TrustedToolRoot).Equals([IO.Path]::GetFullPath([string]$preparedHint.pesterRuntime.sourceTrustedToolRoot), $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }))) {
-        throw 'SourceValidation TrustedToolRoot differs from the exact root recorded during source setup.'
-    }
-    if (-not (Test-Path -LiteralPath $powerShell -PathType Leaf) -or
-        (Get-FileSha256 -Path $powerShell) -cne [string]$preparedHint.pesterRuntime.runtimeExecutableSha256) {
-        throw 'Prepared run-owned PowerShell executable is missing or changed.'
-    }
-    if (-not [IO.Path]::GetFullPath($PowerShellPath).Equals($powerShell, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }))) {
-        throw 'SourceValidation PowerShell path differs from the exact prepared run-owned executable.'
-    }
-    if (-not (Test-Path -LiteralPath $trustedRoot -PathType Container) -or -not (Test-PathWithinOrEqual -Path $powerShell -Root $trustedRoot)) {
-        throw 'Source validation PowerShell must be within the verified TrustedToolRoot.'
-    }
-    Assert-NoReparseAncestors -Path $trustedRoot -Context 'Source validation TrustedToolRoot'
-    Assert-OutsideRoot -Path $trustedRoot -Root $RepositoryRoot -Context 'TrustedToolRoot'
-    Assert-OutsideRoot -Path $trustedRoot -Root $authority.root -Context 'TrustedToolRoot'
-    $preparedRoot = [IO.Path]::GetFullPath((Split-Path -Parent $preparedPath))
-    Assert-OutsideRoot -Path $preparedRoot -Root $RepositoryRoot -Context 'Prepared source root'
-    Assert-OutsideRoot -Path $preparedRoot -Root $authority.root -Context 'Prepared source root'
-    Assert-OutsideRoot -Path $preparedRoot -Root $trustedRoot -Context 'Prepared source root'
-    $script:SourceInvalidInput = $true
-    $prepared = Read-CodeSourcePreparedTools -Path $preparedPath -CandidateRevision $CandidateRevision -PowerShellPath $powerShell `
-        -AuthorityRoot $authority.root -AuthorityPin $pin -CandidateRoot $RepositoryRoot `
-        -ProtectedBaseRoot ([IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot)))
-    if ([string]$prepared.authorityRevision -cne [string]$pin.commit) { throw 'Prepared source tools do not bind the exact selected authority revision.' }
-    $setupTimingPath = Join-Path ([string]$prepared.ownedRoot) 'setup-timing.json'
-    $setupTimingBinding = @($prepared.sourceValidation.frozenFiles | Where-Object {
-        (Test-PathEqual -Left ([string]$_.path) -Right $setupTimingPath)
-    })
-    if ($setupTimingBinding.Count -ne 1 -or (Get-FileSha256 -Path $setupTimingPath) -cne [string]$setupTimingBinding[0].sha256) {
-        throw 'Prepared source setup timing evidence is missing or changed.'
-    }
-    $setupTiming = Read-JsonFile -Path $setupTimingPath -Context 'Prepared source setup timing evidence'
-    if ([int]$setupTiming.schemaVersion -ne 1 -or [string]$setupTiming.runId -cne [string]$prepared.runId -or
-        [string]$setupTiming.startedAtUtc -cnotmatch '^\d{4}-\d{2}-\d{2}T' -or
-        [string]$setupTiming.stageTimingCapturedAtUtc -cnotmatch '^\d{4}-\d{2}-\d{2}T' -or
-        $setupTiming.stageSeconds -isnot [pscustomobject] -or [string]::IsNullOrWhiteSpace([string]$setupTiming.stageTimingBoundary)) {
-        throw 'Prepared source setup timing evidence is invalid or belongs to a different run.'
-    }
-    $setupCompletedTimingPath = Join-Path (Split-Path -Parent $preparedPath) "source-tools-setup-completed-$($prepared.runId).json"
-    if (-not (Test-Path -LiteralPath $setupCompletedTimingPath -PathType Leaf)) { throw 'Completed source setup timing evidence is missing.' }
-    $setupCompletedTimingSha256 = Get-FileSha256 -Path $setupCompletedTimingPath
-    $setupCompletedTiming = Read-JsonFile -Path $setupCompletedTimingPath -Context 'Completed source setup timing evidence'
-    if ([int]$setupCompletedTiming.schemaVersion -ne 1 -or [string]$setupCompletedTiming.runId -cne [string]$prepared.runId -or
-        [string]$setupCompletedTiming.setupStartedAtUtc -cne [string]$setupTiming.startedAtUtc -or
-        [double]$setupCompletedTiming.setupTotalSeconds -lt 0 -or [int]$setupCompletedTiming.diagnosticTargetSeconds -ne 1200 -or
-        [string]$setupCompletedTiming.totalBoundary -cne 'after complete frozen-file verification and prepared metadata creation') {
-        throw 'Completed source setup timing evidence is invalid or belongs to a different run.'
-    }
-    $script:SourceInvalidInput = $false
+    $preadmissionTimer = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        $pin = Assert-CodeSourceAuthorityConfig -Config $AuthorityConfig
+        $authority = Assert-CodeSourceAuthorityCheckout -GitPath $GitPath -AuthorityRoot $AuthorityRepositoryRoot -AuthorityPin $pin
+        $preparedPath = [IO.Path]::GetFullPath($SourceToolsPath)
+        $preparedHint = Read-JsonFile -Path $preparedPath -Context 'Prepared Code-Collaboration source tools'
+        $powerShell = [IO.Path]::GetFullPath([string]$preparedHint.pesterRuntime.runtimeExecutablePath)
+        $trustedRoot = [IO.Path]::GetFullPath([string]$preparedHint.pesterRuntime.runtimeRoot)
+        if (-not [string]::IsNullOrWhiteSpace($TrustedToolRoot) -and
+            -not [IO.Path]::GetFullPath($TrustedToolRoot).Equals([IO.Path]::GetFullPath([string]$preparedHint.pesterRuntime.sourceTrustedToolRoot), $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }))) {
+            throw 'SourceValidation TrustedToolRoot differs from the exact root recorded during source setup.'
+        }
+        if (-not (Test-Path -LiteralPath $powerShell -PathType Leaf) -or
+            (Get-FileSha256 -Path $powerShell) -cne [string]$preparedHint.pesterRuntime.runtimeExecutableSha256) {
+            throw 'Prepared run-owned PowerShell executable is missing or changed.'
+        }
+        if (-not [IO.Path]::GetFullPath($PowerShellPath).Equals($powerShell, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }))) {
+            throw 'SourceValidation PowerShell path differs from the exact prepared run-owned executable.'
+        }
+        if (-not (Test-Path -LiteralPath $trustedRoot -PathType Container) -or -not (Test-PathWithinOrEqual -Path $powerShell -Root $trustedRoot)) {
+            throw 'Source validation PowerShell must be within the verified TrustedToolRoot.'
+        }
+        Assert-NoReparseAncestors -Path $trustedRoot -Context 'Source validation TrustedToolRoot'
+        Assert-OutsideRoot -Path $trustedRoot -Root $RepositoryRoot -Context 'TrustedToolRoot'
+        Assert-OutsideRoot -Path $trustedRoot -Root $authority.root -Context 'TrustedToolRoot'
+        $preparedRoot = [IO.Path]::GetFullPath((Split-Path -Parent $preparedPath))
+        Assert-OutsideRoot -Path $preparedRoot -Root $RepositoryRoot -Context 'Prepared source root'
+        Assert-OutsideRoot -Path $preparedRoot -Root $authority.root -Context 'Prepared source root'
+        Assert-OutsideRoot -Path $preparedRoot -Root $trustedRoot -Context 'Prepared source root'
+        $script:SourceInvalidInput = $true
+        $prepared = Read-CodeSourcePreparedTools -Path $preparedPath -CandidateRevision $CandidateRevision -PowerShellPath $powerShell `
+            -AuthorityRoot $authority.root -AuthorityPin $pin -CandidateRoot $RepositoryRoot `
+            -ProtectedBaseRoot ([IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot)))
+        if ([string]$prepared.authorityRevision -cne [string]$pin.commit) { throw 'Prepared source tools do not bind the exact selected authority revision.' }
+        $setupTimingPath = Join-Path ([string]$prepared.ownedRoot) 'setup-timing.json'
+        $setupTimingBinding = @($prepared.sourceValidation.frozenFiles | Where-Object {
+            (Test-PathEqual -Left ([string]$_.path) -Right $setupTimingPath)
+        })
+        if ($setupTimingBinding.Count -ne 1 -or (Get-FileSha256 -Path $setupTimingPath) -cne [string]$setupTimingBinding[0].sha256) {
+            throw 'Prepared source setup timing evidence is missing or changed.'
+        }
+        $setupTiming = Read-JsonFile -Path $setupTimingPath -Context 'Prepared source setup timing evidence'
+        if ([int]$setupTiming.schemaVersion -ne 1 -or [string]$setupTiming.runId -cne [string]$prepared.runId -or
+            [string]$setupTiming.startedAtUtc -cnotmatch '^\d{4}-\d{2}-\d{2}T' -or
+            [string]$setupTiming.stageTimingCapturedAtUtc -cnotmatch '^\d{4}-\d{2}-\d{2}T' -or
+            $setupTiming.stageSeconds -isnot [pscustomobject] -or [string]::IsNullOrWhiteSpace([string]$setupTiming.stageTimingBoundary)) {
+            throw 'Prepared source setup timing evidence is invalid or belongs to a different run.'
+        }
+        $setupCompletedTimingPath = Join-Path (Split-Path -Parent $preparedPath) "source-tools-setup-completed-$($prepared.runId).json"
+        if (-not (Test-Path -LiteralPath $setupCompletedTimingPath -PathType Leaf)) { throw 'Completed source setup timing evidence is missing.' }
+        $setupCompletedTimingSha256 = Get-FileSha256 -Path $setupCompletedTimingPath
+        $setupCompletedTiming = Read-JsonFile -Path $setupCompletedTimingPath -Context 'Completed source setup timing evidence'
+        if ([int]$setupCompletedTiming.schemaVersion -ne 1 -or [string]$setupCompletedTiming.runId -cne [string]$prepared.runId -or
+            [string]$setupCompletedTiming.setupStartedAtUtc -cne [string]$setupTiming.startedAtUtc -or
+            [double]$setupCompletedTiming.setupTotalSeconds -lt 0 -or [int]$setupCompletedTiming.diagnosticTargetSeconds -ne 1200 -or
+            [string]$setupCompletedTiming.totalBoundary -cne 'after complete frozen-file verification and prepared metadata creation') {
+            throw 'Completed source setup timing evidence is invalid or belongs to a different run.'
+        }
+        $script:SourceInvalidInput = $false
 
     $artifactsRootPath = [IO.Path]::GetFullPath($ArtifactsRoot)
     Assert-OutsideRoot -Path $artifactsRootPath -Root $RepositoryRoot -Context 'Source Core ArtifactsRoot'
@@ -2070,30 +2113,42 @@ function Invoke-CodeSourceValidation {
     $processExitCode = 1
     $reportRunnerModule = $null
     $previousTestValidateSource = [Environment]::GetEnvironmentVariable('SYP154_TEST_VALIDATE_SOURCE', 'Process')
+    }
+    finally {
+        $preadmissionTimer.Stop()
+        $sourceStageSeconds.preadmissionSeconds = [Math]::Round($preadmissionTimer.Elapsed.TotalSeconds, 3)
+    }
     try {
-        Assert-NoReparseAncestors -Path $paths.adapterRoot -Context 'Source Core adapter root'
-        $authoritySnapshot = New-CodeSourceAuthoritySnapshot -GitPath $GitPath -SourceRoot $authority.root -OwnedRoot $paths.adapterRoot -AuthorityPin $pin
-        $manifestBinding = @($prepared.sourceValidation.frozenFiles | Where-Object {
-            [IO.Path]::GetFullPath([string]$_.path).Equals([IO.Path]::GetFullPath((Join-Path ([string]$prepared.ownedRoot) 'candidate-git-entry-modes.json')), $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }))
-        })
-        if ($manifestBinding.Count -ne 1) { throw 'Prepared source Git entry manifest does not have one exact frozen binding.' }
-        $adapter = New-CodeCoreAdapterV2 -PowerShellPath $powerShell -TrustedToolRoot $trustedRoot `
-            -CandidateAuthorityAdapterRunId ([string]$prepared.runId) -CandidateRevision $CandidateRevision `
-            -CandidateGitEntryModeManifestPath ([string]$manifestBinding[0].path) -CandidateGitEntryModeManifestSha256 ([string]$manifestBinding[0].sha256) `
-            -ActiveSkillIds (Get-ActiveSkillIds -Root $RepositoryRoot) -SourceValidation $prepared.sourceValidation -PesterRuntime $prepared.pesterRuntime
-        Write-Utf8NoBomCreateNew -Path $paths.adapterPath -Text (($adapter | ConvertTo-Json -Depth 80) + [Environment]::NewLine)
-        $adapterSha = Get-FileSha256 -Path $paths.adapterPath
-        $centralRunner = [IO.Path]::GetFullPath($authoritySnapshot.runnerPath)
-        if ((Get-FileSha256 -Path $centralRunner) -cne [string]$pin.files['scripts/Invoke-StandardValidation.ps1']) { throw 'Run-owned protected Standard Core runner changed.' }
-        $arguments = @('-CandidateRoot', $RepositoryRoot, '-AdapterPath', $paths.adapterPath, '-ArtifactsRoot', $paths.artifactsRoot,
-            '-OutputPath', $paths.outputPath, '-SourceRepository', $script:SourceRepository, '-SourceRevision', $CandidateRevision,
-            '-BaseRevision', $BaseRevision, '-EventName', $EventName, '-AuthorityRevision', [string]$pin.commit,
-            '-TimeoutSeconds', [string]$TimeoutSeconds, '-TrustedToolRoot', $trustedRoot, '-SourceValidation', '-RunId', [string]$prepared.runId)
-        if (-not [string]::IsNullOrWhiteSpace($CancellationPath)) { $arguments += @('-CancellationPath', [IO.Path]::GetFullPath($CancellationPath)) }
-        # The canonical source child inherits this test-only variable. Clear any
-        # developer override so CommonToolReportIntegration resolves Validate.ps1
-        # from the immutable candidate snapshot under the protected Core run root.
-        [Environment]::SetEnvironmentVariable('SYP154_TEST_VALIDATE_SOURCE', $null, 'Process')
+        $snapshotAndAdapterTimer = [Diagnostics.Stopwatch]::StartNew()
+        try {
+            Assert-NoReparseAncestors -Path $paths.adapterRoot -Context 'Source Core adapter root'
+            $authoritySnapshot = New-CodeSourceAuthoritySnapshot -GitPath $GitPath -SourceRoot $authority.root -OwnedRoot $paths.adapterRoot -AuthorityPin $pin
+            $manifestBinding = @($prepared.sourceValidation.frozenFiles | Where-Object {
+                [IO.Path]::GetFullPath([string]$_.path).Equals([IO.Path]::GetFullPath((Join-Path ([string]$prepared.ownedRoot) 'candidate-git-entry-modes.json')), $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }))
+            })
+            if ($manifestBinding.Count -ne 1) { throw 'Prepared source Git entry manifest does not have one exact frozen binding.' }
+            $adapter = New-CodeCoreAdapterV2 -PowerShellPath $powerShell -TrustedToolRoot $trustedRoot `
+                -CandidateAuthorityAdapterRunId ([string]$prepared.runId) -CandidateRevision $CandidateRevision `
+                -CandidateGitEntryModeManifestPath ([string]$manifestBinding[0].path) -CandidateGitEntryModeManifestSha256 ([string]$manifestBinding[0].sha256) `
+                -ActiveSkillIds (Get-ActiveSkillIds -Root $RepositoryRoot) -SourceValidation $prepared.sourceValidation -PesterRuntime $prepared.pesterRuntime
+            Write-Utf8NoBomCreateNew -Path $paths.adapterPath -Text (($adapter | ConvertTo-Json -Depth 80) + [Environment]::NewLine)
+            $adapterSha = Get-FileSha256 -Path $paths.adapterPath
+            $centralRunner = [IO.Path]::GetFullPath($authoritySnapshot.runnerPath)
+            if ((Get-FileSha256 -Path $centralRunner) -cne [string]$pin.files['scripts/Invoke-StandardValidation.ps1']) { throw 'Run-owned protected Standard Core runner changed.' }
+            $arguments = @('-CandidateRoot', $RepositoryRoot, '-AdapterPath', $paths.adapterPath, '-ArtifactsRoot', $paths.artifactsRoot,
+                '-OutputPath', $paths.outputPath, '-SourceRepository', $script:SourceRepository, '-SourceRevision', $CandidateRevision,
+                '-BaseRevision', $BaseRevision, '-EventName', $EventName, '-AuthorityRevision', [string]$pin.commit,
+                '-TimeoutSeconds', [string]$TimeoutSeconds, '-TrustedToolRoot', $trustedRoot, '-SourceValidation', '-RunId', [string]$prepared.runId)
+            if (-not [string]::IsNullOrWhiteSpace($CancellationPath)) { $arguments += @('-CancellationPath', [IO.Path]::GetFullPath($CancellationPath)) }
+            # The canonical source child inherits this test-only variable. Clear any
+            # developer override so CommonToolReportIntegration resolves Validate.ps1
+            # from the immutable candidate snapshot under the protected Core run root.
+            [Environment]::SetEnvironmentVariable('SYP154_TEST_VALIDATE_SOURCE', $null, 'Process')
+        }
+        finally {
+            $snapshotAndAdapterTimer.Stop()
+            $sourceStageSeconds.snapshotAndAdapterSeconds = [Math]::Round($snapshotAndAdapterTimer.Elapsed.TotalSeconds, 3)
+        }
         $centralRunnerTimer = [Diagnostics.Stopwatch]::StartNew()
         try {
             $runnerOutput = @(& $powerShell -NoProfile -NonInteractive -File $centralRunner @arguments 2>&1)
@@ -2103,12 +2158,19 @@ function Invoke-CodeSourceValidation {
             $centralRunnerTimer.Stop()
             $centralRunnerSeconds = [Math]::Round($centralRunnerTimer.Elapsed.TotalSeconds, 3)
         }
-        $runnerDiagnosticText = [string]::Join([Environment]::NewLine, [string[]]@($runnerOutput | ForEach-Object { [string]$_ }))
-        $runnerDiagnostic = Write-CodeSourceRunnerOutputDiagnostic -OutputText $runnerDiagnosticText `
+        $outputRelayTimer = [Diagnostics.Stopwatch]::StartNew()
+        try {
+            $runnerDiagnosticText = [string]::Join([Environment]::NewLine, [string[]]@($runnerOutput | ForEach-Object { [string]$_ }))
+            $runnerDiagnostic = Write-CodeSourceRunnerOutputDiagnostic -OutputText $runnerDiagnosticText `
             -RunRoot $paths.artifactsRoot -CandidateRoot $RepositoryRoot -AuthorityRoot $authority.root `
             -ProcessExitCode $processExitCode
-        [Console]::Out.WriteLine(("Source runner diagnostic retained: path={0}; bytes={1}; sha256={2}; processExitCode={3}" -f `
+            [Console]::Out.WriteLine(("Source runner diagnostic retained: path={0}; bytes={1}; sha256={2}; processExitCode={3}" -f `
             $runnerDiagnostic.path, $runnerDiagnostic.byteLength, $runnerDiagnostic.sha256, $runnerDiagnostic.processExitCode))
+        }
+        finally {
+            $outputRelayTimer.Stop()
+            $sourceStageSeconds.outputRelaySeconds = [Math]::Round($outputRelayTimer.Elapsed.TotalSeconds, 3)
+        }
         if ($processExitCode -eq 0) {
             $reportRunnerContext = [ordered]@{
                 CandidateRoot = $RepositoryRoot
@@ -2125,49 +2187,70 @@ function Invoke-CodeSourceValidation {
                 CancellationPath = if ([string]::IsNullOrWhiteSpace($CancellationPath)) { '' } else { [IO.Path]::GetFullPath($CancellationPath) }
                 TrustedToolRoot = $trustedRoot
             }
-            $reportRunnerModule = New-CodeSourceStandardValidationModule -RunnerPath $centralRunner `
-                -RunnerSha256 ([string]$pin.files['scripts/Invoke-StandardValidation.ps1']) -RunnerArguments $reportRunnerContext `
-                -SourceValidation
-            $report = Read-JsonFile -Path $paths.outputPath -Context 'Standard Core SourceValidation report'
-            [void](Invoke-CodeSourceStandardValidationModule -Module $reportRunnerModule -FunctionName 'Assert-StandardCoreSourceCheckReport' `
-                -Arguments @{ Report = $report; ExpectedSourceRevision = $CandidateRevision; ExpectedBaseRevision = $BaseRevision; `
-                    ExpectedAuthorityRevision = [string]$pin.commit; ExpectedEventName = $EventName; ArtifactsRoot = $paths.artifactsRoot; `
-                    OutputPath = $paths.outputPath; ProcessExitCode = $processExitCode })
-            [void](Assert-CodeSourceReportBinding -Report $report -Prepared $prepared -CandidateRevision $CandidateRevision `
-                -BaseRevision $BaseRevision -AuthorityRevision ([string]$pin.commit) -EventName $EventName -ArtifactsRoot $paths.artifactsRoot `
-                -OutputPath $paths.outputPath -ProcessExitCode $processExitCode -CleanupSucceeded $true `
-                -CancellationRequested ([bool](-not [string]::IsNullOrWhiteSpace($CancellationPath) -and (Test-Path -LiteralPath $CancellationPath))))
-            $sourceReportAccepted = $true
+            $protectedReportReaderTimer = [Diagnostics.Stopwatch]::StartNew()
+            try {
+                $reportRunnerModule = New-CodeSourceStandardValidationModule -RunnerPath $centralRunner `
+                    -RunnerSha256 ([string]$pin.files['scripts/Invoke-StandardValidation.ps1']) -RunnerArguments $reportRunnerContext `
+                    -SourceValidation
+                $report = Read-JsonFile -Path $paths.outputPath -Context 'Standard Core SourceValidation report'
+                [void](Invoke-CodeSourceStandardValidationModule -Module $reportRunnerModule -FunctionName 'Assert-StandardCoreSourceCheckReport' `
+                    -Arguments @{ Report = $report; ExpectedSourceRevision = $CandidateRevision; ExpectedBaseRevision = $BaseRevision; `
+                        ExpectedAuthorityRevision = [string]$pin.commit; ExpectedEventName = $EventName; ArtifactsRoot = $paths.artifactsRoot; `
+                        OutputPath = $paths.outputPath; ProcessExitCode = $processExitCode })
+            }
+            finally {
+                $protectedReportReaderTimer.Stop()
+                $sourceStageSeconds.protectedReportReaderSeconds = [Math]::Round($protectedReportReaderTimer.Elapsed.TotalSeconds, 3)
+            }
+            $codeReportBindingTimer = [Diagnostics.Stopwatch]::StartNew()
+            try {
+                [void](Assert-CodeSourceReportBinding -Report $report -Prepared $prepared -CandidateRevision $CandidateRevision `
+                    -BaseRevision $BaseRevision -AuthorityRevision ([string]$pin.commit) -EventName $EventName -ArtifactsRoot $paths.artifactsRoot `
+                    -OutputPath $paths.outputPath -ProcessExitCode $processExitCode -CleanupSucceeded $true `
+                    -CancellationRequested ([bool](-not [string]::IsNullOrWhiteSpace($CancellationPath) -and (Test-Path -LiteralPath $CancellationPath))))
+                $sourceReportAccepted = $true
+            }
+            finally {
+                $codeReportBindingTimer.Stop()
+                $sourceStageSeconds.codeReportBindingSeconds = [Math]::Round($codeReportBindingTimer.Elapsed.TotalSeconds, 3)
+            }
         }
     }
     finally {
-        [Environment]::SetEnvironmentVariable('SYP154_TEST_VALIDATE_SOURCE', $previousTestValidateSource, 'Process')
-        if ($null -ne $reportRunnerModule) {
-            try {
-                Remove-Module -ModuleInfo $reportRunnerModule -Force -ErrorAction Stop
-                $reportRunnerModule = $null
+        $cleanupTimer = [Diagnostics.Stopwatch]::StartNew()
+        try {
+            [Environment]::SetEnvironmentVariable('SYP154_TEST_VALIDATE_SOURCE', $previousTestValidateSource, 'Process')
+            if ($null -ne $reportRunnerModule) {
+                try {
+                    Remove-Module -ModuleInfo $reportRunnerModule -Force -ErrorAction Stop
+                    $reportRunnerModule = $null
+                }
+                catch {
+                    $runnerModuleCleanupSucceeded = $false
+                    $script:SourceCleanupFailed = $true
+                    $cleanupErrorMessage = "Central Standard Core module cleanup failed: $($_.Exception.Message)"
+                }
             }
-            catch {
-                $runnerModuleCleanupSucceeded = $false
-                $script:SourceCleanupFailed = $true
-                $cleanupErrorMessage = "Central Standard Core module cleanup failed: $($_.Exception.Message)"
+            if ($adapterRootCreated -and (Test-Path -LiteralPath $paths.adapterRoot -PathType Container)) {
+                try {
+                    $expectedAdapterRoot = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $paths.artifactsRoot) ".core-v2-adapter-$($prepared.runId)"))
+                    if (-not (Test-PathEqual -Left $paths.adapterRoot -Right $expectedAdapterRoot) -or
+                        -not (Test-PathWithinOrEqual -Path $paths.adapterRoot -Root (Split-Path -Parent $paths.artifactsRoot)) -or
+                        (Test-PathWithinOrEqual -Path $paths.adapterRoot -Root $paths.artifactsRoot)) { throw 'Source Core adapter cleanup escaped its unique sibling boundary.' }
+                    Assert-NoReparseAncestors -Path $paths.adapterRoot -Context 'Source Core adapter cleanup root'
+                    Remove-Item -LiteralPath $paths.adapterRoot -Recurse -Force -ErrorAction Stop
+                    if (Test-Path -LiteralPath $paths.adapterRoot) { throw 'Source Core adapter cleanup failed.' }
+                    $cleanupSucceeded = $true
+                }
+                catch {
+                    $script:SourceCleanupFailed = $true
+                    $cleanupErrorMessage = $_.Exception.Message
+                }
             }
         }
-        if ($adapterRootCreated -and (Test-Path -LiteralPath $paths.adapterRoot -PathType Container)) {
-            try {
-                $expectedAdapterRoot = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $paths.artifactsRoot) ".core-v2-adapter-$($prepared.runId)"))
-                if (-not (Test-PathEqual -Left $paths.adapterRoot -Right $expectedAdapterRoot) -or
-                    -not (Test-PathWithinOrEqual -Path $paths.adapterRoot -Root (Split-Path -Parent $paths.artifactsRoot)) -or
-                    (Test-PathWithinOrEqual -Path $paths.adapterRoot -Root $paths.artifactsRoot)) { throw 'Source Core adapter cleanup escaped its unique sibling boundary.' }
-                Assert-NoReparseAncestors -Path $paths.adapterRoot -Context 'Source Core adapter cleanup root'
-                Remove-Item -LiteralPath $paths.adapterRoot -Recurse -Force -ErrorAction Stop
-                if (Test-Path -LiteralPath $paths.adapterRoot) { throw 'Source Core adapter cleanup failed.' }
-                $cleanupSucceeded = $true
-            }
-            catch {
-                $script:SourceCleanupFailed = $true
-                $cleanupErrorMessage = $_.Exception.Message
-            }
+        finally {
+            $cleanupTimer.Stop()
+            $sourceStageSeconds.cleanupSeconds = [Math]::Round($cleanupTimer.Elapsed.TotalSeconds, 3)
         }
         $sourceValidationTimer.Stop()
         $sourceValidationCompletedAtUtc = [DateTimeOffset]::UtcNow
@@ -2189,6 +2272,7 @@ function Invoke-CodeSourceValidation {
             sourceValidationCompletedAtUtc = $sourceValidationCompletedAtUtc.ToString('O')
             sourceValidationTotalSeconds = [Math]::Round($sourceValidationTimer.Elapsed.TotalSeconds, 3)
             centralRunnerSeconds = $centralRunnerSeconds
+            stageSeconds = $sourceStageSeconds
             combinedSetupToValidationSeconds = $combinedWallSeconds
             diagnosticTargetSeconds = 1200
             diagnosticTargetExceeded = ($combinedWallSeconds -gt 1200)
@@ -2217,9 +2301,1119 @@ function Invoke-CodeSourceValidation {
     [Console]::Out.WriteLine("SourceValidation PASS: $($paths.outputPath) (RunId $($prepared.runId), adapter sha256 $adapterSha)")
 }
 
+function Get-CodeSourceResidentRetainedApiContract {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][System.Management.Automation.PSModuleInfo] $Module)
+
+    $ownedCommand = & $Module {
+        $ownerName = [string]$ExecutionContext.SessionState.Module.Name
+        $command = Get-Command -Name 'Assert-StandardCoreSourceToolReceipts' -CommandType Function -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        $frozenCommand = Get-Command -Name 'Assert-StandardCoreFrozenFiles' -CommandType Function -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        [pscustomobject]@{
+            moduleName = $ownerName
+            commandModuleName = if ($null -eq $command) { $null } else { [string]$command.ModuleName }
+            commandFound = ($null -ne $command)
+            scriptFile = if ($null -eq $command -or $null -eq $command.ScriptBlock) { $null } else { [string]$command.ScriptBlock.File }
+            parameterNames = if ($null -eq $command) { @() } else { @($command.Parameters.Keys | ForEach-Object { [string]$_ }) }
+            frozenCommandModuleName = if ($null -eq $frozenCommand) { $null } else { [string]$frozenCommand.ModuleName }
+            frozenCommandFound = ($null -ne $frozenCommand)
+            runnerScriptFile = if ($null -eq $frozenCommand -or $null -eq $frozenCommand.ScriptBlock) { $null } else { [string]$frozenCommand.ScriptBlock.File }
+        }
+    }
+
+    $requiredParameters = @('RetainedReceiptMap', 'ToolNames', 'AdditionalPaths', 'ReturnReceiptMap')
+    $parameterNames = @($ownedCommand.parameterNames | ForEach-Object { [string]$_ })
+    $missingParameters = @($requiredParameters | Where-Object { $parameterNames -cnotcontains $_ })
+    $commandIsOwned = [bool]$ownedCommand.commandFound -and
+        [string]$ownedCommand.commandModuleName -ceq [string]$ownedCommand.moduleName
+    $frozenCommandIsOwned = [bool]$ownedCommand.frozenCommandFound -and
+        [string]$ownedCommand.frozenCommandModuleName -ceq [string]$ownedCommand.moduleName
+    return [pscustomobject]@{
+        supported = ($commandIsOwned -and $frozenCommandIsOwned -and $missingParameters.Count -eq 0)
+        missingParameters = $missingParameters
+        parameterNames = $parameterNames
+        moduleName = [string]$ownedCommand.moduleName
+        commandModuleName = $ownedCommand.commandModuleName
+        scriptFile = $ownedCommand.scriptFile
+        frozenCommandModuleName = $ownedCommand.frozenCommandModuleName
+        runnerScriptFile = $ownedCommand.runnerScriptFile
+        timingStateProbed = $false
+    }
+}
+
+function Assert-CodeSourceResidentRunRequest {
+    [CmdletBinding()]
+    param(
+        [string] $ExecutionMode = 'Run',
+        [switch] $PrepareSourceTools,
+        [switch] $SourceValidation,
+        [switch] $SourceResidentTiming,
+        [string] $SourceToolsPath,
+        [int] $AdapterVersion = 1,
+        [string] $AuthorityRevision,
+        [string] $RunId,
+        [switch] $CompleteLifecycle,
+        [switch] $DevelopmentHarness
+    )
+
+    if (-not $SourceResidentTiming) { throw 'The source resident timing guard requires its explicit SourceResidentTiming request.' }
+    if ($PrepareSourceTools -or $SourceValidation) {
+        throw 'SourceResidentTiming and source setup or canonical SourceValidation are separate requests.'
+    }
+    if ($ExecutionMode -cne 'Run' -or [string]::IsNullOrWhiteSpace($SourceToolsPath)) {
+        throw 'SourceResidentTiming requires Run and the prepared SourceToolsPath.'
+    }
+    if ($AdapterVersion -ne 2 -or $CompleteLifecycle -or $DevelopmentHarness) {
+        throw 'SourceResidentTiming requires Core adapter v2 and cannot be combined with a legacy lifecycle or development harness.'
+    }
+    if ([string]$RunId -cnotmatch '^[0-9a-f]{32}$') {
+        throw 'SourceResidentTiming requires the prepared RunId as exactly 32 lowercase hexadecimal characters.'
+    }
+    [void](Get-PreparedSourceAuthorityPin -AuthorityRevision $AuthorityRevision)
+    return 'SourceResidentTiming'
+}
+
+function Get-CodeSourceResidentCaseCountValues {
+    param([Parameter(Mandatory = $true)] $CaseLedger)
+
+    $countFields = @('Passed', 'Failed', 'Skipped', 'Inconclusive', 'NotRun')
+    $integerTypes = @('System.Byte', 'System.SByte', 'System.Int16', 'System.UInt16', 'System.Int32', 'System.UInt32', 'System.Int64', 'System.UInt64', 'System.Single', 'System.Double', 'System.Decimal', 'System.Numerics.BigInteger')
+    $convertCount = {
+        param([object] $Value, [string] $FieldName)
+        $invalidMessage = "Source resident Pester case ledger count '$FieldName' must be a finite non-negative integer within the supported safe 64-bit range."
+        if ($null -eq $Value -or $Value -is [bool]) { throw $invalidMessage }
+        $typeName = $Value.GetType().FullName
+        if ($integerTypes -cnotcontains $typeName) { throw $invalidMessage }
+
+        if ($typeName -ceq 'System.Single' -or $typeName -ceq 'System.Double') {
+            $numericValue = [double]$Value
+            $maximumExactInteger = if ($typeName -ceq 'System.Single') { 16777215.0 } else { 9007199254740991.0 }
+            if ([double]::IsNaN($numericValue) -or [double]::IsInfinity($numericValue) -or
+                $numericValue -lt 0.0 -or $numericValue -gt $maximumExactInteger -or
+                [Math]::Truncate($numericValue) -ne $numericValue) {
+                throw $invalidMessage
+            }
+            return [long]$numericValue
+        }
+        if ($typeName -ceq 'System.Numerics.BigInteger') {
+            $maximumInteger = [System.Numerics.BigInteger]::Parse([long]::MaxValue.ToString([Globalization.CultureInfo]::InvariantCulture))
+            $numericValue = [System.Numerics.BigInteger]$Value
+            if ($numericValue -lt [System.Numerics.BigInteger]::Zero -or $numericValue -gt $maximumInteger) { throw $invalidMessage }
+            return [long]$numericValue
+        }
+
+        try { $decimalValue = [decimal]$Value } catch { throw $invalidMessage }
+        if ($decimalValue -lt [decimal]::Zero -or $decimalValue -gt [decimal][long]::MaxValue -or
+            [decimal]::Truncate($decimalValue) -ne $decimalValue) {
+            throw $invalidMessage
+        }
+        return [long]$decimalValue
+    }
+
+    $reportedCountsProperty = if ($null -eq $CaseLedger) { $null } else { $CaseLedger.PSObject.Properties['reportedCounts'] }
+    $reportedCounts = if ($null -eq $reportedCountsProperty) { $null } else { $reportedCountsProperty.Value }
+    $normalizedReportedCounts = [ordered]@{}
+    $reportedTotal = [System.Numerics.BigInteger]::Zero
+    foreach ($fieldName in $countFields) {
+        $countProperty = if ($null -eq $reportedCounts) { $null } else { $reportedCounts.PSObject.Properties[$fieldName] }
+        $countValue = if ($null -eq $countProperty) { $null } else { $countProperty.Value }
+        $normalizedValue = & $convertCount $countValue $fieldName
+        $normalizedReportedCounts[$fieldName] = $normalizedValue
+        $reportedTotal += [System.Numerics.BigInteger]$normalizedValue
+    }
+
+    $discoveryProperty = if ($null -eq $CaseLedger) { $null } else { $CaseLedger.PSObject.Properties['caseDiscoveryCount'] }
+    $executionProperty = if ($null -eq $CaseLedger) { $null } else { $CaseLedger.PSObject.Properties['caseExecutionCount'] }
+    $discoveryCount = & $convertCount $(if ($null -eq $discoveryProperty) { $null } else { $discoveryProperty.Value }) 'caseDiscoveryCount'
+    $executionCount = & $convertCount $(if ($null -eq $executionProperty) { $null } else { $executionProperty.Value }) 'caseExecutionCount'
+    $maximumInteger = [System.Numerics.BigInteger]::Parse([long]::MaxValue.ToString([Globalization.CultureInfo]::InvariantCulture))
+    if ($reportedTotal -gt $maximumInteger) {
+        throw 'Source resident Pester case ledger reportedCounts total exceeds the supported safe 64-bit integer range.'
+    }
+
+    return [pscustomobject]@{
+        reportedCounts = [pscustomobject]$normalizedReportedCounts
+        caseDiscoveryCount = $discoveryCount
+        caseExecutionCount = $executionCount
+        reportedTotal = [long]$reportedTotal
+    }
+}
+
+function Invoke-CodeSourceResidentSampleSeries {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][System.Management.Automation.PSModuleInfo] $Module,
+        [Parameter(Mandatory = $true)] $Prepared,
+        [Parameter(Mandatory = $true)] $Report,
+        [Parameter(Mandatory = $true)] $TimingEvidence,
+        [Parameter(Mandatory = $true)] $CaseLedger,
+        [Parameter(Mandatory = $true)][string] $PreparedPath,
+        [Parameter(Mandatory = $true)][string] $TimingEvidencePath,
+        [Parameter(Mandatory = $true)][string] $CaseLedgerPath,
+        [Parameter(Mandatory = $true)] $AuthorityPin,
+        [Parameter(Mandatory = $true)][string] $RunnerPath,
+        [Parameter(Mandatory = $true)][string] $RunnerSha256,
+        [Parameter(Mandatory = $true)][string] $RepositoryRoot,
+        [Parameter(Mandatory = $true)][string] $CandidateRoot,
+        [Parameter(Mandatory = $true)][string] $BaseRevision,
+        [Parameter(Mandatory = $true)][string] $ArtifactsRoot,
+        [Parameter(Mandatory = $true)][string] $EvidenceRoot,
+        [string] $CancellationPath
+    )
+
+    $tailTimer = [Diagnostics.Stopwatch]::StartNew()
+    $status = 'incomplete'
+    $reason = 'preflight-failed'
+    $failureMessage = $null
+    $rawPath = $null
+    $summaryPath = $null
+    $rawStream = $null
+    $rawWriter = $null
+    $originalConsoleError = $null
+    $moduleState = $null
+    $moduleStateCaptured = $false
+    $consoleErrorCaptured = $false
+    $metadataHashes = @{}
+    $preparedSha256 = $null
+    $reportSha256 = $null
+    $sampleCount = 0
+    $sampleCalls = [Collections.Generic.List[object]]::new()
+    $sampleStopwatch = $null
+    $selectedGroupSummary = @()
+    $sampleRecords = @()
+    $sampleDiagnosticErrors = [Collections.Generic.List[string]]::new()
+    $postflightErrors = [Collections.Generic.List[string]]::new()
+    $cleanupErrors = [Collections.Generic.List[string]]::new()
+    $counters = $null
+    $seriesWallSeconds = 0.0
+    $timingStateRestored = $null
+    $processIdentity = [pscustomobject]@{
+        processId = $PID
+        is64Bit = [Environment]::Is64BitProcess
+        runtime = [Runtime.InteropServices.RuntimeInformation]::FrameworkDescription
+        cacheCondition = 'same-process; canonical frozen-file preflight warmed closures before the ordered sample loop'
+    }
+
+    $writeTextCreateNew = {
+        param([string] $Path, [string] $Text)
+        $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Text)
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+        try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush() }
+        finally { $stream.Dispose() }
+    }
+    $hashFile = {
+        param([string] $Path)
+        (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+    }
+    $fullPath = {
+        param([string] $Path, [string] $Context)
+        if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.Path]::IsPathRooted($Path)) { throw "INVALID|$Context must be an absolute path." }
+        [IO.Path]::GetFullPath($Path)
+    }
+    $isWithin = {
+        param([string] $Path, [string] $Root)
+        $pathValue = [IO.Path]::GetFullPath($Path)
+        $rootValue = [IO.Path]::GetFullPath($Root).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+        $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+        $pathValue.Equals($rootValue, $comparison) -or $pathValue.StartsWith($rootValue + [IO.Path]::DirectorySeparatorChar, $comparison) -or
+            $pathValue.StartsWith($rootValue + [IO.Path]::AltDirectorySeparatorChar, $comparison)
+    }
+    $sameBindings = {
+        param([object[]] $Left, [object[]] $Right)
+        if ($Left.Count -ne $Right.Count) { return $false }
+        foreach ($leftBinding in $Left) {
+            $leftPath = [IO.Path]::GetFullPath([string]$leftBinding.path)
+            $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+            $matches = @($Right | Where-Object {
+                [IO.Path]::GetFullPath([string]$_.path).Equals($leftPath, $comparison) -and
+                [string]$_.sha256 -ceq [string]$leftBinding.sha256
+            })
+            if ($matches.Count -ne 1) { return $false }
+        }
+        return $true
+    }
+    $verifyNoReparse = {
+        param([string] $Path, [switch] $AllowMissingLeaf)
+        $cursor = [IO.Path]::GetFullPath($Path)
+        while (-not [string]::IsNullOrWhiteSpace($cursor)) {
+            if (Test-Path -LiteralPath $cursor) {
+                $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+                if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "BLOCKED|Resident timing path contains a reparse point: $cursor" }
+            }
+            elseif (-not $AllowMissingLeaf) { throw "BLOCKED|Resident timing path is missing: $cursor" }
+            $parent = Split-Path -Parent $cursor
+            if ([string]::IsNullOrWhiteSpace($parent) -or $parent -ceq $cursor) { break }
+            $cursor = $parent
+            $AllowMissingLeaf = $true
+        }
+    }
+    $newResult = {
+        param([bool] $Complete)
+        [pscustomobject]@{
+            status = $status
+            complete = $Complete
+            reason = $reason
+            message = $failureMessage
+            runId = if ($null -ne $Prepared) { [string]$Prepared.runId } else { $null }
+            sampleCount = $sampleCount
+            selectedGroups = @($selectedGroupSummary)
+            samples = @($sampleRecords)
+            sampleDiagnosticCountersValid = ($sampleDiagnosticErrors.Count -eq 0)
+            sampleDiagnosticErrors = @($sampleDiagnosticErrors.ToArray())
+            counters = $counters
+            seriesWallSeconds = [Math]::Round($seriesWallSeconds, 6)
+            tailWallSeconds = [Math]::Round($tailTimer.Elapsed.TotalSeconds, 6)
+            process = $processIdentity
+            rawDiagnosticsPath = $rawPath
+            rawDiagnosticsSha256 = if ($null -ne $rawPath -and (Test-Path -LiteralPath $rawPath -PathType Leaf)) { & $hashFile $rawPath } else { $null }
+            summaryPath = $summaryPath
+            preparedSha256 = $preparedSha256
+            reportSha256 = $reportSha256
+            metadataSha256 = $metadataHashes
+            postflightErrors = @($postflightErrors.ToArray())
+            cleanupErrors = @($cleanupErrors.ToArray())
+            timingStateRestored = $timingStateRestored
+        }
+    }
+
+    try {
+        $contract = Get-CodeSourceResidentRetainedApiContract -Module $Module
+        $expectedRunnerHash = [string]$AuthorityPin.files['scripts/Invoke-StandardValidation.ps1']
+        $runnerFullPath = & $fullPath $RunnerPath 'selected protected runner'
+        $moduleRunnerPath = if ([string]::IsNullOrWhiteSpace([string]$contract.runnerScriptFile)) { '' } else { & $fullPath ([string]$contract.runnerScriptFile) 'loaded protected runner' }
+        $runnerScriptDirectory = Split-Path -Parent $runnerFullPath
+        if ([IO.Path]::GetFileName($runnerScriptDirectory) -cne 'scripts' -or [IO.Path]::GetFileName($runnerFullPath) -cne 'Invoke-StandardValidation.ps1') {
+            throw 'The selected protected runner path does not match the pinned scripts/Invoke-StandardValidation.ps1 location.'
+        }
+        $runnerAuthorityRoot = Split-Path -Parent $runnerScriptDirectory
+        $repoFullPath = & $fullPath $RepositoryRoot 'protected repository'
+        $candidateFullPath = & $fullPath $CandidateRoot 'candidate root'
+        $artifactsFullPath = & $fullPath $ArtifactsRoot 'artifacts root'
+        $evidenceFullPath = & $fullPath $EvidenceRoot 'resident evidence root'
+        $evidenceParent = Split-Path -Parent $evidenceFullPath
+        if (-not $contract.supported) {
+            $reason = 'retained-receipt-api-unsupported'
+            $status = 'unsupported'
+        }
+        elseif ([string]$Module.Name -cne [string]$contract.moduleName -or
+            [string]$contract.frozenCommandModuleName -cne [string]$contract.moduleName -or
+            [string]$RunnerSha256 -cne $expectedRunnerHash -or
+            -not $runnerFullPath.Equals($moduleRunnerPath, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal })) -or
+            (& $hashFile $runnerFullPath) -cne $expectedRunnerHash) {
+            $reason = 'selected-runner-identity-mismatch'
+            $failureMessage = 'The resident sample module is not bound to the same selected authority runner identity.'
+        }
+        if (Test-Path -LiteralPath $evidenceFullPath) { throw 'Resident evidence root already exists; evidence is create-only.' }
+        if ((& $isWithin $evidenceFullPath $repoFullPath) -or (& $isWithin $evidenceFullPath $candidateFullPath) -or
+            (& $isWithin $evidenceFullPath $artifactsFullPath) -or (& $isWithin $evidenceFullPath $runnerAuthorityRoot)) {
+            throw 'Resident evidence root must be outside the repository, candidate, canonical artifacts and selected authority roots.'
+        }
+        & $verifyNoReparse $evidenceParent -AllowMissingLeaf
+        [void](New-Item -ItemType Directory -Path $evidenceFullPath -ErrorAction Stop)
+        $rawPath = Join-Path $evidenceFullPath 'resident-timing-raw.stderr.log'
+        $summaryPath = Join-Path $evidenceFullPath 'resident-timing-summary.json'
+        $rawStream = [IO.File]::Open($rawPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+        $rawWriter = [IO.StreamWriter]::new($rawStream, [Text.UTF8Encoding]::new($false))
+        $rawWriter.AutoFlush = $true
+
+        if ($status -ceq 'unsupported' -or $reason -ceq 'selected-runner-identity-mismatch') {
+            $rawWriter.Dispose(); $rawWriter = $null; $rawStream = $null
+        }
+        else {
+            $preparedFullPath = & $fullPath $PreparedPath 'prepared source metadata'
+            $timingFullPath = & $fullPath $TimingEvidencePath 'source timing evidence'
+            $ledgerFullPath = & $fullPath $CaseLedgerPath 'Pester case ledger'
+            $reportFullPath = & $fullPath ([string]$Report.artifacts.outputPath) 'canonical Core report'
+            if (-not (& $isWithin $reportFullPath $artifactsFullPath)) { throw 'Canonical Core report is outside the accepted artifacts root.' }
+            foreach ($pathValue in @($preparedFullPath, $timingFullPath, $ledgerFullPath, $reportFullPath)) {
+                & $verifyNoReparse $pathValue
+                $metadataHashes[$pathValue] = & $hashFile $pathValue
+            }
+            $preparedOnDisk = Get-Content -LiteralPath $preparedFullPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -Depth 80 -ErrorAction Stop
+            $reportOnDisk = Get-Content -LiteralPath $reportFullPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -Depth 80 -ErrorAction Stop
+            $timingOnDisk = Get-Content -LiteralPath $timingFullPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -Depth 40 -ErrorAction Stop
+            $ledgerOnDisk = Get-Content -LiteralPath $ledgerFullPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -Depth 40 -ErrorAction Stop
+            $preparedSha256 = [string]$metadataHashes[$preparedFullPath]
+            $reportSha256 = [string]$metadataHashes[$reportFullPath]
+            $runId = [string]$preparedOnDisk.runId
+            $sourceRevision = [string]$preparedOnDisk.sourceRevision
+            $authorityRevision = [string]$preparedOnDisk.authorityRevision
+            $sourceValidation = $preparedOnDisk.sourceValidation
+            $reportSourceValidation = $reportOnDisk.sourceValidation
+            $expectedDispatchNames = @('packageAdapter', 'skillValidator', 'skillTools', 'staticAnalyzer', 'frozenFiles', 'toolReceipts')
+            $preparedSourceNames = @($sourceValidation.PSObject.Properties.Name | Sort-Object -CaseSensitive)
+            $expectedSourceNames = @($expectedDispatchNames | Sort-Object -CaseSensitive)
+            $preparedReceiptBindings = @($sourceValidation.toolReceipts)
+            $preparedFrozenBindings = @($sourceValidation.frozenFiles)
+            $reportReceiptBindings = @($reportSourceValidation.toolReceipts)
+            $reportFrozenBindings = @($reportSourceValidation.frozenFiles)
+            $dispatchEntriesValid = $true
+            foreach ($dispatchName in @('packageAdapter', 'skillValidator', 'skillTools', 'staticAnalyzer')) {
+                $dispatch = $sourceValidation.PSObject.Properties[$dispatchName].Value
+                if ($null -eq $dispatch -or -not [IO.Path]::IsPathRooted([string]$dispatch.command) -or $dispatch.arguments -isnot [array]) {
+                    $dispatchEntriesValid = $false
+                    continue
+                }
+                foreach ($dispatchPath in @([string]$dispatch.command) + @($dispatch.arguments | Where-Object { [IO.Path]::IsPathRooted([string]$_) })) {
+                    $dispatchFullPath = [IO.Path]::GetFullPath([string]$dispatchPath)
+                    $dispatchMatches = @($preparedFrozenBindings | Where-Object {
+                        [IO.Path]::GetFullPath([string]$_.path).Equals($dispatchFullPath, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }))
+                    })
+                    if ($dispatchMatches.Count -ne 1) { $dispatchEntriesValid = $false }
+                }
+            }
+            $reportPathMatches = [IO.Path]::GetFullPath([string]$reportOnDisk.artifacts.outputPath).Equals($reportFullPath, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }))
+            $caseBindingPath = & $fullPath ([string]$reportSourceValidation.pesterCaseInventory.path) 'reported Pester case inventory'
+            $coreRunRoot = & $fullPath ([string]$reportOnDisk.artifacts.runRoot) 'Core run root'
+            $expectedCoreRunRoot = [IO.Path]::GetFullPath((Join-Path (Join-Path $artifactsFullPath 'runs') $runId))
+            $snapshotRoot = & $fullPath ([string]$reportOnDisk.artifacts.snapshotRoot) 'Core candidate snapshot root'
+            $caseRootPrefix = $coreRunRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+            $countNames = @('Failed', 'Skipped', 'Inconclusive', 'NotRun')
+            $countValidationMessage = $null
+            $diskCaseCountValues = $null
+            $memoryCaseCountValues = $null
+            try {
+                $diskCaseCountValues = Get-CodeSourceResidentCaseCountValues -CaseLedger $ledgerOnDisk
+                $memoryCaseCountValues = Get-CodeSourceResidentCaseCountValues -CaseLedger $CaseLedger
+            }
+            catch { $countValidationMessage = $_.Exception.Message }
+            $caseCountsSemanticsValid = $false
+            if ($null -eq $countValidationMessage) {
+                $inMemoryCountsMatch = $true
+                foreach ($countName in @('Passed') + $countNames) {
+                    if ([long]$memoryCaseCountValues.reportedCounts.$countName -ne [long]$diskCaseCountValues.reportedCounts.$countName) {
+                        $inMemoryCountsMatch = $false
+                    }
+                }
+                if ([long]$memoryCaseCountValues.caseDiscoveryCount -ne [long]$diskCaseCountValues.caseDiscoveryCount -or
+                    [long]$memoryCaseCountValues.caseExecutionCount -ne [long]$diskCaseCountValues.caseExecutionCount) {
+                    $inMemoryCountsMatch = $false
+                }
+                $caseCountsSemanticsValid = $inMemoryCountsMatch -and
+                    [long]$diskCaseCountValues.reportedCounts.Failed -eq 0 -and
+                    [long]$diskCaseCountValues.reportedCounts.Skipped -eq 0 -and
+                    [long]$diskCaseCountValues.reportedCounts.Inconclusive -eq 0 -and
+                    [long]$diskCaseCountValues.reportedCounts.NotRun -eq 0 -and
+                    [long]$diskCaseCountValues.reportedCounts.Passed -gt 0 -and
+                    [long]$diskCaseCountValues.caseDiscoveryCount -gt 0 -and
+                    [long]$diskCaseCountValues.caseDiscoveryCount -eq [long]$diskCaseCountValues.caseExecutionCount -and
+                    [long]$diskCaseCountValues.reportedTotal -eq [long]$diskCaseCountValues.caseExecutionCount -and
+                    [long]$diskCaseCountValues.reportedCounts.Passed -eq [long]$diskCaseCountValues.caseExecutionCount
+            }
+            if ($runId -cnotmatch '^[0-9a-f]{32}$' -or [string]$Prepared.runId -cne $runId -or
+                [string]$Report.runId -cne $runId -or [string]$reportOnDisk.runId -cne $runId -or
+                [string]$TimingEvidence.runId -cne $runId -or [string]$timingOnDisk.runId -cne $runId -or
+                [string]$CaseLedger.coreRunId -cne $runId -or [string]$ledgerOnDisk.coreRunId -cne $runId -or
+                [string]$authorityRevision -cne [string]$AuthorityPin.commit -or [string]$RunnerSha256 -cne $expectedRunnerHash -or
+                [string]$reportOnDisk.authority.revision -cne $authorityRevision -or
+                [string]$reportOnDisk.authority.runnerSha256 -cne $expectedRunnerHash -or
+                [string]$sourceRevision -cne [string]$reportOnDisk.candidate.sourceRevision -or
+                [string]$reportOnDisk.candidate.baseRevision -cne $BaseRevision -or
+                [string]$reportOnDisk.artifacts.root -cne $artifactsFullPath -or -not $reportPathMatches -or
+                [string]$reportOnDisk.artifacts.runId -cne $runId -or
+                [string]$Report.artifacts.runId -cne $runId -or
+                -not $coreRunRoot.Equals($expectedCoreRunRoot, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal })) -or
+                -not (& $isWithin $snapshotRoot $coreRunRoot) -or -not (Test-Path -LiteralPath $snapshotRoot -PathType Container) -or
+                [string]$reportOnDisk.state -cne 'PASS' -or [int]$reportOnDisk.exitCode -ne 0 -or
+                [string]$reportSourceValidation.status -cne 'passed' -or [string]$reportSourceValidation.runId -cne $runId -or
+                [string]$reportSourceValidation.sourceRevision -cne $sourceRevision -or [string]$reportSourceValidation.authorityRevision -cne $authorityRevision -or
+                [string]$Report.sourceValidation.status -cne [string]$reportSourceValidation.status -or
+                [string]$Report.sourceValidation.runId -cne [string]$reportSourceValidation.runId -or
+                [string]$Report.sourceValidation.sourceRevision -cne [string]$reportSourceValidation.sourceRevision -or
+                [string]$Report.sourceValidation.authorityRevision -cne [string]$reportSourceValidation.authorityRevision -or
+                $preparedSourceNames.Count -ne $expectedSourceNames.Count -or (($preparedSourceNames -join "`n") -cne ($expectedSourceNames -join "`n")) -or
+                -not $dispatchEntriesValid -or
+                $preparedReceiptBindings.Count -ne 3 -or $preparedFrozenBindings.Count -eq 0 -or
+                $reportReceiptBindings.Count -ne 3 -or $reportFrozenBindings.Count -eq 0 -or
+                -not (& $sameBindings $preparedReceiptBindings $reportReceiptBindings) -or
+                -not (& $sameBindings $preparedFrozenBindings $reportFrozenBindings) -or
+                -not $caseBindingPath.Equals($ledgerFullPath, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal })) -or
+                -not $ledgerFullPath.StartsWith($caseRootPrefix, $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal })) -or
+                [string]$reportSourceValidation.pesterCaseInventory.sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+                [string]$reportSourceValidation.pesterCaseInventory.sha256 -cne [string]$metadataHashes[$ledgerFullPath] -or
+                [string]$ledgerOnDisk.report -cne 'standard-core-pester-case-inventory-v1' -or
+                $ledgerOnDisk.schemaVersion -ne 1 -or $null -ne $countValidationMessage -or -not $caseCountsSemanticsValid -or
+                -not [bool]$timingOnDisk.reportAccepted -or -not [bool]$timingOnDisk.cleanupSucceeded -or
+                [string]$TimingEvidence.candidateRevision -cne $sourceRevision -or
+                [string]$TimingEvidence.baseRevision -cne $BaseRevision -or
+                [string]$TimingEvidence.authorityRevision -cne $authorityRevision -or
+                [string]$timingOnDisk.candidateRevision -cne $sourceRevision -or
+                [string]$timingOnDisk.baseRevision -cne $BaseRevision -or
+                [string]$timingOnDisk.authorityRevision -cne $authorityRevision -or
+                [int]$timingOnDisk.processExitCode -ne 0 -or
+                [string]$ledgerOnDisk.terminalStatus -cne 'complete' -or $ledgerOnDisk.complete -isnot [bool] -or -not [bool]$ledgerOnDisk.complete) {
+                $reason = 'metadata-mismatch'
+                $failureMessage = if ($null -ne $countValidationMessage) { $countValidationMessage } else { 'Prepared metadata, accepted report, cleanup/timing evidence or complete case ledger do not bind the same run.' }
+                $rawWriter.Dispose(); $rawWriter = $null; $rawStream = $null
+            }
+            else {
+                $preparedSha256 = [string]$metadataHashes[$preparedFullPath]
+                $reportSha256 = [string]$metadataHashes[$reportFullPath]
+                $status = 'incomplete'
+                $reason = 'preflight-failed'
+                $moduleState = & $Module {
+                    [pscustomobject]@{
+                        timingEnabled = $script:StandardValidationTimingEnabled
+                        timingStage = $script:StandardValidationTimingStage
+                        closureTiming = $script:StandardValidationClosureTiming
+                        readObserver = $script:StandardValidationReadObserver
+                    }
+                }
+                $moduleStateCaptured = $true
+                $originalConsoleError = [Console]::Error
+                $consoleErrorCaptured = $true
+                [Console]::SetError($rawWriter)
+                & $Module {
+                    param($Stage)
+                    $script:StandardValidationTimingEnabled = $true
+                    $script:StandardValidationTimingStage = $Stage
+                    $script:StandardValidationClosureTiming = $null
+                    $script:StandardValidationReadObserver = $null
+                } 'source-resident-preflight'
+
+                try {
+                    Invoke-CodeSourceStandardValidationModule -Module $Module -FunctionName 'Assert-StandardCoreFrozenFiles' `
+                        -Arguments ([ordered]@{ Files = [object[]]$sourceValidation.frozenFiles }) | Out-Null
+                    $receiptMap = Invoke-CodeSourceStandardValidationModule -Module $Module -FunctionName 'Assert-StandardCoreSourceToolReceipts' `
+                        -Arguments ([ordered]@{
+                            Bindings = [object[]]$sourceValidation.toolReceipts; FrozenFiles = [object[]]$sourceValidation.frozenFiles
+                            RunId = $runId; CandidateRoot = $candidateFullPath; ArtifactsRoot = $artifactsFullPath
+                            ReturnReceiptMap = $true
+                        })
+                    if ($null -eq $receiptMap -or [int]$receiptMap.schemaVersion -ne 1 -or
+                        [string]$receiptMap.runId -cne $runId -or $receiptMap.receipts -isnot [hashtable] -or
+                        $receiptMap.bindings -isnot [hashtable] -or $null -eq $receiptMap.groups -or
+                        $receiptMap.groups.byTool -isnot [hashtable] -or @($receiptMap.groups.groups).Count -lt 2) {
+                        $reason = 'receipt-map-mismatch'
+                        $failureMessage = 'The selected runner returned a retained receipt map with a different run or incomplete group inventory.'
+                    }
+                    else {
+                        $groupsBySize = [Collections.Generic.List[object]]::new()
+                        $seenGroupIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+                        foreach ($group in @($receiptMap.groups.groups)) {
+                            $groupId = [string]$group.id
+                            $rootFiles = @($group.rootFiles)
+                            if ([string]::IsNullOrWhiteSpace($groupId) -or -not $seenGroupIds.Add($groupId) -or $rootFiles.Count -eq 0) {
+                                $reason = 'receipt-map-mismatch'
+                                $failureMessage = 'The retained tool groups contain an empty or duplicate group identity.'
+                                break
+                            }
+                            $rootBytes = [long]0
+                            foreach ($file in $rootFiles) { $rootBytes += [long](Get-Item -LiteralPath ([string]$file.path) -Force -ErrorAction Stop).Length }
+                            $groupsBySize.Add([pscustomobject]@{
+                                id = $groupId; tools = @($group.tools); roots = @($group.roots)
+                                rootFileCount = $rootFiles.Count; rootBytes = $rootBytes
+                                rootFiles = $rootFiles; sharedFiles = @($group.sharedFiles); externalAssets = @($group.externalAssets)
+                            })
+                        }
+                        if ($reason -ceq 'preflight-failed') {
+                            $footprintCounts = @($groupsBySize | ForEach-Object { '{0}:{1}' -f [int]$_.rootFileCount, [long]$_.rootBytes } | Sort-Object -Unique)
+                            if ($footprintCounts.Count -lt 2) {
+                                $reason = 'insufficient-distinct-closure-footprints'
+                                $failureMessage = 'The actual installed tool groups do not provide two distinct frozen root-file count and byte footprints.'
+                            }
+                            elseif (-not [string]::IsNullOrWhiteSpace($CancellationPath) -and (Test-Path -LiteralPath $CancellationPath -PathType Leaf)) {
+                                $status = 'cancelled'
+                                $reason = 'cancelled-before-samples'
+                                $failureMessage = 'The resident sampling request was cancelled before the first sample.'
+                            }
+                            else {
+                                $orderedGroups = @($groupsBySize | Sort-Object -Property @{ Expression = { [long]$_.rootBytes } }, @{ Expression = { [int]$_.rootFileCount } }, @{ Expression = { [string]$_.id } })
+                                $selectedGroups = @($orderedGroups[0], $orderedGroups[-1])
+                                $selectedGroupSummary = @($selectedGroups | ForEach-Object {
+                                    [pscustomobject]@{
+                                        groupId = [string]$_.id; tools = @($_.tools); rootFileCount = [int]$_.rootFileCount; rootBytes = [long]$_.rootBytes
+                                        sharedFileCount = @($_.sharedFiles).Count; externalAssetCount = @($_.externalAssets).Count
+                                    }
+                                })
+                                $reason = 'sampling-failed'
+                                $sampleStopwatch = [Diagnostics.Stopwatch]::StartNew()
+                                foreach ($group in $selectedGroups) {
+                                    $additionalPathMap = [Collections.Generic.Dictionary[string,string]]::new($(if ($IsWindows) { [StringComparer]::OrdinalIgnoreCase } else { [StringComparer]::Ordinal }))
+                                    foreach ($toolName in @($group.tools)) {
+                                        $dispatchSlot = switch ([string]$toolName) {
+                                            'skill-validator' { 'skillValidator' }
+                                            'skill-tools' { 'skillTools' }
+                                            'skillspector' { 'staticAnalyzer' }
+                                            default { throw "The retained source group has an unsupported dispatch tool '$toolName'." }
+                                        }
+                                        $dispatch = $sourceValidation.PSObject.Properties[$dispatchSlot].Value
+                                        $dispatchCommand = & $fullPath ([string]$dispatch.command) "prepared $dispatchSlot command"
+                                        if (-not $additionalPathMap.ContainsKey($dispatchCommand)) { $additionalPathMap.Add($dispatchCommand, $dispatchCommand) }
+                                        foreach ($argument in @($dispatch.arguments)) {
+                                            if ([IO.Path]::IsPathRooted([string]$argument)) {
+                                                $argumentPath = & $fullPath ([string]$argument) "prepared $dispatchSlot argument path"
+                                                if (-not $additionalPathMap.ContainsKey($argumentPath)) { $additionalPathMap.Add($argumentPath, $argumentPath) }
+                                            }
+                                        }
+                                    }
+                                    $additionalPaths = [string[]]@($additionalPathMap.Values | Sort-Object -CaseSensitive)
+                                    for ($sampleIndex = 1; $sampleIndex -le 3; $sampleIndex++) {
+                                        if (-not [string]::IsNullOrWhiteSpace($CancellationPath) -and (Test-Path -LiteralPath $CancellationPath -PathType Leaf)) {
+                                            $status = 'cancelled'
+                                            $reason = 'cancelled-during-samples'
+                                            $failureMessage = 'The resident sampling request was cancelled during the sample loop.'
+                                            break
+                                        }
+                                        $sampleWatch = [Diagnostics.Stopwatch]::StartNew()
+                                        $sampleCount++
+                                        $sampleError = $null
+                                        & $Module { param($Stage) $script:StandardValidationTimingStage = $Stage } 'source-resident-sample'
+                                        try {
+                                            [void](Invoke-CodeSourceStandardValidationModule -Module $Module -FunctionName 'Assert-StandardCoreSourceToolReceipts' `
+                                                -Arguments ([ordered]@{
+                                                    Bindings = [object[]]$sourceValidation.toolReceipts; FrozenFiles = [object[]]$sourceValidation.frozenFiles
+                                                    RunId = $runId; CandidateRoot = $candidateFullPath; ArtifactsRoot = $artifactsFullPath
+                                                    RetainedReceiptMap = $receiptMap; ToolNames = [string[]]$group.tools
+                                                    AdditionalPaths = $additionalPaths
+                                                }))
+                                        }
+                                        catch { $sampleError = $_.Exception.Message }
+                                        finally {
+                                            $sampleWatch.Stop()
+                                            $sampleCalls.Add([pscustomobject]@{
+                                                groupId = [string]$group.id; sampleIndex = $sampleIndex; tools = @($group.tools)
+                                                rootFileCount = [int]$group.rootFileCount; rootBytes = [long]$group.rootBytes
+                                                additionalPaths = $additionalPaths; wallSeconds = [Math]::Round($sampleWatch.Elapsed.TotalSeconds, 6)
+                                                error = $sampleError
+                                            })
+                                        }
+                                        if ($null -ne $sampleError) {
+                                            $failureMessage = $sampleError
+                                            $reason = 'sample-exception'
+                                            break
+                                        }
+                                    }
+                                    if ($reason -ceq 'sample-exception' -or $status -ceq 'cancelled') { break }
+                                }
+                                $sampleStopwatch.Stop()
+                                $seriesWallSeconds = $sampleStopwatch.Elapsed.TotalSeconds
+                            }
+                        }
+                    }
+                }
+                catch {
+                    if ($reason -ceq 'sampling-failed') { $reason = 'sample-exception' }
+                    elseif ($reason -ceq 'preflight-failed') { $reason = 'preflight-failed' }
+                    $failureMessage = $_.Exception.Message
+                }
+                finally {
+                    if ($null -ne $sampleStopwatch) {
+                        $sampleStopwatch.Stop()
+                        if ($sampleCount -gt 0 -and $seriesWallSeconds -eq 0.0) { $seriesWallSeconds = $sampleStopwatch.Elapsed.TotalSeconds }
+                    }
+                    if ($moduleStateCaptured) {
+                        & $Module { param($Stage) $script:StandardValidationTimingStage = $Stage } 'source-resident-postflight'
+                        try {
+                            Invoke-CodeSourceStandardValidationModule -Module $Module -FunctionName 'Assert-StandardCoreFrozenFiles' `
+                                -Arguments ([ordered]@{ Files = [object[]]$sourceValidation.frozenFiles }) | Out-Null
+                        }
+                        catch { $postflightErrors.Add(('frozen-file verification: ' + $_.Exception.Message)) }
+                        try {
+                            [void](Invoke-CodeSourceStandardValidationModule -Module $Module -FunctionName 'Assert-StandardCoreSourceToolReceipts' `
+                                -Arguments ([ordered]@{
+                                    Bindings = [object[]]$sourceValidation.toolReceipts; FrozenFiles = [object[]]$sourceValidation.frozenFiles
+                                    RunId = $runId; CandidateRoot = $candidateFullPath; ArtifactsRoot = $artifactsFullPath
+                                }))
+                        }
+                        catch { $postflightErrors.Add(('full receipt verification: ' + $_.Exception.Message)) }
+                        if ($reason -ceq 'sampling-failed' -and $sampleCount -eq 6 -and $postflightErrors.Count -eq 0) {
+                            $reason = 'complete'
+                            $status = 'complete'
+                        }
+                        elseif ($reason -ceq 'sampling-failed' -and $postflightErrors.Count -gt 0) {
+                            $reason = 'postflight-failed'
+                            $failureMessage = $postflightErrors[0]
+                        }
+                    }
+                    if ($consoleErrorCaptured) {
+                        try { if ($null -ne $rawWriter) { $rawWriter.Flush() } }
+                        catch {
+                            $cleanupMessage = "raw timing writer Flush failed ($($_.Exception.GetType().FullName)): $($_.Exception.Message)"
+                            $cleanupErrors.Add($cleanupMessage)
+                            if ($null -eq $failureMessage) { $failureMessage = $cleanupMessage }
+                            if ($status -ceq 'complete') { $status = 'incomplete'; if ($reason -ceq 'complete') { $reason = 'cleanup-failed' } }
+                        }
+                        finally {
+                            try { [Console]::SetError($originalConsoleError); $consoleErrorCaptured = $false }
+                            catch {
+                                $cleanupMessage = "Console.Error restoration failed ($($_.Exception.GetType().FullName)): $($_.Exception.Message)"
+                                $cleanupErrors.Add($cleanupMessage)
+                                if ($null -eq $failureMessage) { $failureMessage = $cleanupMessage }
+                                if ($status -ceq 'complete') { $status = 'incomplete'; if ($reason -ceq 'complete') { $reason = 'cleanup-failed' } }
+                            }
+                        }
+                    }
+                    if ($null -ne $rawWriter) {
+                        try { $rawWriter.Dispose() }
+                        catch {
+                            $cleanupMessage = "raw timing writer Dispose failed ($($_.Exception.GetType().FullName)): $($_.Exception.Message)"
+                            $cleanupErrors.Add($cleanupMessage)
+                            if ($null -eq $failureMessage) { $failureMessage = $cleanupMessage }
+                            if ($status -ceq 'complete') { $status = 'incomplete'; if ($reason -ceq 'complete') { $reason = 'cleanup-failed' } }
+                            if ($null -ne $rawStream) {
+                                try { $rawStream.Dispose() }
+                                catch {
+                                    $cleanupMessage = "raw timing backing stream fallback Dispose failed ($($_.Exception.GetType().FullName)): $($_.Exception.Message)"
+                                    $cleanupErrors.Add($cleanupMessage)
+                                    if ($null -eq $failureMessage) { $failureMessage = $cleanupMessage }
+                                    if ($status -ceq 'complete') { $status = 'incomplete'; if ($reason -ceq 'complete') { $reason = 'cleanup-failed' } }
+                                }
+                            }
+                        }
+                        finally { $rawWriter = $null; $rawStream = $null }
+                    }
+                    if ($moduleStateCaptured) {
+                        try {
+                            & $Module {
+                                param($Previous)
+                                $script:StandardValidationTimingEnabled = $Previous.timingEnabled
+                                $script:StandardValidationTimingStage = $Previous.timingStage
+                                $script:StandardValidationClosureTiming = $Previous.closureTiming
+                                $script:StandardValidationReadObserver = $Previous.readObserver
+                            } $moduleState
+                            $restoredState = & $Module {
+                                [pscustomobject]@{
+                                    timingEnabled = $script:StandardValidationTimingEnabled
+                                    timingStage = $script:StandardValidationTimingStage
+                                    closureTiming = $script:StandardValidationClosureTiming
+                                    readObserver = $script:StandardValidationReadObserver
+                                }
+                            }
+                            $timingStateRestored = [bool]$restoredState.timingEnabled -eq [bool]$moduleState.timingEnabled -and
+                                [string]$restoredState.timingStage -ceq [string]$moduleState.timingStage -and
+                                [object]::ReferenceEquals($restoredState.closureTiming, $moduleState.closureTiming) -and
+                                [object]::ReferenceEquals($restoredState.readObserver, $moduleState.readObserver)
+                            $moduleStateCaptured = $false
+                            if (-not $timingStateRestored) {
+                                $cleanupMessage = 'Module timing state restore readback did not match the four captured values and references.'
+                                $cleanupErrors.Add($cleanupMessage)
+                                if ($null -eq $failureMessage) { $failureMessage = $cleanupMessage }
+                                if ($status -ceq 'complete') { $status = 'incomplete'; if ($reason -ceq 'complete') { $reason = 'cleanup-failed' } }
+                            }
+                        }
+                        catch {
+                            $timingStateRestored = $false
+                            $cleanupMessage = "Module timing state restoration failed ($($_.Exception.GetType().FullName)): $($_.Exception.Message)"
+                            $cleanupErrors.Add($cleanupMessage)
+                            if ($null -eq $failureMessage) { $failureMessage = $cleanupMessage }
+                            if ($status -ceq 'complete') { $status = 'incomplete'; if ($reason -ceq 'complete') { $reason = 'cleanup-failed' } }
+                        }
+                    }
+                }
+
+                $parsedRecords = [Collections.Generic.List[object]]::new()
+                foreach ($line in @(Get-Content -LiteralPath $rawPath -ErrorAction Stop)) {
+                    $prefix = '[StandardValidation timing] '
+                    if (-not $line.StartsWith($prefix, [StringComparison]::Ordinal)) { continue }
+                    try { $parsedRecords.Add(($line.Substring($prefix.Length) | ConvertFrom-Json -Depth 10 -ErrorAction Stop)) }
+                    catch { }
+                }
+                $terminalStates = @('completed', 'failed', 'cancelled')
+                $allSamplePhaseRecords = @($parsedRecords | Where-Object { [string]$_.stage -ceq 'source-resident-sample' })
+                $counterFieldNames = @('calls', 'files', 'bytes', 'elapsedSeconds')
+                for ($recordIndex = 0; $recordIndex -lt $allSamplePhaseRecords.Count; $recordIndex++) {
+                    $rawRecord = $allSamplePhaseRecords[$recordIndex]
+                    foreach ($fieldName in $counterFieldNames) {
+                        $counterProperty = $rawRecord.PSObject.Properties[$fieldName]
+                        if ($null -eq $counterProperty) {
+                            $sampleDiagnosticErrors.Add("sample timing record $recordIndex is missing numeric '$fieldName'.")
+                            continue
+                        }
+                        $counterValue = $counterProperty.Value
+                        $numericType = $counterValue -is [byte] -or $counterValue -is [sbyte] -or
+                            $counterValue -is [int16] -or $counterValue -is [uint16] -or
+                            $counterValue -is [int32] -or $counterValue -is [uint32] -or
+                            $counterValue -is [int64] -or $counterValue -is [uint64] -or
+                            $counterValue -is [single] -or $counterValue -is [double] -or $counterValue -is [decimal]
+                        if (-not $numericType) {
+                            $sampleDiagnosticErrors.Add("sample timing record $recordIndex has non-numeric '$fieldName'.")
+                            continue
+                        }
+                        $numericValue = [double]$counterValue
+                        if ([double]::IsNaN($numericValue) -or [double]::IsInfinity($numericValue) -or $numericValue -lt 0) {
+                            $sampleDiagnosticErrors.Add("sample timing record $recordIndex has non-finite or negative '$fieldName'.")
+                        }
+                    }
+                }
+                $samplePhaseRecords = @($allSamplePhaseRecords | Where-Object { [string]$_.state -cin $terminalStates })
+                $sampleBlocks = [Collections.Generic.List[object]]::new()
+                $currentSampleBlock = [Collections.Generic.List[object]]::new()
+                foreach ($phaseRecord in $samplePhaseRecords) {
+                    $currentSampleBlock.Add($phaseRecord)
+                    if ([string]$phaseRecord.phase -ceq 'source-integrity') {
+                        $sampleBlocks.Add([object[]]$currentSampleBlock.ToArray())
+                        $currentSampleBlock.Clear()
+                    }
+                }
+                if ($currentSampleBlock.Count -gt 0) { $sampleBlocks.Add([object[]]$currentSampleBlock.ToArray()) }
+                $sampleRecordList = [Collections.Generic.List[object]]::new()
+                for ($index = 0; $index -lt $sampleCalls.Count; $index++) {
+                    $call = $sampleCalls[$index]
+                    $phaseBlock = if ($index -lt $sampleBlocks.Count) { [object[]]$sampleBlocks[$index] } else { [object[]]@() }
+                    $outerRecord = @($phaseBlock | Where-Object { [string]$_.phase -ceq 'source-integrity' } | Select-Object -Last 1)
+                    $sourceIntegrityRecord = if ($outerRecord.Count -gt 0) { $outerRecord[0] } else { $null }
+                    $nestedRecords = @($phaseBlock | Where-Object { [string]$_.phase -cne 'source-integrity' })
+                    $sampleRecordList.Add([pscustomobject]@{
+                        groupId = [string]$call.groupId; sampleIndex = [int]$call.sampleIndex; tools = @($call.tools)
+                        rootFileCount = [int]$call.rootFileCount; rootBytes = [long]$call.rootBytes
+                        additionalPaths = @($call.additionalPaths); wallSeconds = [double]$call.wallSeconds; error = $call.error
+                        sourceIntegrity = $sourceIntegrityRecord; phaseRecords = $nestedRecords
+                        state = if ($null -eq $sourceIntegrityRecord) { 'missing-diagnostics' } else { [string]$sourceIntegrityRecord.state }
+                    })
+                }
+                $sampleRecords = @($sampleRecordList.ToArray())
+                if ($status -ceq 'complete') {
+                    $diagnosticsValid = $sampleDiagnosticErrors.Count -eq 0 -and $sampleCount -eq 6 -and $sampleRecords.Count -eq 6 -and @($sampleRecords | Where-Object {
+                        $null -eq $_.sourceIntegrity -or [string]$_.sourceIntegrity.state -cne 'completed' -or
+                            @($_.phaseRecords | Where-Object { [string]$_.phase -ceq 'source-receipt-bytes' -and [string]$_.state -ceq 'completed' }).Count -eq 0 -or
+                            @($_.phaseRecords | Where-Object { [string]$_.phase -ceq 'frozen-file-hashes' -and [string]$_.state -ceq 'completed' }).Count -eq 0 -or
+                            @($_.phaseRecords | Where-Object { [string]$_.phase -ceq 'closure-content-hash' -and [string]$_.state -ceq 'completed' }).Count -eq 0
+                    }).Count -eq 0
+                    if (-not $diagnosticsValid) {
+                        $status = 'incomplete'
+                        if ($sampleDiagnosticErrors.Count -gt 0) {
+                            $reason = 'invalid-sample-diagnostic-counters'
+                            $failureMessage = 'A sample-stage raw timing record has a missing, non-numeric, non-finite or negative counter.'
+                        }
+                        else {
+                            $reason = 'missing-sample-terminal-diagnostics'
+                            $failureMessage = 'Six sample calls with terminal outer records and retained-receipt, frozen-file-hash and closure-hash phase records were not captured.'
+                        }
+                    }
+                    else {
+                        $counters = [pscustomobject]@{
+                            sampleTerminalCount = $sampleRecords.Count
+                            phaseRecords = @($sampleRecords | ForEach-Object { @($_.phaseRecords) } | ForEach-Object { $_ })
+                            phases = @($sampleRecords | ForEach-Object { @($_.phaseRecords | ForEach-Object { [string]$_.phase }) } | Sort-Object -Unique -CaseSensitive)
+                        }
+                        foreach ($groupSummary in $selectedGroupSummary) {
+                            $groupSamples = @($sampleRecords | Where-Object { [string]$_.groupId -ceq [string]$groupSummary.groupId })
+                            $groupWall = @($groupSamples | ForEach-Object { [double]$_.wallSeconds } | Sort-Object)
+                            $groupSummary | Add-Member -NotePropertyName sampleCount -NotePropertyValue $groupSamples.Count -Force
+                            $groupSummary | Add-Member -NotePropertyName minWallSeconds -NotePropertyValue $groupWall[0] -Force
+                            $groupSummary | Add-Member -NotePropertyName meanWallSeconds -NotePropertyValue (($groupWall | Measure-Object -Average).Average) -Force
+                            $groupSummary | Add-Member -NotePropertyName maxWallSeconds -NotePropertyValue $groupWall[-1] -Force
+                        }
+                    }
+                }
+                elseif ($sampleCount -gt 0 -and @($sampleRecords | Where-Object { $null -eq $_.sourceIntegrity }).Count -gt 0 -and $reason -ceq 'sampling-failed') {
+                    $reason = 'missing-sample-terminal-diagnostics'
+                    $failureMessage = 'Sample calls produced no terminal timing diagnostics; the result remains incomplete and counters are not synthesized.'
+                }
+
+                foreach ($metadataPath in @($metadataHashes.Keys)) {
+                    if ((& $hashFile ([string]$metadataPath)) -cne [string]$metadataHashes[$metadataPath]) {
+                        if ($status -ceq 'complete') { $status = 'incomplete'; $reason = 'metadata-changed-after-sampling' }
+                        if ($null -eq $failureMessage) { $failureMessage = "Run metadata bytes changed during resident sampling: $metadataPath" }
+                    }
+                }
+                $preparedSha256 = [string]$metadataHashes[$preparedFullPath]
+                $reportSha256 = [string]$metadataHashes[$reportFullPath]
+            }
+        }
+        if ($status -ceq 'complete' -and $reason -ceq 'complete' -and $null -eq $failureMessage) {
+            $isComplete = $true
+        }
+        else { $isComplete = $false }
+    }
+    catch {
+        if ($null -eq $failureMessage) { $failureMessage = $_.Exception.Message }
+        if ($status -ceq 'complete') { $status = 'incomplete' }
+        if ($reason -ceq 'preflight-failed') { $reason = 'evidence-or-preflight-error' }
+        $isComplete = $false
+    }
+    finally {
+        if ($null -ne $rawWriter) {
+            try { $rawWriter.Flush() }
+            catch {
+                $cleanupMessage = "outer fallback raw timing writer Flush failed ($($_.Exception.GetType().FullName)): $($_.Exception.Message)"
+                $cleanupErrors.Add($cleanupMessage)
+                if ($null -eq $failureMessage) { $failureMessage = $cleanupMessage }
+                if ($status -ceq 'complete') { $status = 'incomplete'; if ($reason -ceq 'complete') { $reason = 'cleanup-failed' } }
+            }
+        }
+        if ($consoleErrorCaptured) {
+            try { [Console]::SetError($originalConsoleError); $consoleErrorCaptured = $false }
+            catch {
+                $cleanupMessage = "outer fallback Console.Error restoration failed ($($_.Exception.GetType().FullName)): $($_.Exception.Message)"
+                $cleanupErrors.Add($cleanupMessage)
+                if ($null -eq $failureMessage) { $failureMessage = $cleanupMessage }
+                if ($status -ceq 'complete') { $status = 'incomplete'; if ($reason -ceq 'complete') { $reason = 'cleanup-failed' } }
+            }
+        }
+        if ($null -ne $rawWriter) {
+            try { $rawWriter.Dispose() }
+            catch {
+                $cleanupMessage = "outer fallback raw timing writer Dispose failed ($($_.Exception.GetType().FullName)): $($_.Exception.Message)"
+                $cleanupErrors.Add($cleanupMessage)
+                if ($null -eq $failureMessage) { $failureMessage = $cleanupMessage }
+                if ($status -ceq 'complete') { $status = 'incomplete'; if ($reason -ceq 'complete') { $reason = 'cleanup-failed' } }
+                if ($null -ne $rawStream) {
+                    try { $rawStream.Dispose() }
+                    catch {
+                        $cleanupMessage = "outer fallback raw timing backing stream Dispose failed ($($_.Exception.GetType().FullName)): $($_.Exception.Message)"
+                        $cleanupErrors.Add($cleanupMessage)
+                        if ($null -eq $failureMessage) { $failureMessage = $cleanupMessage }
+                        if ($status -ceq 'complete') { $status = 'incomplete'; if ($reason -ceq 'complete') { $reason = 'cleanup-failed' } }
+                    }
+                }
+            }
+            finally { $rawWriter = $null; $rawStream = $null }
+        }
+        if ($moduleStateCaptured) {
+            try {
+                & $Module {
+                    param($Previous)
+                    $script:StandardValidationTimingEnabled = $Previous.timingEnabled
+                    $script:StandardValidationTimingStage = $Previous.timingStage
+                    $script:StandardValidationClosureTiming = $Previous.closureTiming
+                    $script:StandardValidationReadObserver = $Previous.readObserver
+                } $moduleState
+                $restoredState = & $Module {
+                    [pscustomobject]@{
+                        timingEnabled = $script:StandardValidationTimingEnabled
+                        timingStage = $script:StandardValidationTimingStage
+                        closureTiming = $script:StandardValidationClosureTiming
+                        readObserver = $script:StandardValidationReadObserver
+                    }
+                }
+                $timingStateRestored = [bool]$restoredState.timingEnabled -eq [bool]$moduleState.timingEnabled -and
+                    [string]$restoredState.timingStage -ceq [string]$moduleState.timingStage -and
+                    [object]::ReferenceEquals($restoredState.closureTiming, $moduleState.closureTiming) -and
+                    [object]::ReferenceEquals($restoredState.readObserver, $moduleState.readObserver)
+                $moduleStateCaptured = $false
+                if (-not $timingStateRestored) {
+                    $cleanupMessage = 'Outer fallback module timing state restore readback did not match the four captured values and references.'
+                    $cleanupErrors.Add($cleanupMessage)
+                    if ($null -eq $failureMessage) { $failureMessage = $cleanupMessage }
+                    if ($status -ceq 'complete') { $status = 'incomplete'; if ($reason -ceq 'complete') { $reason = 'cleanup-failed' } }
+                }
+            }
+            catch {
+                $timingStateRestored = $false
+                $cleanupMessage = "outer fallback module timing state restoration failed ($($_.Exception.GetType().FullName)): $($_.Exception.Message)"
+                $cleanupErrors.Add($cleanupMessage)
+                if ($null -eq $failureMessage) { $failureMessage = $cleanupMessage }
+                if ($status -ceq 'complete') { $status = 'incomplete'; if ($reason -ceq 'complete') { $reason = 'cleanup-failed' } }
+            }
+        }
+        if ($cleanupErrors.Count -gt 0) {
+            if ($status -ceq 'complete' -or $status -ceq 'unsupported') { $status = 'incomplete' }
+            if ($reason -ceq 'complete') { $reason = 'cleanup-failed' }
+            if ($null -eq $failureMessage) { $failureMessage = $cleanupErrors[0] }
+            $isComplete = $false
+        }
+    }
+
+    $tailTimer.Stop()
+    if ($null -ne $summaryPath -and -not (Test-Path -LiteralPath $summaryPath -PathType Leaf)) {
+        $result = & $newResult $isComplete
+        $summary = [ordered]@{}
+        foreach ($property in $result.PSObject.Properties) { $summary[$property.Name] = $property.Value }
+        $summary['source'] = 'Resident retained receipt measurements from this selected runner/module; noncanonical evidence, distinct from hosted installed-payload proof.'
+        & $writeTextCreateNew $summaryPath (($summary | ConvertTo-Json -Depth 30 -Compress) + [Environment]::NewLine)
+        return $result
+    }
+    return (& $newResult $isComplete)
+}
+
+function Invoke-CodeSourceResidentTiming {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $GitPath,
+        [Parameter(Mandatory = $true)][string] $PowerShellPath,
+        [Parameter(Mandatory = $true)][string] $RepositoryRoot,
+        [Parameter(Mandatory = $true)][string] $CandidateRevision,
+        [Parameter(Mandatory = $true)][string] $BaseRevision,
+        [Parameter(Mandatory = $true)] $AuthorityConfig,
+        [Parameter(Mandatory = $true)][string] $AuthorityRepositoryRoot,
+        [Parameter(Mandatory = $true)][string] $SourceToolsPath,
+        [Parameter(Mandatory = $true)][string] $RunId,
+        [Parameter(Mandatory = $true)][string] $EventName,
+        [Parameter(Mandatory = $true)][string] $ArtifactsRoot,
+        [Parameter(Mandatory = $true)][string] $OutputPath,
+        [Parameter(Mandatory = $true)][bool] $ArtifactsRootWasExplicit,
+        [Parameter(Mandatory = $true)][string] $ResidentEvidenceRoot,
+        [Parameter(Mandatory = $true)][string] $ProtectedBaseRoot,
+        [Parameter(Mandatory = $true)][string] $TrustedToolRoot,
+        [Parameter(Mandatory = $true)][int] $TimeoutSeconds,
+        [string] $CancellationPath
+    )
+
+    if ([string]$RunId -cnotmatch '^[0-9a-f]{32}$' -or
+        [string]$CandidateRevision -cnotmatch '^[0-9a-f]{40}$' -or
+        [string]$BaseRevision -cnotmatch '^[0-9a-f]{40}$' -or
+        [string]$EventName -cnotin @('local', 'pre-push', 'pull_request', 'push', 'workflow_dispatch') -or
+        $TimeoutSeconds -le 0) {
+        throw 'Source resident timing request has an invalid immutable run identity or execution boundary.'
+    }
+    if ([string]::IsNullOrWhiteSpace($ResidentEvidenceRoot)) {
+        throw 'Source resident timing requires a separate create-only evidence root.'
+    }
+
+    $pin = Assert-CodeSourceAuthorityConfig -Config $AuthorityConfig
+    $authority = Assert-CodeSourceAuthorityCheckout -GitPath $GitPath -AuthorityRoot $AuthorityRepositoryRoot -AuthorityPin $pin
+    $candidateRoot = [IO.Path]::GetFullPath($RepositoryRoot)
+    $protectedBaseRoot = [IO.Path]::GetFullPath($ProtectedBaseRoot)
+    $preparedPath = [IO.Path]::GetFullPath($SourceToolsPath)
+    $preparedHint = Read-JsonFile -Path $preparedPath -Context 'Prepared Code-Collaboration source tools for resident timing'
+    $powerShell = [IO.Path]::GetFullPath([string]$preparedHint.pesterRuntime.runtimeExecutablePath)
+    $runtimeRoot = [IO.Path]::GetFullPath([string]$preparedHint.pesterRuntime.runtimeRoot)
+    $trustedRoot = [IO.Path]::GetFullPath([string]$preparedHint.pesterRuntime.sourceTrustedToolRoot)
+    $pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    if ([string]$preparedHint.runId -cne $RunId -or [string]$preparedHint.authorityRevision -cne [string]$pin.commit -or
+        -not $powerShell.Equals([IO.Path]::GetFullPath($PowerShellPath), $pathComparison) -or
+        -not $trustedRoot.Equals([IO.Path]::GetFullPath($TrustedToolRoot), $pathComparison) -or
+        -not (Test-Path -LiteralPath $powerShell -PathType Leaf) -or
+        (Get-FileSha256 -Path $powerShell) -cne [string]$preparedHint.pesterRuntime.runtimeExecutableSha256 -or
+        -not $runtimeRoot.Equals([IO.Path]::GetFullPath((Join-Path ([string]$preparedHint.ownedRoot) 'runtime')), $pathComparison) -or
+        -not (Test-PathWithinOrEqual -Path $powerShell -Root $runtimeRoot) -or
+        -not (Test-Path -LiteralPath $trustedRoot -PathType Container) -or
+        -not (Test-PathWithinOrEqual -Path $powerShell -Root $runtimeRoot)) {
+        throw 'Prepared resident timing runtime does not match its exact owned executable, hash and trusted root.'
+    }
+    [void](Assert-CodeSourcePreparedBindings -Prepared $preparedHint -PreparedPath $preparedPath -CandidateRevision $CandidateRevision `
+        -PowerShellPath $powerShell -SourceRepository $script:SourceRepository -ExpectedAuthorityRevision ([string]$pin.commit))
+    if (-not (Test-Path -LiteralPath $candidateRoot -PathType Container)) { throw 'Source resident candidate root is missing.' }
+    if (-not (Test-Path -LiteralPath $protectedBaseRoot -PathType Container)) { throw 'Source resident protected driver base root is missing.' }
+    Assert-NoReparseAncestors -Path $candidateRoot -Context 'Source resident candidate root'
+    Assert-NoReparseAncestors -Path $protectedBaseRoot -Context 'Source resident protected driver base root'
+    Assert-NoReparseAncestors -Path $preparedPath -Context 'Source resident prepared metadata'
+    Assert-NoReparseAncestors -Path $runtimeRoot -Context 'Source resident owned runtime'
+    Assert-NoReparseAncestors -Path $trustedRoot -Context 'Source resident trusted tool root'
+
+    $artifactsRootPath = [IO.Path]::GetFullPath($ArtifactsRoot)
+    $paths = Get-CodeSourceCoreRunPaths -ArtifactsRoot $artifactsRootPath -ArtifactsRootWasExplicit $ArtifactsRootWasExplicit `
+        -RunId $RunId -OutputPath $OutputPath
+    $outputPath = [IO.Path]::GetFullPath($paths.outputPath)
+    if ((-not [string]::IsNullOrWhiteSpace($OutputPath) -and -not $outputPath.Equals([IO.Path]::GetFullPath($OutputPath), $pathComparison)) -or
+        -not (Test-Path -LiteralPath $paths.artifactsRoot -PathType Container) -or
+        -not (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
+        throw 'Source resident timing canonical report paths are missing or differ from the prepared Core run.'
+    }
+    foreach ($root in @($candidateRoot, $authority.root, $runtimeRoot, $trustedRoot, [IO.Path]::GetFullPath([string]$preparedHint.ownedRoot))) {
+        if ((Test-PathWithinOrEqual -Path $paths.artifactsRoot -Root $root) -or
+            (Test-PathWithinOrEqual -Path $root -Root $paths.artifactsRoot)) {
+            throw 'Source resident canonical artifacts overlap a protected source or authority root.'
+        }
+    }
+    Assert-NoReparseAncestors -Path $paths.artifactsRoot -Context 'Source resident canonical artifacts root'
+    Assert-NoReparseAncestors -Path $outputPath -Context 'Source resident canonical report'
+
+    $report = Read-JsonFile -Path $outputPath -Context 'Accepted Standard Core source report for resident timing'
+    $expectedCoreRunRoot = [IO.Path]::GetFullPath((Join-Path (Join-Path $paths.artifactsRoot 'runs') $RunId))
+    $reportedCoreRunRoot = if ([string]::IsNullOrWhiteSpace([string]$report.artifacts.runRoot)) { '' } else { [IO.Path]::GetFullPath([string]$report.artifacts.runRoot) }
+    if ([string]::IsNullOrWhiteSpace($reportedCoreRunRoot) -or -not $reportedCoreRunRoot.Equals($expectedCoreRunRoot, $pathComparison)) {
+        throw 'Source resident timing report does not bind the exact prepared Core run namespace.'
+    }
+    $timingRoot = Split-Path -Parent $paths.artifactsRoot
+    $timingPath = [IO.Path]::GetFullPath((Join-Path $timingRoot "source-validation-timing-$RunId.json"))
+    if (-not (Test-Path -LiteralPath $timingPath -PathType Leaf)) { throw 'Source resident canonical timing receipt is missing.' }
+    Assert-NoReparseAncestors -Path $timingPath -Context 'Source resident canonical timing receipt'
+    $timingEvidence = Read-JsonFile -Path $timingPath -Context 'Source resident canonical timing receipt'
+    [void](Assert-CodeSourceReportBinding -Report $report -Prepared $preparedHint -CandidateRevision $CandidateRevision `
+        -BaseRevision $BaseRevision -AuthorityRevision ([string]$pin.commit) -EventName $EventName `
+        -ArtifactsRoot $paths.artifactsRoot -OutputPath $outputPath -ProcessExitCode ([int]$timingEvidence.processExitCode) `
+        -CleanupSucceeded ([bool]$timingEvidence.cleanupSucceeded) `
+        -CancellationRequested ([bool](-not [string]::IsNullOrWhiteSpace($CancellationPath) -and (Test-Path -LiteralPath $CancellationPath))))
+    if ([string]$report.state -cne 'PASS' -or [int]$report.exitCode -ne 0) {
+        throw 'Source resident timing requires the canonical accepted report from the exact prepared run.'
+    }
+    if ([string]$timingEvidence.runId -cne $RunId -or
+        [string]$timingEvidence.candidateRevision -cne $CandidateRevision -or
+        [string]$timingEvidence.baseRevision -cne $BaseRevision -or
+        [string]$timingEvidence.authorityRevision -cne [string]$pin.commit -or
+        [int]$timingEvidence.processExitCode -ne 0 -or
+        $timingEvidence.reportAccepted -isnot [bool] -or -not $timingEvidence.reportAccepted -or
+        $timingEvidence.cleanupSucceeded -isnot [bool] -or -not $timingEvidence.cleanupSucceeded -or
+        [double]$timingEvidence.sourceValidationTotalSeconds -lt 0) {
+        throw 'Source resident timing receipt does not bind the accepted, cleaned-up prepared run.'
+    }
+
+    $caseBinding = $report.sourceValidation.pesterCaseInventory
+    if ($null -eq $caseBinding -or [string]::IsNullOrWhiteSpace([string]$caseBinding.path) -or
+        [string]$caseBinding.sha256 -cnotmatch '^[0-9a-f]{64}$') {
+        throw 'Source resident timing report has no exact Pester case ledger binding.'
+    }
+    $caseLedgerPath = [IO.Path]::GetFullPath([string]$caseBinding.path)
+    $coreRunRoot = $reportedCoreRunRoot
+    if (-not (Test-PathWithinOrEqual -Path $caseLedgerPath -Root $coreRunRoot) -or
+        -not (Test-Path -LiteralPath $caseLedgerPath -PathType Leaf)) {
+        throw 'Source resident Pester case ledger is outside the accepted Core run root.'
+    }
+    Assert-NoReparseAncestors -Path $caseLedgerPath -Context 'Source resident Pester case ledger'
+    if ((Get-FileSha256 -Path $caseLedgerPath) -cne [string]$caseBinding.sha256) {
+        throw 'Source resident Pester case ledger hash differs from its accepted report binding.'
+    }
+    $caseLedger = Read-JsonFile -Path $caseLedgerPath -Context 'Source resident Pester case ledger'
+    if ([int]$caseLedger.schemaVersion -ne 1 -or [string]$caseLedger.report -cne 'standard-core-pester-case-inventory-v1' -or
+        [string]$caseLedger.coreRunId -cne $RunId -or $caseLedger.complete -isnot [bool] -or -not $caseLedger.complete -or
+        [string]$caseLedger.terminalStatus -cne 'complete' -or
+        @($caseLedger.containerFileInventory).Count -le 0) {
+        throw 'Source resident Pester case ledger is incomplete or belongs to a different Core run.'
+    }
+    $caseCountValues = Get-CodeSourceResidentCaseCountValues -CaseLedger $caseLedger
+    $reportedCounts = $caseCountValues.reportedCounts
+    if ([long]$caseCountValues.caseDiscoveryCount -le 0 -or
+        [long]$caseCountValues.caseDiscoveryCount -ne [long]$caseCountValues.caseExecutionCount) {
+        throw 'Source resident Pester case ledger is incomplete or belongs to a different Core run.'
+    }
+    if ([long]$caseCountValues.reportedTotal -ne [long]$caseCountValues.caseExecutionCount) {
+        throw 'Source resident Pester case totals differ from the executed case inventory.'
+    }
+    if ([long]$reportedCounts.Failed -ne 0 -or [long]$reportedCounts.Skipped -ne 0 -or
+        [long]$reportedCounts.Inconclusive -ne 0 -or [long]$reportedCounts.NotRun -ne 0 -or
+        [long]$reportedCounts.Passed -ne [long]$caseCountValues.caseExecutionCount) {
+        throw 'Source resident timing requires every discovered Pester case to pass without skips, inconclusive cases, failures, or not-run cases.'
+    }
+
+    $residentRoot = [IO.Path]::GetFullPath($ResidentEvidenceRoot)
+    if (-not [IO.Path]::IsPathFullyQualified($ResidentEvidenceRoot)) { throw 'Source resident evidence root must be absolute.' }
+    foreach ($root in @($candidateRoot, $protectedBaseRoot, $authority.root, $runtimeRoot, $trustedRoot, [IO.Path]::GetFullPath([string]$preparedHint.ownedRoot), $paths.artifactsRoot)) {
+        if ((Test-PathWithinOrEqual -Path $residentRoot -Root $root) -or
+            (Test-PathWithinOrEqual -Path $root -Root $residentRoot)) {
+            throw 'Source resident timing evidence root overlaps a candidate, authority, owned runtime, or canonical evidence root.'
+        }
+    }
+    if (Test-Path -LiteralPath $residentRoot) { throw 'Source resident timing evidence root already exists; evidence is create-only.' }
+
+    $runnerArguments = [ordered]@{
+        CandidateRoot = $candidateRoot
+        AdapterPath = [IO.Path]::GetFullPath($paths.adapterPath)
+        ArtifactsRoot = [IO.Path]::GetFullPath($paths.artifactsRoot)
+        OutputPath = $outputPath
+        SourceRepository = $script:SourceRepository
+        SourceRevision = $CandidateRevision
+        BaseRevision = $BaseRevision
+        EventName = $EventName
+        RunId = $RunId
+        AuthorityRevision = [string]$pin.commit
+        TimeoutSeconds = $TimeoutSeconds
+        CancellationPath = if ([string]::IsNullOrWhiteSpace($CancellationPath)) { '' } else { [IO.Path]::GetFullPath($CancellationPath) }
+        TrustedToolRoot = $trustedRoot
+    }
+    $runnerModule = $null
+    try {
+        $runnerModule = New-CodeSourceStandardValidationModule -RunnerPath $authority.runnerPath `
+            -RunnerSha256 ([string]$pin.files['scripts/Invoke-StandardValidation.ps1']) -RunnerArguments $runnerArguments -SourceValidation
+        return Invoke-CodeSourceResidentSampleSeries -Module $runnerModule -Prepared $preparedHint -Report $report `
+            -TimingEvidence $timingEvidence -CaseLedger $caseLedger -PreparedPath $preparedPath `
+            -TimingEvidencePath $timingPath -CaseLedgerPath $caseLedgerPath -AuthorityPin $pin `
+            -RunnerPath $authority.runnerPath -RunnerSha256 ([string]$pin.files['scripts/Invoke-StandardValidation.ps1']) `
+            -RepositoryRoot $protectedBaseRoot -CandidateRoot $candidateRoot -BaseRevision $BaseRevision `
+            -ArtifactsRoot $paths.artifactsRoot -EvidenceRoot $residentRoot -CancellationPath $CancellationPath
+    }
+    finally {
+        if ($null -ne $runnerModule) { Remove-Module -ModuleInfo $runnerModule -Force -ErrorAction Stop }
+    }
+}
+
 $script:ValidationExitCode = 1
 $script:ExternalCleanupRoots = @()
-$script:SourceModeRequested = [bool]($PrepareSourceTools -or $SourceValidation)
+$script:SourceModeRequested = [bool]($PrepareSourceTools -or $SourceValidation -or $SourceResidentTiming)
 $script:SourceInvalidInput = $false
 $script:SourceCleanupFailed = $false
 
@@ -2264,8 +3458,10 @@ try {
     }
     if ($PSBoundParameters.ContainsKey('PrepareSourceTools')) { $sourceRequestArgs.PrepareSourceTools = [bool]$PrepareSourceTools }
     if ($PSBoundParameters.ContainsKey('SourceValidation')) { $sourceRequestArgs.SourceValidation = [bool]$SourceValidation }
+    if ([bool]$SourceResidentTiming) { $sourceRequestArgs.SourceResidentTiming = $true }
     if ($PSBoundParameters.ContainsKey('SourceToolsPath')) { $sourceRequestArgs.SourceToolsPath = [string]$SourceToolsPath }
-    if ($sourceRequestArgs.ContainsKey('SourceValidation') -and [bool]$sourceRequestArgs.SourceValidation) {
+    if (($sourceRequestArgs.ContainsKey('SourceValidation') -and [bool]$sourceRequestArgs.SourceValidation) -or
+        ($sourceRequestArgs.ContainsKey('SourceResidentTiming') -and [bool]$sourceRequestArgs.SourceResidentTiming)) {
         try {
             $preparedHint = Read-JsonFile -Path ([string]$SourceToolsPath) -Context 'Prepared source tools'
             $sourceRequestArgs.RunId = [string]$preparedHint.runId
@@ -2281,9 +3477,24 @@ try {
         }
         catch { throw "INVALID_SOURCE_METADATA| Prepared source tools cannot be admitted: $($_.Exception.Message)" }
     }
-    try { $sourceRequest = Assert-CodeSourceRunRequest @sourceRequestArgs }
+    try {
+        if ([bool]$SourceResidentTiming) {
+            $residentRequestArgs = @{
+                ExecutionMode = $ExecutionMode
+                PrepareSourceTools = [bool]$PrepareSourceTools
+                SourceValidation = [bool]$SourceValidation
+                SourceResidentTiming = [bool]$SourceResidentTiming
+                SourceToolsPath = [string]$SourceToolsPath
+                AdapterVersion = $AdapterVersion
+                AuthorityRevision = [string]$config.authority.commit
+                RunId = [string]$preparedHint.runId
+            }
+            $sourceRequest = Assert-CodeSourceResidentRunRequest @residentRequestArgs
+        }
+        else { $sourceRequest = Assert-CodeSourceRunRequest @sourceRequestArgs }
+    }
     catch { if ($script:SourceModeRequested) { throw "INVALID_SOURCE_REQUEST| $($_.Exception.Message)" }; throw }
-    if ($sourceRequest -in @('PrepareSourceTools', 'SourceValidation')) {
+    if ($sourceRequest -in @('PrepareSourceTools', 'SourceValidation', 'SourceResidentTiming')) {
         [void](Assert-CodeSourceAuthorityConfig -Config $config)
     }
     else {
@@ -2292,7 +3503,7 @@ try {
     $script:SourceInvalidInput = $false
 
     # Resolve the child PowerShell only after candidate authority and mode guards.
-    $pwshPath = if ($sourceRequest -eq 'SourceValidation') {
+    $pwshPath = if ($sourceRequest -in @('SourceValidation', 'SourceResidentTiming')) {
         [IO.Path]::GetFullPath([string]$preparedHint.pesterRuntime.runtimeExecutablePath)
     }
     else { Get-ResolvedPowerShellPath }
@@ -2314,6 +3525,21 @@ try {
             -TrustedToolRoot $TrustedToolRoot -ArtifactsRoot $ArtifactsRoot -OutputPath $OutputPath `
             -EventName (Get-EventName) -TimeoutSeconds $TimeoutSeconds `
             -ArtifactsRootWasExplicit ([bool]$PSBoundParameters.ContainsKey('ArtifactsRoot')) -CancellationPath $CancellationPath
+        $script:ValidationExitCode = 0
+        exit 0
+    }
+    if ($sourceRequest -eq 'SourceResidentTiming') {
+        $script:ValidationExitCode = 1
+        $residentResult = Invoke-CodeSourceResidentTiming -GitPath $gitPath -PowerShellPath $pwshPath `
+            -RepositoryRoot $repoRoot -CandidateRevision $candidateCommit -BaseRevision $baseRevision `
+            -AuthorityConfig $config -AuthorityRepositoryRoot $AuthorityRepositoryRoot -SourceToolsPath $SourceToolsPath `
+            -RunId ([string]$preparedHint.runId) -EventName (Get-EventName) -ArtifactsRoot $ArtifactsRoot `
+            -OutputPath $OutputPath -ArtifactsRootWasExplicit ([bool]$PSBoundParameters.ContainsKey('ArtifactsRoot')) `
+            -ResidentEvidenceRoot $ResidentEvidenceRoot -ProtectedBaseRoot $driverRoot -TrustedToolRoot $TrustedToolRoot `
+            -TimeoutSeconds $TimeoutSeconds -CancellationPath $CancellationPath
+        if ([string]$residentResult.status -notin @('complete', 'unsupported')) {
+            throw "Source resident timing did not complete: status=$($residentResult.status) reason=$($residentResult.reason) message=$($residentResult.message)"
+        }
         $script:ValidationExitCode = 0
         exit 0
     }
