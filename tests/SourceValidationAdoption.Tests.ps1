@@ -5,6 +5,11 @@ Describe 'Protected Standard Core SourceValidation preparation' {
         $script:RepositoryRoot = Split-Path -Parent $PSScriptRoot
         $script:DriverPath = Join-Path $script:RepositoryRoot 'scripts/StandardSourceDriver.psm1'
         $script:ConfigPath = Join-Path $script:RepositoryRoot 'config/standard-v1.json'
+        $script:SourceSetupFailureStage = $null
+        $script:SourceSetupPreparedPath = $null
+        $script:SourceRepository = $null
+        $script:SourceCleanupFailed = $false
+        $script:SourceInvalidInput = $false
 
         function Write-SourceBindingFixtureFile {
             param([Parameter(Mandatory)][string] $Path, [Parameter(Mandatory)][AllowEmptyString()][string] $Text)
@@ -986,8 +991,9 @@ exit $code
             $script:SourceInvalidInput = $false
 
             $errorText = $null
+            $outerOutput = @()
             $functionRestoredTestValidateSource = $null
-            try { & ([scriptblock]::Create($outerTry[0].Extent.Text)) }
+            try { $outerOutput = @(& ([scriptblock]::Create($outerTry[0].Extent.Text))) }
             catch { $errorText = $_.ToString() }
             finally {
                 $functionRestoredTestValidateSource = [Environment]::GetEnvironmentVariable('SYP154_TEST_VALIDATE_SOURCE', 'Process')
@@ -1003,7 +1009,7 @@ exit $code
             $script:SourceInvalidInput = $previousSourceInvalidInput
             return [pscustomobject]@{
                 fixture = $fixture; prepared = $prepared; timingPath = [IO.Path]::GetFullPath($timingPath); receipt = $receipt
-                artifactsRoot = $paths.artifactsRoot; adapterRoot = $paths.adapterRoot; errorText = $errorText
+                artifactsRoot = $paths.artifactsRoot; adapterRoot = $paths.adapterRoot; errorText = $errorText; outerOutput = @($outerOutput)
                 authorityRoot = $authorityRoot; authorityHead = $authorityRevision
                 priorTestValidateSourceAfter = $functionRestoredTestValidateSource
                 cleanupFailed = $cleanupFailedAfterBlock; invalidInput = $invalidInputAfterBlock
@@ -1238,12 +1244,6 @@ exit $code
             if ($null -eq $factoryAst) { throw 'The production protected runner module factory is unavailable to the resident fixture.' }
             . ([scriptblock]::Create($factoryAst.Extent.Text))
 
-            $authority = Get-A031AuthoritySupervisorBinding
-            $authorityPin = Get-PreparedSourceAuthorityPin -AuthorityRevision '8e627baf54bd6e47862e6291b25e71cc45a2f2b7'
-            if ([string]$authority.revision -cne [string]$authorityPin.commit -or
-                [string]$authority.sha256 -cne [string]$authorityPin.files['scripts/Invoke-StandardValidation.ps1']) {
-                throw 'Resident fixture runner is not the exact formal 8e authority runner.'
-            }
             $fixtureRoot = [IO.Path]::GetFullPath($Root)
             $candidateRoot = Join-Path $fixtureRoot 'candidate'
             $artifactsRoot = Join-Path $fixtureRoot 'artifacts'
@@ -1251,25 +1251,21 @@ exit $code
             foreach ($directory in @($candidateRoot, $artifactsRoot, $trustedToolRoot)) {
                 [void](New-Item -ItemType Directory -Path $directory -Force)
             }
-            $runnerArguments = [ordered]@{
-                CandidateRoot = $candidateRoot
-                AdapterPath = Join-Path $artifactsRoot 'source-core-adapter.json'
-                ArtifactsRoot = $artifactsRoot
-                OutputPath = ''
-                SourceRepository = [string]$authorityPin.repository
-                SourceRevision = $CandidateRevision
-                BaseRevision = $BaseRevision
-                EventName = 'pull_request'
-                RunId = $RunId
-                AuthorityRevision = [string]$authorityPin.commit
-                TimeoutSeconds = 10800
-                CancellationPath = ''
-                TrustedToolRoot = $trustedToolRoot
+            $authorityFixture = New-SourceResidentAuthorityModuleForTest -Fixture ([pscustomobject]@{
+                candidateRoot = [IO.Path]::GetFullPath($candidateRoot)
+                artifactsRoot = [IO.Path]::GetFullPath($artifactsRoot)
+                trustedToolRoot = [IO.Path]::GetFullPath($trustedToolRoot)
+                prepared = [pscustomobject]@{ runId = $RunId; sourceRevision = $CandidateRevision }
+                baseRevision = $BaseRevision
+            }) -AuthorityRevision '8e627baf54bd6e47862e6291b25e71cc45a2f2b7'
+            $authority = [pscustomobject]@{
+                root = [string]$authorityFixture.authority.root
+                revision = [string]$authorityFixture.authorityPin.commit
+                path = [string]$authorityFixture.runnerPath
+                sha256 = [string]$authorityFixture.runnerSha256
             }
-            $module = New-CodeSourceStandardValidationModule -RunnerPath ([string]$authority.path) `
-                -RunnerSha256 ([string]$authority.sha256) -RunnerArguments $runnerArguments -SourceValidation
             return [pscustomobject]@{
-                module = $module; authority = $authority; authorityPin = $authorityPin
+                module = $authorityFixture.module; authority = $authority; authorityPin = $authorityFixture.authorityPin
                 candidateRoot = [IO.Path]::GetFullPath($candidateRoot)
                 artifactsRoot = [IO.Path]::GetFullPath($artifactsRoot)
                 trustedToolRoot = [IO.Path]::GetFullPath($trustedToolRoot)
@@ -1285,7 +1281,7 @@ exit $code
             $functionNames = @(
                 'Assert-CodeSourceAuthorityCheckout', 'Assert-NoReparseAncestors', 'Test-PathWithinOrEqual', 'Assert-PathWithinRoot',
                 'Get-FileSha256', 'Get-GitBlobSha256', 'Get-ResolvedGitPath', 'Resolve-GitRevision', 'Test-PathEqual',
-                'New-CodeSourceStandardValidationModule'
+                'New-CodeSourceAuthoritySnapshot', 'New-CodeSourceStandardValidationModule'
             )
             $validatePath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
             $tokens = $null
@@ -1300,26 +1296,33 @@ exit $code
 
             $authorityPin = Get-PreparedSourceAuthorityPin -AuthorityRevision $AuthorityRevision
             $gitPath = Get-ResolvedGitPath
-            $candidateRoots = [Collections.Generic.List[string]]::new()
-            $configuredRoot = [Environment]::GetEnvironmentVariable('SYP154_CANDIDATE_AUTHORITY_ROOT', 'Process')
-            if (-not [string]::IsNullOrWhiteSpace($configuredRoot)) { $candidateRoots.Add([IO.Path]::GetFullPath($configuredRoot)) }
-            $hostRoot = if ([string]::IsNullOrWhiteSpace($configuredRoot)) { $null } else { Split-Path -Parent $configuredRoot }
-            if (-not [string]::IsNullOrWhiteSpace($hostRoot)) {
-                foreach ($relativeRoot in @('authority-ff85', 'SYP326-authority-fixture-lf-20261013', 'SYP326-authority-fixture-20261013')) {
-                    $candidateRoots.Add([IO.Path]::GetFullPath((Join-Path $hostRoot $relativeRoot)))
-                }
+            $activeAuthorityBinding = Get-A031AuthoritySupervisorBinding
+            $activeConfigPath = Join-Path $script:RepositoryRoot 'config/standard-v1.json'
+            $activeConfig = Get-Content -LiteralPath $activeConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 40 -ErrorAction Stop
+            if ([string]$activeConfig.authority.commit -cne 'ff85d5f80fe795b96354e753074b5ce59ad04ecd' -or
+                @($activeConfig.authority.files).Count -ne 32) {
+                throw 'Resident authority fixture requires the exact configured FF85 32-file source pin.'
+            }
+            $activeAuthorityPin = Get-PreparedSourceAuthorityPin -AuthorityRevision ([string]$activeConfig.authority.commit)
+            if ([string]$activeAuthorityBinding.revision -cne [string]$activeAuthorityPin.commit -or
+                [string]$activeAuthorityBinding.sha256 -cne [string]$activeAuthorityPin.files['scripts/Invoke-StandardValidation.ps1']) {
+                throw 'The configured resident authority checkout does not match its exact active FF85 pin.'
+            }
+            $activeAuthority = Assert-CodeSourceAuthorityCheckout -GitPath $gitPath `
+                -AuthorityRoot ([string]$activeAuthorityBinding.root) -AuthorityPin $activeAuthorityPin
+            if ([string]$activeAuthority.revision -cne [string]$activeAuthorityPin.commit) {
+                throw 'The configured resident authority checkout changed while it was being validated.'
             }
 
-            $authority = $null
-            foreach ($candidateRoot in @($candidateRoots.ToArray() | Select-Object -Unique)) {
-                if (-not (Test-Path -LiteralPath $candidateRoot -PathType Container)) { continue }
-                $head = Resolve-GitRevision -GitPath $gitPath -Root $candidateRoot -Revision 'HEAD' -Context 'Resident authority fixture HEAD'
-                if ($head -cne [string]$authorityPin.commit) { continue }
-                $authority = Assert-CodeSourceAuthorityCheckout -GitPath $gitPath -AuthorityRoot $candidateRoot -AuthorityPin $authorityPin
-                break
+            if ([string]$authorityPin.commit -ceq [string]$activeAuthority.revision) {
+                $authority = $activeAuthority
             }
-            if ($null -eq $authority) {
-                throw "Could not locate the exact selected authority checkout for resident compatibility fixture $AuthorityRevision."
+            else {
+                $artifactParent = Split-Path -Parent ([IO.Path]::GetFullPath([string]$Fixture.artifactsRoot))
+                $authorityOwnedRoot = Join-Path $artifactParent ('.resident-authority-' + [guid]::NewGuid().ToString('N'))
+                [void](New-Item -ItemType Directory -Path $authorityOwnedRoot -ErrorAction Stop)
+                $authority = New-CodeSourceAuthoritySnapshot -GitPath $gitPath `
+                    -SourceRoot ([string]$activeAuthority.root) -OwnedRoot $authorityOwnedRoot -AuthorityPin $authorityPin
             }
             $runnerSha256 = Get-FileSha256 -Path ([string]$authority.runnerPath)
             if ($runnerSha256 -cne [string]$authorityPin.files['scripts/Invoke-StandardValidation.ps1']) {
@@ -2646,11 +2649,7 @@ function Assert-AuthorityConfig { param([Parameter(Mandatory)] $Config) }
             ($legacyContract.missingParameters -join ',') | Should -BeExactly 'RetainedReceiptMap,ToolNames,AdditionalPaths,ReturnReceiptMap'
             $legacyContract.timingStateProbed | Should -BeFalse
 
-            $authority = Get-A031AuthoritySupervisorBinding
             $formalPin = Get-PreparedSourceAuthorityPin -AuthorityRevision '8e627baf54bd6e47862e6291b25e71cc45a2f2b7'
-            [string]$authority.revision | Should -BeExactly ([string]$formalPin.commit)
-            [string]$authority.sha256 | Should -BeExactly ([string]$formalPin.files['scripts/Invoke-StandardValidation.ps1'])
-
             $fixtureRoot = [IO.Path]::GetFullPath((Join-Path $TestDrive ('resident-api-' + [guid]::NewGuid().ToString('N'))))
             $candidateRoot = Join-Path $fixtureRoot 'candidate'
             $artifactsRoot = Join-Path $fixtureRoot 'artifacts'
@@ -2658,23 +2657,21 @@ function Assert-AuthorityConfig { param([Parameter(Mandatory)] $Config) }
             foreach ($directory in @($candidateRoot, $artifactsRoot, $trustedToolRoot)) {
                 [void](New-Item -ItemType Directory -Path $directory -Force)
             }
-            $runnerArguments = [ordered]@{
-                CandidateRoot = $candidateRoot
-                AdapterPath = Join-Path $artifactsRoot 'source-core-adapter.json'
-                ArtifactsRoot = $artifactsRoot
-                OutputPath = ''
-                SourceRepository = [string]$formalPin.repository
-                SourceRevision = 'a' * 40
-                BaseRevision = 'b' * 40
-                EventName = 'local'
-                RunId = 'c' * 32
-                AuthorityRevision = [string]$formalPin.commit
-                TimeoutSeconds = 1200
-                CancellationPath = ''
-                TrustedToolRoot = $trustedToolRoot
+            $authorityFixture = New-SourceResidentAuthorityModuleForTest -Fixture ([pscustomobject]@{
+                candidateRoot = [IO.Path]::GetFullPath($candidateRoot)
+                artifactsRoot = [IO.Path]::GetFullPath($artifactsRoot)
+                trustedToolRoot = [IO.Path]::GetFullPath($trustedToolRoot)
+                prepared = [pscustomobject]@{ runId = 'c' * 32; sourceRevision = 'a' * 40 }
+                baseRevision = 'b' * 40
+            }) -AuthorityRevision ([string]$formalPin.commit)
+            $authority = [pscustomobject]@{
+                revision = [string]$authorityFixture.authorityPin.commit
+                sha256 = [string]$authorityFixture.runnerSha256
+                path = [string]$authorityFixture.runnerPath
             }
-            $actualModule = New-CodeSourceStandardValidationModule -RunnerPath ([string]$authority.path) `
-                -RunnerSha256 ([string]$authority.sha256) -RunnerArguments $runnerArguments -SourceValidation
+            [string]$authority.revision | Should -BeExactly ([string]$formalPin.commit)
+            [string]$authority.sha256 | Should -BeExactly ([string]$formalPin.files['scripts/Invoke-StandardValidation.ps1'])
+            $actualModule = $authorityFixture.module
             $before = & $actualModule {
                 [pscustomobject]@{
                     enabled = [bool]$script:StandardValidationTimingEnabled
@@ -3041,7 +3038,7 @@ function Assert-AuthorityConfig { param([Parameter(Mandatory)] $Config) }
             )) {
                 if ($residentStep -notmatch $requiredPattern) { $issues.Add("Workflow resident step is missing protected entry contract: $requiredPattern") }
             }
-            if ($residentStep -match "Join-Path\s+\$candidateRoot\s+'scripts/Validate[.]ps1'" -or
+            if ($residentStep -match 'Join-Path\s+\$candidateRoot\s+''scripts/Validate[.]ps1''' -or
                 $residentStep -match 'evidence-index[.]json') {
                 $issues.Add('Workflow resident step uses a candidate driver or rewrites the parent-owned evidence index.')
             }
@@ -3201,13 +3198,13 @@ function Assert-AuthorityConfig { param([Parameter(Mandatory)] $Config) }
             if ($script:residentRouteSamplerCalls -ne $beforeCalls) { $unpassedLedgerFailures.Add("$counterName reached the leaf sampler") }
         }
         $typedCountScenarios = @(
-            [pscustomobject]@{ field = 'Passed'; value = [double]1.5 }
-            [pscustomobject]@{ field = 'Failed'; value = [double]0.5 }
-            [pscustomobject]@{ field = 'Skipped'; value = '0' }
-            [pscustomobject]@{ field = 'Inconclusive'; value = [bool]$false }
-            [pscustomobject]@{ field = 'NotRun'; value = $null }
-            [pscustomobject]@{ field = 'caseDiscoveryCount'; value = [double]2.1 }
-            [pscustomobject]@{ field = 'caseExecutionCount'; value = [double]2.2 }
+            [pscustomobject]@{ field = 'Passed'; value = [double]1.5; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'Failed'; value = [double]0.5; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'Skipped'; value = '0'; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'Inconclusive'; value = [bool]$false; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'NotRun'; value = $null; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'caseDiscoveryCount'; value = [double]2.1; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'caseExecutionCount'; value = [double]2.2; rawJsonValue = $null; rangeFailure = $false }
             [pscustomobject]@{ field = 'Passed'; value = [double]::PositiveInfinity; rawJsonValue = '1e400'; rangeFailure = $false }
             [pscustomobject]@{ field = 'Passed'; value = [System.Numerics.BigInteger]::Parse('9223372036854775808'); rawJsonValue = '9223372036854775808'; rangeFailure = $true }
         )
@@ -3264,8 +3261,8 @@ function Assert-AuthorityConfig { param([Parameter(Mandatory)] $Config) }
         @($routeFailures.ToArray()) | Should -BeNullOrEmpty -Because 'every resident route boundary must be verified before evidence creation or sampling'
     }
 
-    # Scenario: the event-base driver still lacks the optional resident endpoint.
-    # Purpose: exercise the workflow's bounded capability probe against the actual protected 47 baseline and prove it records unsupported without launching a child.
+    # Scenario: a legacy protected-driver command shape lacks the optional resident endpoint.
+    # Purpose: exercise the workflow's bounded capability probe with a self-contained fixture that does not require Git metadata in the candidate snapshot.
     It 'UnitT79_records_unsupported_for_the_old_protected_driver_without_launching_it' {
         $workflowPath = Join-Path $script:RepositoryRoot '.github/workflows/validate.yml'
         $workflowText = Get-Content -LiteralPath $workflowPath -Raw
@@ -3289,20 +3286,41 @@ function Assert-AuthorityConfig { param([Parameter(Mandatory)] $Config) }
         $probeAst = $workflowAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-ResidentDriverCompatibilityProbe' }, $true)
         $probeAst | Should -Not -BeNullOrEmpty
 
-        $git = Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1
-        $oldDriverText = @(& $git.Path -C $script:RepositoryRoot show '47c55b365964586436395aea3c44bf4f31cd1a3e:scripts/Validate.ps1') -join "`n"
-        $LASTEXITCODE | Should -Be 0
+        $oldDriverText = @'
+[CmdletBinding()]
+param(
+    [string] $RepositoryRoot,
+    [string] $BaseCommit,
+    [switch] $PrepareSourceTools,
+    [switch] $SourceValidation,
+    [string] $SourceToolsPath
+)
+$sentinelPath = [Environment]::GetEnvironmentVariable('SYP326_TEST_LEGACY_DRIVER_EXECUTION_SENTINEL', 'Process')
+if ([string]::IsNullOrWhiteSpace($sentinelPath)) { throw 'Legacy protected driver fixture was executed without its test sentinel path.' }
+[IO.File]::WriteAllText($sentinelPath, 'executed', [Text.UTF8Encoding]::new($false))
+throw 'Legacy protected driver fixture must not be executed.'
+'@
         $oldDriver = Write-SourceBindingFixtureFile -Path (Join-Path $TestDrive (([guid]::NewGuid().ToString('N')) + '-Validate.ps1')) -Text $oldDriverText
         . ([scriptblock]::Create($probeAst.Extent.Text))
         $evidenceRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $sentinelPath = Join-Path $TestDrive 'legacy-driver-executed.txt'
+        $sentinelVariableName = 'SYP326_TEST_LEGACY_DRIVER_EXECUTION_SENTINEL'
+        $previousSentinelPath = [Environment]::GetEnvironmentVariable($sentinelVariableName, 'Process')
+        [Environment]::SetEnvironmentVariable($sentinelVariableName, $sentinelPath, 'Process')
         $script:residentNativeLaunchCount = 0
         function Invoke-StandardValidationProcess { $script:residentNativeLaunchCount++ }
-        $probe = Invoke-ResidentDriverCompatibilityProbe -DriverPath $oldDriver -EvidenceRoot $evidenceRoot `
-            -CandidateRevision ('a' * 40) -BaseRevision ('b' * 40) -RunId ('c' * 32)
+        try {
+            $probe = Invoke-ResidentDriverCompatibilityProbe -DriverPath $oldDriver -EvidenceRoot $evidenceRoot `
+                -CandidateRevision ('a' * 40) -BaseRevision ('b' * 40) -RunId ('c' * 32)
+        }
+        finally {
+            [Environment]::SetEnvironmentVariable($sentinelVariableName, $previousSentinelPath, 'Process')
+        }
 
         $probe.supported | Should -BeFalse
         $probe.reason | Should -BeExactly 'protected-driver-resident-entry-unsupported'
         $script:residentNativeLaunchCount | Should -Be 0
+        (Test-Path -LiteralPath $sentinelPath -PathType Leaf) | Should -BeFalse
         (Test-Path -LiteralPath (Join-Path $evidenceRoot 'resident-timing-summary.json') -PathType Leaf) | Should -BeTrue
         $summary = Get-Content -LiteralPath (Join-Path $evidenceRoot 'resident-timing-summary.json') -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
         $summary.status | Should -BeExactly 'unsupported'
@@ -3316,7 +3334,7 @@ function Assert-AuthorityConfig { param([Parameter(Mandatory)] $Config) }
         $launchIndex = $workflowScript.IndexOf('Invoke-StandardValidationProcess', [StringComparison]::Ordinal)
         ($probeCallIndex -ge 0 -and $unsupportedGuardIndex -gt $probeCallIndex -and $launchIndex -gt $unsupportedGuardIndex) | Should -BeTrue
         $workflowScript.Substring($unsupportedGuardIndex, $launchIndex - $unsupportedGuardIndex) | Should -Match 'return'
-        $workflowScript | Should -Not -Match "Join-Path\s+\`\$candidateRoot\s+'scripts/Validate[.]ps1'"
+        $workflowScript | Should -Not -Match 'Join-Path\s+\$candidateRoot\s+''scripts/Validate[.]ps1'''
     }
 
     # Scenario: the hosted workflow resolves the executable basename for its Windows-owned PowerShell runtime.
@@ -3490,14 +3508,14 @@ __ROUTER_BODY__
             if ($null -ne $definition) { . ([scriptblock]::Create($definition.Extent.Text)) }
         }
         $scenarios = @(
-            [pscustomobject]@{ field = 'Passed'; value = [double]1.5; jsonType = 'System.Double' }
-            [pscustomobject]@{ field = 'Failed'; value = [double]0.5; jsonType = 'System.Double' }
-            [pscustomobject]@{ field = 'Skipped'; value = '0'; jsonType = 'System.String' }
-            [pscustomobject]@{ field = 'Inconclusive'; value = [bool]$false; jsonType = 'System.Boolean' }
-            [pscustomobject]@{ field = 'NotRun'; value = $null; jsonType = 'null' }
-            [pscustomobject]@{ field = 'caseDiscoveryCount'; value = [double]2.1; jsonType = 'System.Double' }
-            [pscustomobject]@{ field = 'caseExecutionCount'; value = [double]2.2; jsonType = 'System.Double' }
-            [pscustomobject]@{ field = 'Passed'; value = [double]::PositiveInfinity; jsonType = 'System.Double'; rawJsonValue = '1e400' }
+            [pscustomobject]@{ field = 'Passed'; value = [double]1.5; jsonType = 'System.Double'; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'Failed'; value = [double]0.5; jsonType = 'System.Double'; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'Skipped'; value = '0'; jsonType = 'System.String'; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'Inconclusive'; value = [bool]$false; jsonType = 'System.Boolean'; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'NotRun'; value = $null; jsonType = 'null'; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'caseDiscoveryCount'; value = [double]2.1; jsonType = 'System.Double'; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'caseExecutionCount'; value = [double]2.2; jsonType = 'System.Double'; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'Passed'; value = [double]::PositiveInfinity; jsonType = 'System.Double'; rawJsonValue = '1e400'; rangeFailure = $false }
             [pscustomobject]@{ field = 'Passed'; value = [System.Numerics.BigInteger]::Parse('9223372036854775808'); rawJsonValue = '9223372036854775808'; rangeFailure = $true }
         )
         $failures = [Collections.Generic.List[string]]::new()
