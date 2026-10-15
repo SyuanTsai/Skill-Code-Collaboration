@@ -53,11 +53,11 @@ Consumers should resolve a release tag to an immutable commit SHA and persist th
 
 ## Validation
 
-The required GitHub gate runs the protected full-source validation path on Windows. It verifies the event-base `Validate.ps1` driver, the immutable candidate checkout, the real ff85 authority Git checkout, and one fresh run-owned tool closure. The current active authority tuple is ff85 with all 32 reviewed file hashes.
+The required GitHub gate runs the protected full-source validation path on Windows. It verifies the event-base `Validate.ps1` driver, the immutable candidate checkout, the real 8e authority Git checkout, and one fresh run-owned tool closure. The current active authority tuple is commit `8e627baf54bd6e47862e6291b25e71cc45a2f2b7` with its complete reviewed 32-file closure.
 
 Windows is the only supported host for local development, installation, execution, testing, acceptance, and CI. Run repository commands in PowerShell (pwsh); Linux/macOS hosts, WSL, and Linux containers are unsupported. See [Windows support and Skill inventory](docs/WINDOWS-SUPPORT.md) for the complete owned Skill inventory and support boundary.
 
-For a local full-source run, use the same trusted event-base driver, candidate checkout, and verified ff85 authority checkout, then prepare once and validate with the same `source-tools.json`:
+For a local full-source run, use the same trusted event-base driver, candidate checkout, and verified 8e authority checkout, then prepare once and validate with the same `source-tools.json`:
 
 ```powershell
 $runRoot = Join-Path (Join-Path $env:TEMP 'code-collaboration') ([guid]::NewGuid().ToString('N'))
@@ -65,7 +65,7 @@ $sourceTools = Join-Path $runRoot 'source-tools.json'
 $baseCommit = '<immutable event-base commit SHA>'
 $protectedDriver = '<trusted event-base checkout>/scripts/Validate.ps1'
 $candidateRoot = '<clean immutable candidate Git checkout>'
-$authorityRoot = '<verified ff85 authority Git checkout>'
+$authorityRoot = '<verified 8e authority Git checkout>'
 $artifactsRoot = Join-Path $runRoot 'core-v2'
 
 pwsh -File $protectedDriver -RepositoryRoot $candidateRoot -AdapterVersion 2 -PrepareSourceTools `

@@ -4,7 +4,7 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Protected full-source validation
 
-The required Windows CI gate runs protected full-source validation for the active `config/standard-v1.json` ff85 authority tuple and its complete 32-file closure. The workflow checks out the immutable event-base driver, clean candidate, and verified ff85 authority Git tree separately, then performs one fresh run-owned setup followed by full source validation with the same prepared `source-tools.json`. The legacy unqualified `Validate.ps1` route remains available as a historical regression path; it is not a substitute for the required gate.
+The required Windows CI gate runs protected full-source validation for the active `config/standard-v1.json` 8e authority tuple and its complete 32-file closure. The workflow checks out the immutable event-base driver, clean candidate, and verified 8e authority Git tree separately, then performs one fresh run-owned setup followed by full source validation with the same prepared `source-tools.json`. The legacy unqualified `Validate.ps1` route remains available as a historical regression path; it is not a substitute for the required gate.
 
 Windows is the only supported host for local development, installation, execution, testing, acceptance, and CI. Use PowerShell (pwsh) for repository commands; Linux/macOS hosts, WSL, and Linux containers are unsupported. See [Windows support and Skill inventory](WINDOWS-SUPPORT.md) for the complete owned Skill inventory and support boundary.
 
@@ -22,19 +22,19 @@ It retains the selected, physical source, and materialized paths, the complete i
 
 ## Authenticated hosted source acquisition
 
-The workflow grants the built-in `GITHUB_TOKEN` only to the `Prepare source tools once` step while retaining job permission `contents: read`. The protected ff85 resolver uses that token in its GitHub API request headers, then removes authorization headers and `GITHUB_TOKEN`/`GH_TOKEN` from SkillSpector’s managed Python and pip child environment. The workflow does not set a job-wide token or retain it in validation evidence.
+The workflow grants the built-in `GITHUB_TOKEN` only to the `Prepare source tools once` step while retaining job permission `contents: read`. The protected 8e resolver uses that token in its GitHub API request headers, then removes authorization headers and `GITHUB_TOKEN`/`GH_TOKEN` from SkillSpector’s managed Python and pip child environment. The workflow does not set a job-wide token or retain it in validation evidence.
 
 ### Updating the hosted Node/npm runtime
 
-Changing either pinned version requires the same npm lock comparison against the immutable ff85 resolver and lock validator, including the resolved `skill-tools` version/integrity and resulting root dependency shape. Update the version and executable identity together from the official release archive and signed checksum material, then pass the focused workflow regression, exact-head CI, and a fresh complete full-source validation before adopting the change. A passing npm experiment alone does not establish that the hosted gate is ready.
+Changing either pinned version requires the same npm lock comparison against the immutable active 8e resolver and lock validator, including the resolved `skill-tools` version/integrity and resulting root dependency shape. Update the version and executable identity together from the official release archive and signed checksum material, then pass the focused workflow regression, exact-head CI, and a fresh complete full-source validation before adopting the change. A passing npm experiment alone does not establish that the hosted gate is ready.
 
 ## Local full-source validation
 
-Use the verified ff85 authority Git checkout and an immutable event-base commit. Check out that base separately as the trusted driver, with its Git HEAD equal to the base commit. The candidate is a separate clean Git checkout containing the active approved ff85 authority configuration. Both checkouts must preserve the committed bytes; on Windows, use `core.autocrlf=false` and `core.eol=lf` before checkout. Prepare a fresh run-owned tool closure once, then execute source validation with that same prepared file:
+Use the verified 8e authority Git checkout and an immutable event-base commit. Check out that base separately as the trusted driver, with its Git HEAD equal to the base commit. The candidate is a separate clean Git checkout containing the active approved 8e authority configuration. Both checkouts must preserve the committed bytes; on Windows, use `core.autocrlf=false` and `core.eol=lf` before checkout. Prepare a fresh run-owned tool closure once, then execute source validation with that same prepared file:
 
 ```powershell
 $sourceTools = Join-Path $env:RUNNER_TEMP 'code-collaboration/source-tools.json'
-$authorityRoot = '<verified ff85 authority Git checkout>'
+$authorityRoot = '<verified 8e authority Git checkout>'
 $baseCommit = '<immutable event-base commit SHA>'
 $protectedDriver = Join-Path '<trusted event-base checkout>' 'scripts/Validate.ps1'
 $candidateRoot = '<clean immutable candidate Git checkout>'
