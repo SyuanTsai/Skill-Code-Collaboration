@@ -5,6 +5,11 @@ Describe 'Protected Standard Core SourceValidation preparation' {
         $script:RepositoryRoot = Split-Path -Parent $PSScriptRoot
         $script:DriverPath = Join-Path $script:RepositoryRoot 'scripts/StandardSourceDriver.psm1'
         $script:ConfigPath = Join-Path $script:RepositoryRoot 'config/standard-v1.json'
+        $script:SourceSetupFailureStage = $null
+        $script:SourceSetupPreparedPath = $null
+        $script:SourceRepository = $null
+        $script:SourceCleanupFailed = $false
+        $script:SourceInvalidInput = $false
 
         function Write-SourceBindingFixtureFile {
             param([Parameter(Mandatory)][string] $Path, [Parameter(Mandatory)][AllowEmptyString()][string] $Text)
@@ -688,7 +693,1407 @@ Describe 'Protected Standard Core SourceValidation preparation' {
             }
             return [IO.Path]::GetFullPath($targetRoot)
         }
+        function Invoke-SourceSetupLateTimingBlockForTest {
+            param([Parameter(Mandatory)][string] $Root, [string] $FailureStage)
+
+            $validatePath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
+            $tokens = $null
+            $parseErrors = $null
+            $validateAst = [System.Management.Automation.Language.Parser]::ParseFile($validatePath, [ref]$tokens, [ref]$parseErrors)
+            if (@($parseErrors).Count -gt 0) { throw 'Validate.ps1 did not parse for setup timing behavior test.' }
+            $setupAst = $validateAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-CodeSourceToolSetup' }, $true)
+            if ($null -eq $setupAst) { throw 'Invoke-CodeSourceToolSetup was not found.' }
+            $outerTry = @($setupAst.Body.EndBlock.Statements | Where-Object { $_ -is [System.Management.Automation.Language.TryStatementAst] })
+            if ($outerTry.Count -ne 1) { throw 'Invoke-CodeSourceToolSetup did not have one direct outer try block.' }
+            $statements = $outerTry[0].Body.Statements
+            $startIndex = -1
+            $endIndex = -1
+            for ($index = 0; $index -lt $statements.Count; $index++) {
+                $text = $statements[$index].Extent.Text
+                if ($startIndex -lt 0 -and ($text.Contains('$finalFrozenVerificationSeconds = $null') -or $text.Contains('$frozenRecords = @($sourceFrozenFiles.files)'))) { $startIndex = $index }
+                if ($text.Contains('Source setup timing evidence:')) { $endIndex = $index }
+            }
+            if ($startIndex -lt 0 -or $endIndex -lt $startIndex) { throw 'The production late setup receipt span could not be located.' }
+            $productionTimingSpan = [string]::Join([Environment]::NewLine, @($statements[$startIndex..$endIndex] | ForEach-Object { $_.Extent.Text }))
+
+            foreach ($name in @('Get-FileSha256', 'Assert-NoReparseAncestors', 'Test-PathEqual', 'Write-Utf8NoBomCreateNew')) {
+                $definition = $validateAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name }, $true)
+                if ($null -eq $definition) { throw "The production helper function was not found: $name" }
+                . ([scriptblock]::Create($definition.Extent.Text))
+            }
+
+            $fixture = New-SourceBindingFixture -Root $Root
+            $earlyTimingPath = Join-Path $fixture.prepared.ownedRoot 'setup-timing.json'
+            $earlyBytes = [IO.File]::ReadAllBytes($earlyTimingPath)
+            $earlyHashBefore = Get-SourceBindingFixtureHash -Path $earlyTimingPath
+            $earlyInput = Get-Content -LiteralPath $earlyTimingPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 40
+            $setupStageSeconds = [ordered]@{}
+            foreach ($property in $earlyInput.stageSeconds.PSObject.Properties) { $setupStageSeconds[$property.Name] = [double]$property.Value }
+            $resolverStageSeconds = [ordered]@{}
+            foreach ($property in $earlyInput.resolverSeconds.PSObject.Properties) { $resolverStageSeconds[$property.Name] = [double]$property.Value }
+            $setupStartedAtUtc = [DateTimeOffset]::Parse([string]$earlyInput.startedAtUtc)
+            $setupRoot = [IO.Path]::GetFullPath($fixture.root)
+            $preparedPath = Join-Path $setupRoot "prepared-timing-$($fixture.runId).json"
+            $runId = [string]$fixture.runId
+            $ownedRoot = [IO.Path]::GetFullPath($fixture.prepared.ownedRoot)
+            $setupTimingPath = [IO.Path]::GetFullPath($earlyTimingPath)
+            $setupTimingRecord = [pscustomobject]@{ path = $setupTimingPath; sha256 = $earlyHashBefore }
+            $sourceDispatch = $fixture.prepared.sourceValidation
+            $sourceFrozenFiles = [pscustomobject]@{
+                files = @($sourceDispatch.frozenFiles | Where-Object { [IO.Path]::GetFullPath([string]$_.path) -cne $setupTimingPath })
+            }
+            $RepositoryRoot = $fixture.root
+            $CandidateRevision = [string]$fixture.candidateRevision
+            $pin = [pscustomobject]@{ commit = [string]$fixture.authorityRevision }
+            $archivePath = [string]$fixture.prepared.candidateArchivePath
+            $archiveSha256 = [string]$fixture.prepared.candidateArchiveSha256
+            $moduleManifestPath = [string]$fixture.prepared.pesterRuntime.moduleManifestPath
+            $lockPath = [string]$fixture.prepared.pesterRuntime.closureLockPath
+            $lockHash = [string]$fixture.prepared.pesterRuntime.closureLockSha256
+            $setupReceiptPath = [string]$fixture.prepared.pesterRuntime.setupReceiptPath
+            $runtimeRoot = [string]$fixture.prepared.pesterRuntime.runtimeRoot
+            $powerShell = [string]$fixture.prepared.pesterRuntime.runtimeExecutablePath
+            $runtimeInventoryPath = [string]$fixture.prepared.pesterRuntime.runtimeInventoryPath
+            $runtimeInventorySha256 = [string]$fixture.prepared.pesterRuntime.runtimeInventorySha256
+            $trustedRoot = [string]$fixture.prepared.pesterRuntime.sourceTrustedToolRoot
+            $runnerModule = [pscustomobject]@{ testModule = $true }
+            $setupTimer = [Diagnostics.Stopwatch]::StartNew()
+
+            $previousSourceSetupFailureStage = $script:SourceSetupFailureStage
+            $previousSourceSetupPreparedPath = $script:SourceSetupPreparedPath
+            $script:SourceSetupFailureStage = $FailureStage
+            $script:SourceSetupPreparedPath = [IO.Path]::GetFullPath($preparedPath)
+            $writerDefinition = $validateAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Write-Utf8NoBomCreateNew' }, $true)
+            if ($null -eq $writerDefinition) { throw 'The production create-only writer was not found.' }
+            $writerAliasText = [string]$writerDefinition.Extent.Text -replace '(?i)\bfunction\s+Write-Utf8NoBomCreateNew\b', 'function Write-Utf8NoBomCreateNewForTimingTest'
+            . ([scriptblock]::Create($writerAliasText))
+            function Write-Utf8NoBomCreateNew {
+                param([string] $Path, [string] $Text)
+                if ($script:SourceSetupFailureStage -ceq 'prepared' -and (Test-PathEqual -Left $Path -Right $script:SourceSetupPreparedPath)) {
+                    throw 'fixture prepared metadata write failure'
+                }
+                Write-Utf8NoBomCreateNewForTimingTest -Path $Path -Text $Text
+            }
+            function Invoke-CodeSourceStandardValidationModule {
+                param($Module, [string] $FunctionName, $Arguments)
+                if (($script:SourceSetupFailureStage -ceq 'frozen' -and $FunctionName -ceq 'Assert-StandardCoreFrozenFiles') -or
+                    ($script:SourceSetupFailureStage -ceq 'receipts' -and $FunctionName -ceq 'Assert-StandardCoreSourceToolReceipts')) {
+                    throw "fixture $($script:SourceSetupFailureStage) verification failure"
+                }
+            }
+
+            $productionBlock = [scriptblock]::Create($productionTimingSpan)
+            $failure = $null
+            try { $null = & $productionBlock }
+            catch { $failure = $_.Exception.Message }
+            $earlyHashAfter = Get-SourceBindingFixtureHash -Path $earlyTimingPath
+            $script:SourceSetupFailureStage = $previousSourceSetupFailureStage
+            $script:SourceSetupPreparedPath = $previousSourceSetupPreparedPath
+            return [pscustomobject]@{
+                setupRoot = $setupRoot
+                preparedPath = [IO.Path]::GetFullPath($preparedPath)
+                setupTimingPath = $setupTimingPath
+                completedPath = [IO.Path]::GetFullPath((Join-Path $setupRoot "source-tools-setup-completed-$runId.json"))
+                runId = $runId
+                setupStageSeconds = $setupStageSeconds
+                resolverStageSeconds = $resolverStageSeconds
+                setupTimingBytesBefore = $earlyBytes
+                setupTimingHashBefore = $earlyHashBefore
+                setupTimingHashAfter = $earlyHashAfter
+                failure = $failure
+                preparedExists = [IO.File]::Exists($preparedPath)
+                completedExists = [IO.File]::Exists((Join-Path $setupRoot "source-tools-setup-completed-$runId.json"))
+            }
+        }
+
+        function Invoke-SourceValidationOuterTryForTest {
+            param(
+                [Parameter(Mandatory)][string] $Root,
+                [ValidateSet('success', 'reader', 'binding', 'nonzero', 'cancel', 'cleanup', 'snapshot', 'adapter')]
+                [string] $Scenario = 'success'
+            )
+
+            $authorityBinding = Get-A031AuthoritySupervisorBinding
+            $fixture = New-SourceBindingFixture -Root (Join-Path $Root 'prepared') -AuthorityRevision ([string]$authorityBinding.revision)
+            $validatePath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
+            $tokens = $null
+            $parseErrors = $null
+            $validateAst = [System.Management.Automation.Language.Parser]::ParseFile($validatePath, [ref]$tokens, [ref]$parseErrors)
+            if (@($parseErrors).Count -gt 0) { throw 'Validate.ps1 did not parse for source timing behavior test.' }
+            $sourceFunction = $validateAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-CodeSourceValidation' }, $true)
+            if ($null -eq $sourceFunction) { throw 'Invoke-CodeSourceValidation was not found.' }
+            $outerTry = @($sourceFunction.Body.EndBlock.Statements | Where-Object {
+                $_ -is [System.Management.Automation.Language.TryStatementAst] -and $null -ne $_.Finally -and $_.Finally.Extent.Text.Contains('$timingEvidence')
+            })
+            if ($outerTry.Count -ne 1) { throw 'Invoke-CodeSourceValidation did not have one direct outer try block.' }
+
+            foreach ($name in @('Assert-NoDuplicateJsonProperties', 'Convert-JsonElementToPowerShellObject', 'Get-FileSha256', 'Read-JsonFile',
+                'Assert-NoReparseAncestors', 'Assert-OutsideRoot', 'Test-PathWithinOrEqual', 'Test-PathEqual', 'Assert-PathWithinRoot',
+                'Write-Utf8NoBomCreateNew', 'Write-CodeSourceRunnerOutputDiagnostic')) {
+                $definition = $validateAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name }, $true)
+                if ($null -eq $definition) { throw "The production source timing helper was not found: $name" }
+                . ([scriptblock]::Create($definition.Extent.Text))
+            }
+
+            $realPowerShell = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+            $trustedRoot = [IO.Path]::GetFullPath((Split-Path -Parent $realPowerShell))
+            $prepared = $fixture.prepared
+            $prepared.pesterRuntime.runtimeExecutablePath = $realPowerShell
+            $prepared.pesterRuntime.runtimeExecutableSha256 = Get-FileSha256 -Path $realPowerShell
+            $prepared.pesterRuntime.runtimeRoot = $trustedRoot
+            $prepared.pesterRuntime.sourceTrustedToolRoot = $trustedRoot
+            $preparedPath = [IO.Path]::GetFullPath($fixture.preparedPath)
+            [IO.File]::WriteAllText($preparedPath, (($prepared | ConvertTo-Json -Depth 80) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+
+            $authorityRoot = [IO.Path]::GetFullPath([string]$authorityBinding.root)
+            $authorityRevision = [string]$authorityBinding.revision
+            $git = Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1
+
+            $script:SourceTimingTestScenario = $Scenario
+            $script:SourceTimingTestAdapterRoot = Join-Path $Root ".core-v2-adapter-$($fixture.runId)"
+            $script:SourceTimingTestPin = [pscustomobject]@{
+                commit = $authorityRevision
+                files = [ordered]@{ 'scripts/Invoke-StandardValidation.ps1' = ('0' * 64) }
+            }
+            function New-CodeSourceAuthoritySnapshot {
+                param([string] $GitPath, [string] $SourceRoot, [string] $OwnedRoot, $AuthorityPin)
+                if ($script:SourceTimingTestScenario -ceq 'snapshot') { throw 'fixture authority snapshot failure' }
+                $runnerPath = Join-Path $OwnedRoot 'authority/scripts/Invoke-StandardValidation.ps1'
+                [void](New-Item -ItemType Directory -Path (Split-Path -Parent $runnerPath) -Force)
+                # This fragment substitutes only the expensive external Core runner payload; it does not assert the formal runner hash, prepared-runtime admission, or full-gate outcome.
+                $runnerText = @'
+[CmdletBinding()]
+param(
+    [string] $CandidateRoot, [string] $AdapterPath, [string] $ArtifactsRoot, [string] $OutputPath,
+    [string] $SourceRepository, [string] $SourceRevision, [string] $BaseRevision, [string] $EventName,
+    [string] $AuthorityRevision, [int] $TimeoutSeconds, [string] $TrustedToolRoot,
+    [switch] $SourceValidation, [string] $RunId, [string] $CancellationPath
+)
+$code = [int][Environment]::GetEnvironmentVariable('SYP326_SOURCE_TEST_EXIT_CODE', 'Process')
+if ($code -eq 0) { [IO.File]::WriteAllText($OutputPath, '{"fixture":true}', [Text.UTF8Encoding]::new($false)) }
+[Console]::Out.WriteLine("controlled source runner exit=$code")
+exit $code
+'@
+                [IO.File]::WriteAllText($runnerPath, $runnerText, [Text.UTF8Encoding]::new($false))
+                $AuthorityPin.files['scripts/Invoke-StandardValidation.ps1'] = Get-FileSha256 -Path $runnerPath
+                return [pscustomobject]@{ root = [IO.Path]::GetFullPath((Join-Path $OwnedRoot 'authority')); runnerPath = [IO.Path]::GetFullPath($runnerPath) }
+            }
+            function Get-CodeSourceCoreRunPaths {
+                param([string] $ArtifactsRoot, [bool] $ArtifactsRootWasExplicit, [string] $RunId, [string] $OutputPath)
+                $fullArtifactsRoot = [IO.Path]::GetFullPath($ArtifactsRoot)
+                $adapterRoot = Join-Path (Split-Path -Parent $fullArtifactsRoot) ".core-v2-adapter-$RunId"
+                $adapterPath = Join-Path $adapterRoot 'source-core-adapter.json'
+                $reportPath = if ([string]::IsNullOrWhiteSpace($OutputPath)) { Join-Path $fullArtifactsRoot 'standard-core-validation-v2-report.json' } else { [IO.Path]::GetFullPath($OutputPath) }
+                return [pscustomobject]@{ artifactsRoot = $fullArtifactsRoot; adapterRoot = [IO.Path]::GetFullPath($adapterRoot); adapterPath = [IO.Path]::GetFullPath($adapterPath); outputPath = [IO.Path]::GetFullPath($reportPath) }
+            }
+            function New-CodeCoreAdapterV2 {
+                param($PowerShellPath, $TrustedToolRoot, $CandidateAuthorityAdapterRunId, $CandidateRevision,
+                    $CandidateGitEntryModeManifestPath, $CandidateGitEntryModeManifestSha256, $ActiveSkillIds, $SourceValidation, $PesterRuntime)
+                if ($script:SourceTimingTestScenario -ceq 'adapter') { throw 'fixture source adapter creation failure' }
+                return [ordered]@{ schemaVersion = 2; runId = [string]$CandidateAuthorityAdapterRunId }
+            }
+            function Get-ActiveSkillIds { param([string] $Root) return @('demo') }
+            function New-CodeSourceStandardValidationModule {
+                param($RunnerPath, $RunnerSha256, $RunnerArguments, [switch] $SourceValidation)
+                if ($script:SourceTimingTestScenario -ceq 'reader') { throw 'fixture protected report reader failure' }
+                return $null
+            }
+            function Invoke-CodeSourceStandardValidationModule { param($Module, [string] $FunctionName, $Arguments) }
+            function Assert-CodeSourceReportBinding {
+                param($Report, $Prepared, $CandidateRevision, $BaseRevision, $AuthorityRevision, $EventName,
+                    $ArtifactsRoot, $OutputPath, $ProcessExitCode, $CleanupSucceeded, $CancellationRequested)
+                if ($script:SourceTimingTestScenario -ceq 'binding') { throw 'fixture source report binding failure' }
+                if ($script:SourceTimingTestScenario -ceq 'cancel' -and $CancellationRequested) { throw 'fixture cancellation report binding failure' }
+            }
+            function Remove-Item {
+                [CmdletBinding()]
+                param([string] $LiteralPath, [switch] $Recurse, [switch] $Force)
+                if ($script:SourceTimingTestScenario -ceq 'cleanup' -and (Test-PathEqual -Left $LiteralPath -Right $script:SourceTimingTestAdapterRoot)) {
+                    throw 'fixture source adapter cleanup failure'
+                }
+                $removeArguments = @{ LiteralPath = $LiteralPath }
+                if ($Recurse) { $removeArguments.Recurse = $true }
+                if ($Force) { $removeArguments.Force = $true }
+                if ($PSBoundParameters.ContainsKey('ErrorAction')) { $removeArguments.ErrorAction = [string]$PSBoundParameters['ErrorAction'] }
+                Microsoft.PowerShell.Management\Remove-Item @removeArguments
+            }
+
+            $candidateRoot = [IO.Path]::GetFullPath((Join-Path $Root 'candidate'))
+            $artifactsRoot = [IO.Path]::GetFullPath((Join-Path $Root 'core-run'))
+            $null = New-Item -ItemType Directory -Path $candidateRoot -Force
+            $preparedPath = [IO.Path]::GetFullPath($preparedPath)
+            $preparedRoot = [IO.Path]::GetFullPath((Split-Path -Parent $preparedPath))
+            $setupTimingPath = Join-Path ([string]$prepared.ownedRoot) 'setup-timing.json'
+            $setupTimingBinding = @($prepared.sourceValidation.frozenFiles | Where-Object { Test-PathEqual -Left ([string]$_.path) -Right $setupTimingPath })
+            $setupTiming = Read-JsonFile -Path $setupTimingPath -Context 'Prepared source setup timing evidence'
+            $setupCompletedTimingPath = Join-Path $preparedRoot "source-tools-setup-completed-$($prepared.runId).json"
+            $setupCompleted = [ordered]@{
+                schemaVersion = 1; runId = [string]$prepared.runId; setupStartedAtUtc = [string]$setupTiming.startedAtUtc
+                setupTotalSeconds = 10.0; diagnosticTargetSeconds = 1200
+                totalBoundary = 'after complete frozen-file verification and prepared metadata creation'
+            }
+            [IO.File]::WriteAllText($setupCompletedTimingPath, (($setupCompleted | ConvertTo-Json -Depth 20 -Compress) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+            $setupCompletedTiming = Read-JsonFile -Path $setupCompletedTimingPath -Context 'Completed source setup timing evidence'
+            $setupCompletedTimingSha256 = Get-FileSha256 -Path $setupCompletedTimingPath
+            $RepositoryRoot = $candidateRoot
+            $CandidateRevision = [string]$fixture.candidateRevision
+            $BaseRevision = 'b' * 40
+            $EventName = 'pull_request'
+            $TimeoutSeconds = 10800
+            $GitPath = [IO.Path]::GetFullPath([string]$git.Path)
+            $powerShell = $realPowerShell
+            $authority = [pscustomobject]@{ root = $authorityRoot }
+            $pin = $script:SourceTimingTestPin
+            $TrustedToolRoot = $trustedRoot
+            $OutputPath = $null
+            $ArtifactsRootWasExplicit = $true
+            $CancellationPath = $null
+            if ($Scenario -ceq 'cancel') {
+                $CancellationPath = Join-Path $Root 'cancel.signal'
+                [IO.File]::WriteAllText($CancellationPath, 'cancel', [Text.UTF8Encoding]::new($false))
+            }
+            $paths = Get-CodeSourceCoreRunPaths -ArtifactsRoot $artifactsRoot -ArtifactsRootWasExplicit $ArtifactsRootWasExplicit -RunId $fixture.runId -OutputPath $OutputPath
+            [void](New-Item -ItemType Directory -Path $paths.artifactsRoot -Force)
+            [void](New-Item -ItemType Directory -Path $paths.adapterRoot)
+            $adapterRootCreated = $true
+            $cleanupSucceeded = $false
+            $runnerModuleCleanupSucceeded = $true
+            $processExitCode = 1
+            $reportRunnerModule = $null
+            $sourceValidationStartedAtUtc = [DateTimeOffset]::UtcNow
+            $sourceValidationTimer = [Diagnostics.Stopwatch]::StartNew()
+            $centralRunnerSeconds = 0.0
+            $sourceReportAccepted = $false
+            $cleanupErrorMessage = $null
+            $sourceStageSeconds = [ordered]@{
+                preadmissionSeconds = $null; snapshotAndAdapterSeconds = $null; outputRelaySeconds = $null
+                protectedReportReaderSeconds = $null; codeReportBindingSeconds = $null; cleanupSeconds = $null
+            }
+            $stageCollectionAssignment = @($sourceFunction.FindAll({
+                param($node)
+                $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -ceq '$sourceStageSeconds'
+            }, $true))
+            if ($stageCollectionAssignment.Count -eq 1) {
+                . ([scriptblock]::Create($stageCollectionAssignment[0].Extent.Text))
+            }
+            $previousTestValidateSource = 'fixture prior value'
+            $script:SourceTimingTestAdapterRoot = [IO.Path]::GetFullPath($paths.adapterRoot)
+            $previousEnvironment = [Environment]::GetEnvironmentVariable('SYP154_TEST_VALIDATE_SOURCE', 'Process')
+            [Environment]::SetEnvironmentVariable('SYP154_TEST_VALIDATE_SOURCE', $previousTestValidateSource, 'Process')
+            $previousExitEnvironment = [Environment]::GetEnvironmentVariable('SYP326_SOURCE_TEST_EXIT_CODE', 'Process')
+            $childExitCode = if ($Scenario -ceq 'nonzero') { '23' } else { '0' }
+            [Environment]::SetEnvironmentVariable('SYP326_SOURCE_TEST_EXIT_CODE', $childExitCode, 'Process')
+            $previousSourceRepository = $script:SourceRepository
+            $previousSourceCleanupFailed = $script:SourceCleanupFailed
+            $previousSourceInvalidInput = $script:SourceInvalidInput
+            $script:SourceRepository = 'https://github.com/SyuanTsai/Skill-Code-Collaboration.git'
+            $script:SourceCleanupFailed = $false
+            $script:SourceInvalidInput = $false
+
+            $errorText = $null
+            $outerOutput = @()
+            $functionRestoredTestValidateSource = $null
+            try { $outerOutput = @(& ([scriptblock]::Create($outerTry[0].Extent.Text))) }
+            catch { $errorText = $_.ToString() }
+            finally {
+                $functionRestoredTestValidateSource = [Environment]::GetEnvironmentVariable('SYP154_TEST_VALIDATE_SOURCE', 'Process')
+                [Environment]::SetEnvironmentVariable('SYP154_TEST_VALIDATE_SOURCE', $previousEnvironment, 'Process')
+                [Environment]::SetEnvironmentVariable('SYP326_SOURCE_TEST_EXIT_CODE', $previousExitEnvironment, 'Process')
+            }
+            $timingPath = Join-Path (Split-Path -Parent $paths.artifactsRoot) "source-validation-timing-$($fixture.runId).json"
+            $receipt = if ([IO.File]::Exists($timingPath)) { Read-JsonFile -Path $timingPath -Context 'Source timing test receipt' } else { $null }
+            $cleanupFailedAfterBlock = [bool]$script:SourceCleanupFailed
+            $invalidInputAfterBlock = [bool]$script:SourceInvalidInput
+            $script:SourceRepository = $previousSourceRepository
+            $script:SourceCleanupFailed = $previousSourceCleanupFailed
+            $script:SourceInvalidInput = $previousSourceInvalidInput
+            return [pscustomobject]@{
+                fixture = $fixture; prepared = $prepared; timingPath = [IO.Path]::GetFullPath($timingPath); receipt = $receipt
+                artifactsRoot = $paths.artifactsRoot; adapterRoot = $paths.adapterRoot; errorText = $errorText; outerOutput = @($outerOutput)
+                authorityRoot = $authorityRoot; authorityHead = $authorityRevision
+                priorTestValidateSourceAfter = $functionRestoredTestValidateSource
+                cleanupFailed = $cleanupFailedAfterBlock; invalidInput = $invalidInputAfterBlock
+            }
+        }
+
+        function Invoke-SourcePreadmissionFailureForTest {
+            param([Parameter(Mandatory)][string] $Root)
+            $validatePath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
+            $tokens = $null
+            $parseErrors = $null
+            $validateAst = [System.Management.Automation.Language.Parser]::ParseFile($validatePath, [ref]$tokens, [ref]$parseErrors)
+            if (@($parseErrors).Count -gt 0) { throw 'Validate.ps1 did not parse for source pre-admission timing test.' }
+            $sourceFunction = $validateAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-CodeSourceValidation' }, $true)
+            if ($null -eq $sourceFunction) { throw 'Invoke-CodeSourceValidation was not found.' }
+            . ([scriptblock]::Create($sourceFunction.Extent.Text))
+            function Assert-CodeSourceAuthorityConfig { param($Config) throw 'fixture pre-admission authority rejection' }
+            $candidateRoot = Join-Path $Root 'candidate'
+            $artifactsRoot = Join-Path $Root 'artifacts'
+            [void](New-Item -ItemType Directory -Path $candidateRoot -Force)
+            $powerShellPath = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+            $gitPath = [IO.Path]::GetFullPath([string](Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path)
+            $authorityRoot = [IO.Path]::GetFullPath([string](Get-A031AuthoritySupervisorBinding).root)
+            $script:SourceCleanupFailed = $false
+            $script:SourceInvalidInput = $false
+            $previousTestValidateSource = [Environment]::GetEnvironmentVariable('SYP154_TEST_VALIDATE_SOURCE', 'Process')
+            [Environment]::SetEnvironmentVariable('SYP154_TEST_VALIDATE_SOURCE', 'fixture pre-admission value', 'Process')
+            $failure = $null
+            try {
+                Invoke-CodeSourceValidation -GitPath $gitPath -PowerShellPath $powerShellPath -RepositoryRoot $candidateRoot `
+                    -CandidateRevision ('a' * 40) -BaseRevision ('b' * 40) -AuthorityConfig ([pscustomobject]@{}) `
+                    -SourceToolsPath (Join-Path $Root 'not-opened.json') -AuthorityRepositoryRoot $authorityRoot `
+                    -TrustedToolRoot (Split-Path -Parent $powerShellPath) -ArtifactsRoot $artifactsRoot -EventName 'pull_request' -TimeoutSeconds 10800
+            }
+            catch { $failure = $_.ToString() }
+            $functionPreservedTestValidateSource = [Environment]::GetEnvironmentVariable('SYP154_TEST_VALIDATE_SOURCE', 'Process')
+            [Environment]::SetEnvironmentVariable('SYP154_TEST_VALIDATE_SOURCE', $previousTestValidateSource, 'Process')
+            return [pscustomobject]@{
+                failure = $failure; artifactsRootExists = [IO.Directory]::Exists($artifactsRoot)
+                sourceReceiptFiles = @(Get-ChildItem -LiteralPath $Root -Filter 'source-validation-timing-*.json' -File -ErrorAction SilentlyContinue).Count
+                cleanupFailed = [bool]$script:SourceCleanupFailed; invalidInput = [bool]$script:SourceInvalidInput
+                functionPreservedTestValidateSource = $functionPreservedTestValidateSource
+            }
+        }
+
+        function New-SourceResidentRouteFixtureForTest {
+            param([Parameter(Mandatory)][string] $Root, [string] $AuthorityRoot)
+            Import-Module -Name $script:DriverPath -Force
+            $fullRoot = [IO.Path]::GetFullPath($Root)
+            $source = New-SourceReportFixture -Root (Join-Path $fullRoot 'source')
+            $candidateRoot = Join-Path $fullRoot 'candidate'
+            [void](New-Item -ItemType Directory -Path $candidateRoot -Force)
+
+            $pin = Get-PreparedSourceAuthorityPin -AuthorityRevision $source.fixture.authorityRevision
+            $authorityConfig = New-SourceAuthorityConfigFixture -Pin $pin
+            $authorityFixtureInput = [pscustomobject]@{
+                candidateRoot = [IO.Path]::GetFullPath($candidateRoot)
+                artifactsRoot = [IO.Path]::GetFullPath($source.artifactRoot)
+                trustedToolRoot = [string]$source.fixture.prepared.pesterRuntime.sourceTrustedToolRoot
+                prepared = $source.fixture.prepared
+                baseRevision = [string]$source.baseRevision
+            }
+            $authorityFixture = $null
+            if ([string]::IsNullOrWhiteSpace($AuthorityRoot)) {
+                $authorityFixture = New-SourceResidentAuthorityModuleForTest -Fixture $authorityFixtureInput `
+                    -AuthorityRevision ([string]$source.fixture.authorityRevision)
+                if ($null -ne $authorityFixture.module) { Remove-Module -ModuleInfo $authorityFixture.module -Force -ErrorAction SilentlyContinue }
+                $fixtureAuthorityRoot = [IO.Path]::GetFullPath([string]$authorityFixture.authority.root)
+            }
+            else {
+                $fixtureAuthorityRoot = [IO.Path]::GetFullPath($AuthorityRoot)
+                if (-not (Test-Path -LiteralPath $fixtureAuthorityRoot -PathType Container)) {
+                    throw 'Reused resident route authority root must identify the already verified fixture checkout.'
+                }
+            }
+
+            $report = $source.report
+            $report.authority | Add-Member -NotePropertyName runnerSha256 `
+                -NotePropertyValue ([string]$pin.files['scripts/Invoke-StandardValidation.ps1']) -Force
+            $caseBinding = $report.sourceValidation.pesterCaseInventory
+            $caseLedger = [pscustomobject]@{
+                schemaVersion = 1
+                report = 'standard-core-pester-case-inventory-v1'
+                coreRunId = [string]$source.fixture.runId
+                complete = $true
+                terminalStatus = 'complete'
+                caseDiscoveryCount = 1
+                caseExecutionCount = 1
+                reportedCounts = [pscustomobject]@{ Passed = 1; Failed = 0; Skipped = 0; Inconclusive = 0; NotRun = 0 }
+                containerFileInventory = @([pscustomobject]@{ path = 'tests/fixture.ps1' })
+            }
+            $coreRunRoot = [IO.Path]::GetFullPath((Join-Path (Join-Path $source.artifactRoot 'runs') $source.fixture.runId))
+            $eventsRoot = Join-Path $coreRunRoot 'events'
+            $nativeRoot = Join-Path $coreRunRoot 'native'
+            [void](New-Item -ItemType Directory -Path $eventsRoot -Force)
+            [void](New-Item -ItemType Directory -Path $nativeRoot -Force)
+            foreach ($event in @($report.sourceValidation.events)) {
+                $previousEventPath = [string]$event.outputPath
+                $eventRecord = Get-Content -LiteralPath $previousEventPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 60
+                if ([string]$event.toolId -cne 'package-adapter') {
+                    $envelope = ConvertFrom-Json -InputObject ([string]$eventRecord.stdout) -Depth 60
+                    foreach ($native in @($envelope.nativeReports)) {
+                        foreach ($fieldName in @('path', 'stdoutPath', 'stderrPath')) {
+                            $previousNativePath = [string]$native.$fieldName
+                            $nativePath = Join-Path $nativeRoot (Split-Path -Leaf $previousNativePath)
+                            Copy-Item -LiteralPath $previousNativePath -Destination $nativePath
+                            $native | Add-Member -NotePropertyName $fieldName -NotePropertyValue ([IO.Path]::GetFullPath($nativePath)) -Force
+                        }
+                    }
+                    $eventRecord | Add-Member -NotePropertyName stdout -NotePropertyValue (($envelope | ConvertTo-Json -Depth 60 -Compress)) -Force
+                }
+                $eventPath = Join-Path $eventsRoot (Split-Path -Leaf $previousEventPath)
+                [IO.File]::WriteAllText($eventPath, (($eventRecord | ConvertTo-Json -Depth 70 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+                $event.outputPath = [IO.Path]::GetFullPath($eventPath)
+                $event.outputSha256 = Get-A031TextSha256 -Value ([string]$eventRecord.stdout + "`n---stderr---`n" + [string]$eventRecord.stderr)
+            }
+            $report.artifacts.runRoot = $coreRunRoot
+            $caseBinding.path = Join-Path $coreRunRoot 'standard-core-pester-case-inventory-v1.json'
+            [IO.File]::WriteAllText([string]$caseBinding.path, (($caseLedger | ConvertTo-Json -Depth 30 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+            $caseBinding.sha256 = Get-SourceBindingFixtureHash -Path ([string]$caseBinding.path)
+            $reportPath = [IO.Path]::GetFullPath([string]$report.artifacts.outputPath)
+            [IO.File]::WriteAllText($reportPath, (($report | ConvertTo-Json -Depth 80 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+
+            $timingPath = Join-Path (Split-Path -Parent ([string]$source.artifactRoot)) "source-validation-timing-$($source.fixture.runId).json"
+            $timing = [pscustomobject]@{
+                schemaVersion = 1
+                runId = [string]$source.fixture.runId
+                candidateRevision = [string]$source.fixture.candidateRevision
+                baseRevision = [string]$source.baseRevision
+                authorityRevision = [string]$source.fixture.authorityRevision
+                processExitCode = 0
+                reportAccepted = $true
+                cleanupSucceeded = $true
+                sourceValidationTotalSeconds = 0.1
+            }
+            [IO.File]::WriteAllText($timingPath, (($timing | ConvertTo-Json -Depth 20 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+
+            return [pscustomobject]@{
+                root = $fullRoot
+                protectedBaseRoot = $fullRoot
+                source = $source
+                prepared = $source.fixture.prepared
+                preparedPath = $source.fixture.preparedPath
+                candidateRoot = [IO.Path]::GetFullPath($candidateRoot)
+                artifactsRoot = [IO.Path]::GetFullPath($source.artifactRoot)
+                report = $report
+                reportPath = $reportPath
+                coreRunRoot = $coreRunRoot
+                timing = $timing
+                timingPath = [IO.Path]::GetFullPath($timingPath)
+                caseLedger = $caseLedger
+                caseLedgerPath = [IO.Path]::GetFullPath([string]$caseBinding.path)
+                authorityPin = $pin
+                authorityConfig = $authorityConfig
+                authorityRoot = $fixtureAuthorityRoot
+                gitPath = [string](Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
+                evidenceRoot = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $fullRoot) ("resident-evidence-$([guid]::NewGuid().ToString('N'))")))
+            }
+        }
+
+        function New-SourceResidentSampleModuleForTest {
+            param([int] $FailureCall = 0, [switch] $OmitCounters)
+            $moduleName = 'SourceResidentTimingFixture_' + [guid]::NewGuid().ToString('N')
+            return New-Module -Name $moduleName -ArgumentList $FailureCall, [bool]$OmitCounters -ScriptBlock {
+                param([int] $FixtureFailureCall, [bool] $FixtureOmitCounters)
+                $script:StandardValidationTimingEnabled = $false
+                $script:StandardValidationTimingStage = 'validation'
+                $script:StandardValidationClosureTiming = [pscustomobject]@{ before = 'closure' }
+                $script:StandardValidationReadObserver = [pscustomobject]@{ before = 'observer' }
+                $script:SourceResidentFixtureFailureCall = $FixtureFailureCall
+                $script:SourceResidentFixtureOmitCounters = $FixtureOmitCounters
+                $script:SourceResidentFixtureCalls = 0
+                $script:SourceResidentFixtureArguments = [Collections.Generic.List[object]]::new()
+                function Assert-StandardCoreSourceToolReceipts {
+                    [CmdletBinding()]
+                    param(
+                        [object[]] $Bindings, [object[]] $FrozenFiles, [string] $RunId,
+                        [string] $CandidateRoot, [string] $ArtifactsRoot,
+                        [object] $RetainedReceiptMap, [string[]] $ToolNames = @(),
+                        [string[]] $AdditionalPaths = @(), [switch] $ReturnReceiptMap
+                    )
+                    $script:SourceResidentFixtureCalls++
+                    $script:SourceResidentFixtureArguments.Add([pscustomobject]@{
+                        bindings = @($Bindings); frozenFiles = @($FrozenFiles); runId = $RunId
+                        candidateRoot = $CandidateRoot; artifactsRoot = $ArtifactsRoot
+                        mapRunId = [string]$RetainedReceiptMap.runId; toolNames = @($ToolNames)
+                        additionalPaths = @($AdditionalPaths); returnReceiptMap = [bool]$ReturnReceiptMap
+                    })
+                    if (-not $script:SourceResidentFixtureOmitCounters) {
+                        [Console]::Error.WriteLine((ConvertTo-Json -Compress -InputObject ([ordered]@{
+                            stage = 'source-resident'; phase = 'source-integrity'; state = 'completed'
+                            calls = 1; files = 3; bytes = 96; elapsedSeconds = 0.001
+                        })))
+                    }
+                    if ($script:SourceResidentFixtureFailureCall -gt 0 -and $script:SourceResidentFixtureCalls -eq $script:SourceResidentFixtureFailureCall) {
+                        [Console]::Error.WriteLine((ConvertTo-Json -Compress -InputObject ([ordered]@{
+                            stage = 'source-resident'; phase = 'source-integrity'; state = 'failed'
+                            calls = 1; files = 1; bytes = 4; elapsedSeconds = 0.001
+                        })))
+                        throw 'fixture retained receipt validation failure'
+                    }
+                    return $true
+                }
+                function Get-StandardCoreSourceToolGroups {
+                    param([hashtable] $Receipts, [object[]] $FrozenFiles)
+                    return [pscustomobject]@{ groups = @(); byTool = @{}; externalAssetsByTool = @{} }
+                }
+                function New-StandardValidationPhase {
+                    param([string] $Stage, [string] $Phase, [switch] $Aggregate, [switch] $Silent)
+                    return [pscustomobject]@{ stage = $Stage; phase = $Phase }
+                }
+                function Update-StandardValidationPhase { param($Timing, [long] $Calls, [long] $Files, [long] $Bytes) }
+                function Complete-StandardValidationPhase { param($Timing, [string] $State) }
+                Export-ModuleMember -Function @() -Cmdlet @() -Alias @() -Variable @()
+            }
+        }
+
+        function New-SourceResidentActualRunnerForTest {
+            param(
+                [Parameter(Mandatory)][string] $Root,
+                [Parameter(Mandatory)][string] $RunId,
+                [Parameter(Mandatory)][string] $CandidateRevision,
+                [Parameter(Mandatory)][string] $BaseRevision
+            )
+            Import-Module -Name $script:DriverPath -Force
+            $validatePath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
+            $tokens = $null
+            $parseErrors = $null
+            $validateAst = [System.Management.Automation.Language.Parser]::ParseFile($validatePath, [ref]$tokens, [ref]$parseErrors)
+            if (@($parseErrors).Count -gt 0) { throw 'Validate.ps1 did not parse for resident runner fixture.' }
+            $factoryAst = $validateAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'New-CodeSourceStandardValidationModule' }, $true)
+            if ($null -eq $factoryAst) { throw 'The production protected runner module factory is unavailable to the resident fixture.' }
+            . ([scriptblock]::Create($factoryAst.Extent.Text))
+
+            $fixtureRoot = [IO.Path]::GetFullPath($Root)
+            $candidateRoot = Join-Path $fixtureRoot 'candidate'
+            $artifactsRoot = Join-Path $fixtureRoot 'artifacts'
+            $trustedToolRoot = Join-Path $fixtureRoot 'trusted-tools'
+            foreach ($directory in @($candidateRoot, $artifactsRoot, $trustedToolRoot)) {
+                [void](New-Item -ItemType Directory -Path $directory -Force)
+            }
+            $authorityFixture = New-SourceResidentAuthorityModuleForTest -Fixture ([pscustomobject]@{
+                candidateRoot = [IO.Path]::GetFullPath($candidateRoot)
+                artifactsRoot = [IO.Path]::GetFullPath($artifactsRoot)
+                trustedToolRoot = [IO.Path]::GetFullPath($trustedToolRoot)
+                prepared = [pscustomobject]@{ runId = $RunId; sourceRevision = $CandidateRevision }
+                baseRevision = $BaseRevision
+            }) -AuthorityRevision '8e627baf54bd6e47862e6291b25e71cc45a2f2b7'
+            $authority = [pscustomobject]@{
+                root = [string]$authorityFixture.authority.root
+                revision = [string]$authorityFixture.authorityPin.commit
+                path = [string]$authorityFixture.runnerPath
+                sha256 = [string]$authorityFixture.runnerSha256
+            }
+            return [pscustomobject]@{
+                module = $authorityFixture.module; authority = $authority; authorityPin = $authorityFixture.authorityPin
+                candidateRoot = [IO.Path]::GetFullPath($candidateRoot)
+                artifactsRoot = [IO.Path]::GetFullPath($artifactsRoot)
+                trustedToolRoot = [IO.Path]::GetFullPath($trustedToolRoot)
+            }
+        }
+
+        function New-SourceResidentAuthorityModuleForTest {
+            param(
+                [Parameter(Mandatory)] $Fixture,
+                [Parameter(Mandatory)][string] $AuthorityRevision
+            )
+            Import-Module -Name $script:DriverPath -Force
+            $functionNames = @(
+                'Assert-CodeSourceAuthorityCheckout', 'Assert-NoReparseAncestors', 'Test-PathWithinOrEqual', 'Assert-PathWithinRoot',
+                'Get-FileSha256', 'Get-GitBlobSha256', 'Get-ResolvedGitPath', 'Resolve-GitRevision', 'Test-PathEqual',
+                'New-CodeSourceAuthoritySnapshot', 'New-CodeSourceStandardValidationModule'
+            )
+            $validatePath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
+            $tokens = $null
+            $parseErrors = $null
+            $validateAst = [System.Management.Automation.Language.Parser]::ParseFile($validatePath, [ref]$tokens, [ref]$parseErrors)
+            if (@($parseErrors).Count -gt 0) { throw 'Validate.ps1 did not parse for authority compatibility fixture.' }
+            foreach ($functionName in $functionNames) {
+                $functionAst = $validateAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $functionName }, $true)
+                if ($null -eq $functionAst) { throw "The production authority function was not found: $functionName" }
+                . ([scriptblock]::Create($functionAst.Extent.Text))
+            }
+
+            $authorityPin = Get-PreparedSourceAuthorityPin -AuthorityRevision $AuthorityRevision
+            $gitPath = Get-ResolvedGitPath
+            $activeAuthorityBinding = Get-A031AuthoritySupervisorBinding
+            $activeConfigPath = Join-Path $script:RepositoryRoot 'config/standard-v1.json'
+            $activeConfig = Get-Content -LiteralPath $activeConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 40 -ErrorAction Stop
+            if ([string]$activeConfig.authority.commit -cne 'ff85d5f80fe795b96354e753074b5ce59ad04ecd' -or
+                @($activeConfig.authority.files).Count -ne 32) {
+                throw 'Resident authority fixture requires the exact configured FF85 32-file source pin.'
+            }
+            $activeAuthorityPin = Get-PreparedSourceAuthorityPin -AuthorityRevision ([string]$activeConfig.authority.commit)
+            if ([string]$activeAuthorityBinding.revision -cne [string]$activeAuthorityPin.commit -or
+                [string]$activeAuthorityBinding.sha256 -cne [string]$activeAuthorityPin.files['scripts/Invoke-StandardValidation.ps1']) {
+                throw 'The configured resident authority checkout does not match its exact active FF85 pin.'
+            }
+            $activeAuthority = Assert-CodeSourceAuthorityCheckout -GitPath $gitPath `
+                -AuthorityRoot ([string]$activeAuthorityBinding.root) -AuthorityPin $activeAuthorityPin
+            if ([string]$activeAuthority.revision -cne [string]$activeAuthorityPin.commit) {
+                throw 'The configured resident authority checkout changed while it was being validated.'
+            }
+
+            if ([string]$authorityPin.commit -ceq [string]$activeAuthority.revision) {
+                $authority = $activeAuthority
+            }
+            else {
+                $artifactParent = Split-Path -Parent ([IO.Path]::GetFullPath([string]$Fixture.artifactsRoot))
+                $authorityOwnedRoot = Join-Path $artifactParent ('.resident-authority-' + [guid]::NewGuid().ToString('N'))
+                [void](New-Item -ItemType Directory -Path $authorityOwnedRoot -ErrorAction Stop)
+                $authority = New-CodeSourceAuthoritySnapshot -GitPath $gitPath `
+                    -SourceRoot ([string]$activeAuthority.root) -OwnedRoot $authorityOwnedRoot -AuthorityPin $authorityPin
+            }
+            $runnerSha256 = Get-FileSha256 -Path ([string]$authority.runnerPath)
+            if ($runnerSha256 -cne [string]$authorityPin.files['scripts/Invoke-StandardValidation.ps1']) {
+                throw 'Resident authority fixture runner does not match the selected authority pin.'
+            }
+            $runnerArguments = [ordered]@{
+                CandidateRoot = [string]$Fixture.candidateRoot
+                AdapterPath = Join-Path ([string]$Fixture.artifactsRoot) 'source-core-adapter.json'
+                ArtifactsRoot = [string]$Fixture.artifactsRoot
+                OutputPath = ''
+                SourceRepository = [string]$authorityPin.repository
+                SourceRevision = [string]$Fixture.prepared.sourceRevision
+                BaseRevision = [string]$Fixture.baseRevision
+                EventName = 'pull_request'
+                RunId = [string]$Fixture.prepared.runId
+                AuthorityRevision = [string]$authorityPin.commit
+                TimeoutSeconds = 10800
+                CancellationPath = ''
+                TrustedToolRoot = [string]$Fixture.trustedToolRoot
+            }
+            $module = New-CodeSourceStandardValidationModule -RunnerPath ([string]$authority.runnerPath) `
+                -RunnerSha256 $runnerSha256 -RunnerArguments $runnerArguments -SourceValidation
+            return [pscustomobject]@{
+                module = $module; authority = $authority; authorityPin = $authorityPin
+                runnerPath = [IO.Path]::GetFullPath([string]$authority.runnerPath); runnerSha256 = $runnerSha256
+            }
+        }
+
+        function New-SourceResidentSeriesFixtureForTest {
+            param(
+                [Parameter(Mandatory)][string] $Root,
+                [int] $FailureSample = 0,
+                [switch] $OmitSampleDiagnostics,
+                [switch] $MalformedSampleDiagnostics,
+                [ValidateSet('none','candidate','base','authority')][string] $TimingRevisionMismatch = 'none',
+                [switch] $RejectReport,
+                [switch] $TimingCleanupFailed,
+                [ValidateSet('different-footprints','same-count-different-bytes','equal-footprints')][string] $FootprintMode = 'different-footprints',
+                [switch] $ChangeFrozenFileOnLastSample,
+                [switch] $AddUnfrozenFileOnLastSample
+            )
+            $runId = [guid]::NewGuid().ToString('N')
+            $candidateRevision = 'd' * 40
+            $baseRevision = 'e' * 40
+            $runner = New-SourceResidentActualRunnerForTest -Root (Join-Path $Root 'runner') `
+                -RunId $runId -CandidateRevision $candidateRevision -BaseRevision $baseRevision
+            $module = $runner.module
+            $ownedRoot = [IO.Path]::GetFullPath((Join-Path $Root "source-tools-$runId"))
+            $smallRoot = Join-Path $ownedRoot 'installed/skill-validator'
+            $largeRoot = Join-Path $ownedRoot 'installed/shared-tools'
+            [void](New-Item -ItemType Directory -Path $smallRoot -Force)
+            [void](New-Item -ItemType Directory -Path $largeRoot -Force)
+            $launcherPath = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot 'launchers/skill-validator.cmd') -Text '@echo off'
+            $sharedPath = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot 'shared/source-policy.json') -Text '{"fixture":true}'
+            $toolPaths = @{
+                'skill-validator' = @(Write-SourceBindingFixtureFile -Path (Join-Path $smallRoot 'skill-validator.bin') -Text 'validator')
+                'skill-tools' = @(Write-SourceBindingFixtureFile -Path (Join-Path $largeRoot 'skill-tools.bin') -Text 'skill-tools')
+                'skillspector' = @(Write-SourceBindingFixtureFile -Path (Join-Path $largeRoot 'skillspector.bin') -Text 'skillspector')
+            }
+            if ($FootprintMode -ceq 'same-count-different-bytes' -or $FootprintMode -ceq 'equal-footprints') {
+                $smallExtraText = if ($FootprintMode -ceq 'equal-footprints') { '12345678901234' } else { 'extra small closure file' }
+                $toolPaths['skill-validator'] += Write-SourceBindingFixtureFile -Path (Join-Path $smallRoot 'skill-validator-extra.dat') -Text $smallExtraText
+            }
+            if ($FootprintMode -ceq 'different-footprints') {
+                $toolPaths['skill-tools'] += Write-SourceBindingFixtureFile -Path (Join-Path $largeRoot 'skill-tools-extra.dat') -Text 'extra closure file'
+            }
+
+            $receipts = [Collections.Hashtable]::new([StringComparer]::Ordinal)
+            $bindings = [Collections.Hashtable]::new([StringComparer]::Ordinal)
+            $receiptBindings = [Collections.Generic.List[object]]::new()
+            $frozenFiles = [Collections.Generic.List[object]]::new()
+            foreach ($toolName in @('skill-validator', 'skill-tools', 'skillspector')) {
+                $installRoot = if ($toolName -ceq 'skill-validator') { $smallRoot } else { $largeRoot }
+                $executablePath = [string]$toolPaths[$toolName][0]
+                $launcher = [pscustomobject]@{
+                    kind = 'fixture-launcher'; shimPath = ''; shimSha256 = ''
+                    payloadPath = ''; payloadSha256 = ''; runtimePath = ''; runtimeSha256 = ''
+                }
+                if ($toolName -ceq 'skill-validator') {
+                    $launcher.shimPath = $launcherPath
+                    $launcher.shimSha256 = Get-SourceBindingFixtureHash -Path $launcherPath
+                }
+                $installedClosureSha256 = & $module {
+                    param([string] $Root)
+                    Get-StandardValidationDirectoryClosureSha256 -Root $Root -Context 'fixture installed closure'
+                } ([IO.Path]::GetFullPath($installRoot))
+                $receipt = [pscustomobject]@{
+                    toolName = $toolName; resolutionRunId = $runId; frozenForRun = $true
+                    installRoot = [IO.Path]::GetFullPath($installRoot)
+                    executablePath = $executablePath; executableSha256 = Get-SourceBindingFixtureHash -Path $executablePath
+                    launcher = $launcher; installedClosureSha256 = [string]$installedClosureSha256
+                }
+                $receipts[$toolName] = $receipt
+                $receiptPath = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot "receipt-$toolName.json") -Text (($receipt | ConvertTo-Json -Depth 20 -Compress) + "`n")
+                $binding = [pscustomobject]@{ path = [IO.Path]::GetFullPath($receiptPath); sha256 = Get-SourceBindingFixtureHash -Path $receiptPath }
+                $bindings[$toolName] = $binding
+                $receiptBindings.Add($binding)
+                $frozenFiles.Add($binding)
+                foreach ($toolPath in $toolPaths[$toolName]) {
+                    $frozenFiles.Add([pscustomobject]@{ path = [IO.Path]::GetFullPath([string]$toolPath); sha256 = Get-SourceBindingFixtureHash -Path ([string]$toolPath) })
+                }
+            }
+            foreach ($path in @($sharedPath, $launcherPath)) {
+                $frozenFiles.Add([pscustomobject]@{ path = [IO.Path]::GetFullPath($path); sha256 = Get-SourceBindingFixtureHash -Path $path })
+            }
+            $frozenInventory = [object[]]$frozenFiles.ToArray()
+            $groups = & $module {
+                param([hashtable] $ReceiptValues, [object[]] $FrozenValues)
+                Get-StandardCoreSourceToolGroups -Receipts $ReceiptValues -FrozenFiles $FrozenValues
+            } $receipts $frozenInventory
+            $receiptMap = [pscustomobject]@{
+                schemaVersion = 1; runId = $runId; receipts = $receipts; bindings = $bindings; groups = $groups
+            }
+            $wrapperPath = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot 'Invoke-CodeCollaborationValidationChild.ps1') -Text 'param()'
+            $toolchainPath = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot 'toolchain.json') -Text '{"fixture":true}'
+            $manifestPath = Write-SourceBindingFixtureFile -Path (Join-Path $ownedRoot 'candidate-git-entry-modes.json') -Text '{"entries":[]}'
+            $dispatchCommand = [IO.Path]::GetFullPath([string][Environment]::ProcessPath)
+            foreach ($path in @($wrapperPath, $toolchainPath, $manifestPath, $dispatchCommand, [string]$runner.authority.path)) {
+                if (@($frozenInventory | Where-Object { [IO.Path]::GetFullPath([string]$_.path).Equals([IO.Path]::GetFullPath($path), [StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) {
+                    $frozenFiles.Add([pscustomobject]@{ path = [IO.Path]::GetFullPath($path); sha256 = Get-SourceBindingFixtureHash -Path $path })
+                }
+            }
+            $frozenInventory = [object[]]$frozenFiles.ToArray()
+            $commonArguments = @('-NoProfile', '-NonInteractive', '-File', $wrapperPath, '-ToolchainPath', $toolchainPath,
+                '-ToolchainSha256', (Get-SourceBindingFixtureHash -Path $toolchainPath), '-GitEntryModeManifestPath', $manifestPath,
+                '-GitEntryModeManifestSha256', (Get-SourceBindingFixtureHash -Path $manifestPath))
+            $preparedSourceValidation = [pscustomobject]@{
+                packageAdapter = [pscustomobject]@{ command = $dispatchCommand; arguments = @($commonArguments + @('-Mode', 'package-adapter')) }
+                skillValidator = [pscustomobject]@{ command = $dispatchCommand; arguments = @($commonArguments + @('-Mode', 'skill-validator')) }
+                skillTools = [pscustomobject]@{ command = $dispatchCommand; arguments = @($commonArguments + @('-Mode', 'skill-tools')) }
+                staticAnalyzer = [pscustomobject]@{ command = $dispatchCommand; arguments = @($commonArguments + @('-Mode', 'static')) }
+                frozenFiles = $frozenInventory; toolReceipts = [object[]]$receiptBindings.ToArray()
+            }
+            $prepared = [pscustomobject]@{
+                schemaVersion = 1; preparation = 'code-collaboration-source-tools'; runId = $runId
+                sourceRevision = $candidateRevision; authorityRevision = [string]$runner.authorityPin.commit
+                ownedRoot = $ownedRoot; sourceValidation = $preparedSourceValidation
+            }
+            $coreRunRoot = [IO.Path]::GetFullPath((Join-Path (Join-Path $runner.artifactsRoot 'runs') $runId))
+            [void](New-Item -ItemType Directory -Path $coreRunRoot -Force)
+            $snapshotRoot = Join-Path $coreRunRoot 'candidate'
+            [void](New-Item -ItemType Directory -Path $snapshotRoot -Force)
+            $caseLedgerPath = Write-SourceBindingFixtureFile -Path (Join-Path $coreRunRoot 'repository-pester-case-inventory-v1.json') -Text '{}'
+            $caseLedger = [pscustomobject]@{
+                schemaVersion = 1; report = 'standard-core-pester-case-inventory-v1'; coreRunId = $runId
+                complete = $true; terminalStatus = 'complete'; caseDiscoveryCount = 1; caseExecutionCount = 1
+                reportedCounts = [pscustomobject]@{ Passed = 1; Failed = 0; Skipped = 0; Inconclusive = 0; NotRun = 0 }
+                containerFileInventory = @([pscustomobject]@{ path = 'tests/fixture.ps1' })
+            }
+            [IO.File]::WriteAllText($caseLedgerPath, (($caseLedger | ConvertTo-Json -Depth 20 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+            $caseLedgerSha256 = Get-SourceBindingFixtureHash -Path $caseLedgerPath
+            $reportSourceValidation = [pscustomobject]@{
+                status = 'passed'; runId = $runId; candidateId = 'a' * 64; sourceRevision = $candidateRevision
+                contentSha256 = 'b' * 64; authorityRevision = [string]$runner.authorityPin.commit
+                activeSkills = @('fixture'); skillsRoot = 'skills'; toolReceipts = [object[]]$receiptBindings.ToArray()
+                frozenFiles = $frozenInventory; events = @(); adapterSnapshot = [pscustomobject]@{ path = 'adapter.json'; sha256 = 'c' * 64 }
+                pesterCaseInventory = [pscustomobject]@{ path = $caseLedgerPath; sha256 = $caseLedgerSha256 }
+            }
+            $reportPath = Write-SourceBindingFixtureFile -Path (Join-Path $runner.artifactsRoot 'standard-core-validation-v2-report.json') -Text '{"state":"PASS","fixture":true}'
+            $report = [pscustomobject]@{
+                schemaVersion = 2; state = 'PASS'; exitCode = 0; releaseEligible = $false; contentMode = 'immutable-source'; runId = $runId
+                candidate = [pscustomobject]@{ sourceRevision = $candidateRevision; baseRevision = $baseRevision; eventName = 'pull_request' }
+                authority = [pscustomobject]@{ revision = [string]$runner.authorityPin.commit; runnerSha256 = [string]$runner.authority.sha256 }
+                artifacts = [pscustomobject]@{ root = $runner.artifactsRoot; outputPath = $reportPath; runId = $runId; runRoot = $coreRunRoot; snapshotRoot = $snapshotRoot }
+                sourceValidation = $reportSourceValidation
+                checks = @(
+                    [pscustomobject]@{ kind = 'general'; status = 'passed'; exitCode = 0; cleanedUp = $true }
+                    [pscustomobject]@{ kind = 'pester'; status = 'passed'; exitCode = 0; cleanedUp = $true }
+                )
+            }
+            if ($RejectReport) { $report.state = 'FAIL'; $report.exitCode = 1 }
+            [void](Write-SourceBindingFixtureFile -Path (Join-Path $Root 'prepared.json') -Text (($prepared | ConvertTo-Json -Depth 40 -Compress) + "`n"))
+            [void][IO.File]::WriteAllText($reportPath, (($report | ConvertTo-Json -Depth 40 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+            $timingEvidence = [pscustomobject]@{
+                schemaVersion = 1; runId = $runId
+                candidateRevision = if ($TimingRevisionMismatch -ceq 'candidate') { 'f' * 40 } else { $candidateRevision }
+                baseRevision = if ($TimingRevisionMismatch -ceq 'base') { 'a' * 40 } else { $baseRevision }
+                authorityRevision = if ($TimingRevisionMismatch -ceq 'authority') { 'b' * 40 } else { [string]$runner.authorityPin.commit }
+                processExitCode = 0; reportAccepted = $true
+                cleanupSucceeded = (-not $TimingCleanupFailed); sourceValidationTotalSeconds = 0.01
+            }
+            $timingEvidencePath = Write-SourceBindingFixtureFile -Path (Join-Path $Root 'source-validation-timing.json') `
+                -Text (($timingEvidence | ConvertTo-Json -Depth 20 -Compress) + "`n")
+            $evidenceRoot = [IO.Path]::GetFullPath((Join-Path $Root 'resident-evidence'))
+            $mutationPath = if ($ChangeFrozenFileOnLastSample) { [string]$frozenInventory[0].path } else { '' }
+            $addPath = if ($AddUnfrozenFileOnLastSample) { Join-Path $smallRoot 'post-sample-unfrozen-extra.bin' } else { '' }
+            & $module {
+                param($Map, [int] $FailureCall, [bool] $OmitDiagnostics, [bool] $MalformedDiagnostics, [string] $ChangePath, [string] $AddPath)
+                $script:SourceResidentFixtureMap = $Map
+                $script:SourceResidentFixtureFailureCall = $FailureCall
+                $script:SourceResidentFixtureOmitDiagnostics = $OmitDiagnostics
+                $script:SourceResidentFixtureMalformedDiagnostics = $MalformedDiagnostics
+                $script:SourceResidentFixtureChangePath = $ChangePath
+                $script:SourceResidentFixtureAddPath = $AddPath
+                $script:SourceResidentFixtureCalls = 0
+                $script:SourceResidentFixtureFullReceiptChecks = 0
+                $script:SourceResidentFixtureArguments = [Collections.Generic.List[object]]::new()
+                function Assert-StandardCoreSourceToolReceipts {
+                    [CmdletBinding()]
+                    param(
+                        [object[]] $Bindings, [object[]] $FrozenFiles, [string] $RunId,
+                        [string] $CandidateRoot, [string] $ArtifactsRoot,
+                        [object] $RetainedReceiptMap, [string[]] $ToolNames = @(),
+                        [string[]] $AdditionalPaths = @(), [switch] $ReturnReceiptMap
+                    )
+                    if ($null -eq $RetainedReceiptMap -and $ReturnReceiptMap) { return $script:SourceResidentFixtureMap }
+                    if ($null -eq $RetainedReceiptMap) {
+                        if (-not $ReturnReceiptMap -and @($ToolNames).Count -eq 0) {
+                            $script:SourceResidentFixtureFullReceiptChecks++
+                            Assert-StandardCoreFrozenFiles -Files $FrozenFiles
+                            foreach ($binding in $Bindings) {
+                                if ((Get-StandardValidationFileSha256 -Path ([string]$binding.path) -Context 'fixture full receipt binding') -cne [string]$binding.sha256) {
+                                    throw 'fixture full source receipt binding changed'
+                                }
+                            }
+                            foreach ($receipt in $script:SourceResidentFixtureMap.receipts.Values) {
+                                $closureSha256 = Get-StandardValidationDirectoryClosureSha256 -Root ([string]$receipt.installRoot) -Context 'fixture full installed closure'
+                                if ([string]$closureSha256 -cne [string]$receipt.installedClosureSha256) {
+                                    throw 'fixture full receipt admission found an installed closure change'
+                                }
+                            }
+                            $afterPostflightReceipt = Get-Variable -Name SourceResidentFixtureAfterPostflightReceipt -Scope Script -ErrorAction SilentlyContinue
+                            if ($null -ne $afterPostflightReceipt -and $afterPostflightReceipt.Value -is [scriptblock]) {
+                                & $afterPostflightReceipt.Value ([string]$script:StandardValidationTimingStage) ([int]$script:SourceResidentFixtureFullReceiptChecks)
+                            }
+                        }
+                        return $true
+                    }
+                    if (@($ToolNames).Count -eq 0 -and -not $ReturnReceiptMap) { return $true }
+
+                    $script:SourceResidentFixtureCalls++
+                    $script:SourceResidentFixtureArguments.Add([pscustomobject]@{
+                        moduleName = [string]$ExecutionContext.SessionState.Module.Name
+                        bindings = @($Bindings); frozenFiles = @($FrozenFiles); runId = $RunId
+                        candidateRoot = $CandidateRoot; artifactsRoot = $ArtifactsRoot
+                        mapRunId = [string]$RetainedReceiptMap.runId; toolNames = @($ToolNames)
+                        additionalPaths = @($AdditionalPaths); returnReceiptMap = [bool]$ReturnReceiptMap
+                        timingStage = [string]$script:StandardValidationTimingStage
+                    })
+                    $sampleTiming = $null
+                    $receiptTiming = $null
+                    $sampleState = 'completed'
+                    $previousTimingEnabled = [bool]$script:StandardValidationTimingEnabled
+                    try {
+                        if ($script:SourceResidentFixtureOmitDiagnostics) { $script:StandardValidationTimingEnabled = $false }
+                        $sampleTiming = New-StandardValidationPhase -Stage $script:StandardValidationTimingStage -Phase 'source-integrity' `
+                            -Silent:(-not $script:StandardValidationTimingEnabled)
+                        $receiptTiming = New-StandardValidationPhase -Stage $script:StandardValidationTimingStage -Phase 'source-receipt-bytes' `
+                            -Aggregate -Silent:(-not $script:StandardValidationTimingEnabled)
+                        foreach ($binding in $Bindings) {
+                            $receiptItem = Get-Item -LiteralPath ([string]$binding.path) -Force -ErrorAction Stop
+                            if ((Get-StandardValidationFileSha256 -Path ([string]$binding.path) -Context 'fixture retained source receipt') -cne [string]$binding.sha256) {
+                                throw 'fixture retained source receipt bytes changed'
+                            }
+                            Update-StandardValidationPhase -Timing $receiptTiming -Calls 1 -Files 1 -Bytes ([long]$receiptItem.Length)
+                        }
+                        Complete-StandardValidationPhase -Timing $receiptTiming -State 'completed'
+                        $receiptTiming = $null
+
+                        $sampleFileMap = [Collections.Generic.Dictionary[string,object]]::new([StringComparer]::OrdinalIgnoreCase)
+                        $addSampleFile = {
+                            param($File)
+                            if ($null -eq $File) { return }
+                            $fullFilePath = [IO.Path]::GetFullPath([string]$File.path)
+                            $key = $fullFilePath.ToUpperInvariant()
+                            if ($sampleFileMap.ContainsKey($key)) { return }
+                            $matches = @($FrozenFiles | Where-Object {
+                                [IO.Path]::GetFullPath([string]$_.path).Equals($fullFilePath, [StringComparison]::OrdinalIgnoreCase)
+                            })
+                            if ($matches.Count -ne 1) { throw 'fixture sample path is not frozen exactly once' }
+                            $sampleFileMap.Add($key, $matches[0])
+                        }
+                        $selectedGroups = [Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
+                        foreach ($name in $ToolNames) {
+                            $selectedGroup = $RetainedReceiptMap.groups.byTool[[string]$name]
+                            $selectedGroups[[string]$selectedGroup.id] = $selectedGroup
+                        }
+                        foreach ($selectedGroup in $selectedGroups.Values) {
+                            foreach ($file in @($selectedGroup.rootFiles) + @($selectedGroup.externalAssets)) { & $addSampleFile $file }
+                        }
+                        foreach ($file in @($RetainedReceiptMap.groups.byTool['skill-validator'].sharedFiles)) { & $addSampleFile $file }
+                        foreach ($pathValue in $AdditionalPaths) {
+                            $pathFull = [IO.Path]::GetFullPath([string]$pathValue)
+                            $matches = @($FrozenFiles | Where-Object {
+                                [IO.Path]::GetFullPath([string]$_.path).Equals($pathFull, [StringComparison]::OrdinalIgnoreCase)
+                            })
+                            if ($matches.Count -ne 1) { throw 'fixture sample dispatch path is not frozen exactly once' }
+                            & $addSampleFile $matches[0]
+                        }
+                        Assert-StandardCoreFrozenFiles -Files @($sampleFileMap.Values)
+                        foreach ($selectedGroup in $selectedGroups.Values) {
+                            foreach ($root in @($selectedGroup.roots | Sort-Object -Unique -CaseSensitive)) {
+                                [void](Get-StandardValidationDirectoryClosureSha256 -Root ([string]$root) -Context 'fixture retained source closure')
+                            }
+                        }
+                        if ($script:SourceResidentFixtureMalformedDiagnostics -and $script:SourceResidentFixtureCalls -eq 1) {
+                            [Console]::Error.WriteLine('[StandardValidation timing] {"stage":"source-resident-sample","phase":"fixture-malformed","state":"completed","calls":"not-a-number","files":0,"bytes":0,"elapsedSeconds":0.0}')
+                        }
+                        if ($script:SourceResidentFixtureFailureCall -eq $script:SourceResidentFixtureCalls) {
+                            throw 'fixture retained source receipt validation failure'
+                        }
+                        if ($script:SourceResidentFixtureCalls -eq 6 -and -not [string]::IsNullOrWhiteSpace($script:SourceResidentFixtureChangePath)) {
+                            [IO.File]::WriteAllText($script:SourceResidentFixtureChangePath, 'changed after resident samples', [Text.UTF8Encoding]::new($false))
+                        }
+                        if ($script:SourceResidentFixtureCalls -eq 6 -and -not [string]::IsNullOrWhiteSpace($script:SourceResidentFixtureAddPath)) {
+                            [IO.File]::WriteAllText($script:SourceResidentFixtureAddPath, 'added after resident samples', [Text.UTF8Encoding]::new($false))
+                        }
+                    }
+                    catch {
+                        $sampleState = 'failed'
+                        throw
+                    }
+                    finally {
+                        if ($null -ne $receiptTiming) { Complete-StandardValidationPhase -Timing $receiptTiming -State $sampleState }
+                        if ($null -ne $sampleTiming) { Complete-StandardValidationPhase -Timing $sampleTiming -State $sampleState }
+                        $script:StandardValidationTimingEnabled = $previousTimingEnabled
+                    }
+                    return $RetainedReceiptMap
+                }
+                Set-Item -Path Function:script:Assert-StandardCoreSourceToolReceipts -Value (Get-Item -Path Function:Assert-StandardCoreSourceToolReceipts).ScriptBlock
+                Export-ModuleMember -Function @() -Cmdlet @() -Alias @() -Variable @()
+            } $receiptMap $FailureSample ([bool]$OmitSampleDiagnostics) ([bool]$MalformedSampleDiagnostics) $mutationPath $addPath
+            & $module {
+                $script:StandardValidationTimingEnabled = $true
+                $script:StandardValidationTimingStage = 'fixture-original-stage'
+                $script:StandardValidationClosureTiming = [pscustomobject]@{ marker = 'closure-before' }
+                $script:StandardValidationReadObserver = [pscustomobject]@{ marker = 'observer-before' }
+            }
+            return [pscustomobject]@{
+                module = $module; authority = $runner.authority; authorityPin = $runner.authorityPin
+                runnerPath = [string]$runner.authority.path; runnerSha256 = [string]$runner.authority.sha256
+                prepared = $prepared; report = $report; timingEvidence = $timingEvidence; caseLedger = $caseLedger
+                preparedPath = [IO.Path]::GetFullPath((Join-Path $Root 'prepared.json'))
+                timingEvidencePath = $timingEvidencePath; caseLedgerPath = $caseLedgerPath
+                candidateRoot = $runner.candidateRoot; baseRevision = $baseRevision; artifactsRoot = $runner.artifactsRoot
+                trustedToolRoot = $runner.trustedToolRoot
+                reportPath = $reportPath; reportSha256 = Get-SourceBindingFixtureHash -Path $reportPath
+                frozenFiles = $frozenInventory; receiptMap = $receiptMap; evidenceRoot = $evidenceRoot
+                sharedPath = $sharedPath; launcherPath = $launcherPath; mutationPath = $mutationPath; addPath = $addPath
+                cancellationPath = Join-Path $Root 'cancel-resident.json'
+            }
+        }
+
+        function Get-SourceResidentModuleStateForTest {
+            param([Parameter(Mandatory)][System.Management.Automation.PSModuleInfo] $Module)
+            return & $Module {
+                $enabledVariable = Get-Variable -Name StandardValidationTimingEnabled -Scope Script -ErrorAction SilentlyContinue
+                $stageVariable = Get-Variable -Name StandardValidationTimingStage -Scope Script -ErrorAction SilentlyContinue
+                $closureVariable = Get-Variable -Name StandardValidationClosureTiming -Scope Script -ErrorAction SilentlyContinue
+                $observerVariable = Get-Variable -Name StandardValidationReadObserver -Scope Script -ErrorAction SilentlyContinue
+                [pscustomobject]@{
+                    enabledPresent = ($null -ne $enabledVariable)
+                    enabled = if ($null -eq $enabledVariable) { $null } else { [bool]$enabledVariable.Value }
+                    stagePresent = ($null -ne $stageVariable)
+                    stage = if ($null -eq $stageVariable) { $null } else { [string]$stageVariable.Value }
+                    closurePresent = ($null -ne $closureVariable)
+                    closure = if ($null -eq $closureVariable) { $null } else { $closureVariable.Value }
+                    readObserverPresent = ($null -ne $observerVariable)
+                    readObserver = if ($null -eq $observerVariable) { $null } else { $observerVariable.Value }
+                }
+            }
+        }
+
+        function Invoke-SourceResidentSeriesForTest {
+            param([Parameter(Mandatory)] $Fixture, [string] $CancellationPath, [ValidateSet('Flush', 'Dispose', 'PersistentDispose')][string] $SinkFaultMode)
+            $validatePath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
+            $tokens = $null
+            $parseErrors = $null
+            $validateAst = [System.Management.Automation.Language.Parser]::ParseFile($validatePath, [ref]$tokens, [ref]$parseErrors)
+            if (@($parseErrors).Count -gt 0) { throw 'Validate.ps1 did not parse for resident sample behavior test.' }
+            foreach ($functionName in @(
+                'Get-CodeSourceResidentCaseCountValues', 'Get-CodeSourceResidentRetainedApiContract', 'Invoke-CodeSourceStandardValidationModule',
+                'Invoke-CodeSourceResidentSampleSeries'
+            )) {
+                $functionAst = $validateAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $functionName }, $true)
+                if ($null -eq $functionAst) { throw "The production resident sample function is unavailable: $functionName" }
+                $functionText = [string]$functionAst.Extent.Text
+                if ($functionName -ceq 'Invoke-CodeSourceResidentSampleSeries' -and -not [string]::IsNullOrWhiteSpace($SinkFaultMode)) {
+                    $openExpression = '$rawStream = [IO.File]::Open($rawPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)'
+                    $faultExpression = '$rawStream = New-SourceResidentControlledFaultStreamForTest -Path $rawPath -Mode ' + "'" + $SinkFaultMode + "'"
+                    $replacementCount = [regex]::Matches($functionText, [regex]::Escape($openExpression)).Count
+                    if ($replacementCount -ne 1) { throw "Expected exactly one raw stream factory expression to replace; found $replacementCount." }
+                    $faultFunctionText = $functionText.Replace($openExpression, $faultExpression)
+                    if ($faultFunctionText.Replace($faultExpression, $openExpression) -cne $functionText) {
+                        throw 'The controlled stream substitution changed text outside the single raw stream factory expression.'
+                    }
+                    $script:SourceResidentSinkFaultAstProofForTest = [pscustomobject]@{
+                        functionName = $functionName
+                        replacementCount = $replacementCount
+                        originalFunctionSha256 = Get-A031TextSha256 -Value $functionText
+                        substitutedFunctionSha256 = Get-A031TextSha256 -Value $faultFunctionText
+                        originalExpression = $openExpression
+                        substitutedExpression = $faultExpression
+                        reversibleSingleExpressionReplacement = $true
+                        streamWriterConstructionUnchanged = $faultFunctionText.Contains('$rawWriter = [IO.StreamWriter]::new($rawStream, [Text.UTF8Encoding]::new($false)')
+                        autoFlushUnchanged = $faultFunctionText.Contains('$rawWriter.AutoFlush = $true')
+                    }
+                    $functionText = $faultFunctionText
+                }
+                . ([scriptblock]::Create($functionText))
+            }
+            if ($SinkFaultMode -ceq 'PersistentDispose') {
+                $script:SourceResidentSinkFaultContractForTest = Get-CodeSourceResidentRetainedApiContract -Module $Fixture.module
+            }
+            $arguments = @{
+                Module = $Fixture.module; Prepared = $Fixture.prepared; Report = $Fixture.report
+                TimingEvidence = $Fixture.timingEvidence; CaseLedger = $Fixture.caseLedger
+                PreparedPath = $Fixture.preparedPath; TimingEvidencePath = $Fixture.timingEvidencePath
+                CaseLedgerPath = $Fixture.caseLedgerPath
+                AuthorityPin = $Fixture.authorityPin; RunnerPath = $Fixture.runnerPath; RunnerSha256 = $Fixture.runnerSha256
+                RepositoryRoot = $script:RepositoryRoot; CandidateRoot = $Fixture.candidateRoot; BaseRevision = $Fixture.baseRevision
+                ArtifactsRoot = $Fixture.artifactsRoot; EvidenceRoot = $Fixture.evidenceRoot
+            }
+            if (-not [string]::IsNullOrWhiteSpace($CancellationPath)) { $arguments.CancellationPath = $CancellationPath }
+            return Invoke-CodeSourceResidentSampleSeries @arguments
+        }
+
+        function New-SourceResidentControlledFaultStreamForTest {
+            param([Parameter(Mandatory)][string] $Path, [Parameter(Mandatory)][ValidateSet('Flush', 'Dispose', 'PersistentDispose')][string] $Mode)
+            if ($null -eq ('Syp326.Testing.SourceResidentFaultStream' -as [type])) {
+                $source = @'
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+
+namespace Syp326.Testing
+{
+    public sealed class SourceResidentFaultStream : Stream
+    {
+        private static SourceResidentFaultStream _latest;
+        private readonly Stream _inner;
+        private readonly string _mode;
+        private readonly List<string> _events = new List<string>();
+        private int _ordinal;
+        private bool _armed;
+        private bool _faultThrown;
+        private string _stage = "unarmed";
+        private int _fullReceiptChecks;
+
+        public SourceResidentFaultStream(Stream inner, string mode)
+        {
+            _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+            _mode = mode ?? throw new ArgumentNullException(nameof(mode));
+            _latest = this;
+            Record("create", "", null);
+        }
+
+        public static SourceResidentFaultStream Latest { get { return _latest; } }
+        public static void ArmLatest(string stage, int fullReceiptChecks)
+        {
+            if (_latest == null) throw new InvalidOperationException("No controlled stream has been created.");
+            _latest.Arm(stage, fullReceiptChecks);
+        }
+
+        public List<string> Events { get { return _events; } }
+        public string Mode { get { return _mode; } }
+        public bool Armed { get { return _armed; } }
+        public bool FaultThrown { get { return _faultThrown; } }
+        public bool UnderlyingClosed { get; private set; }
+        public string Stage { get { return _stage; } }
+        public int FullReceiptChecks { get { return _fullReceiptChecks; } }
+
+        public void Arm(string stage, int fullReceiptChecks)
+        {
+            if (_armed) throw new InvalidOperationException("The controlled stream was armed more than once.");
+            _armed = true;
+            _stage = stage ?? "";
+            _fullReceiptChecks = fullReceiptChecks;
+            Record("arm", "", null);
+        }
+
+        private static string Escape(string value)
+        {
+            return (value ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
+        }
+
+        private void Record(string eventName, string detail, Exception exception)
+        {
+            int ordinal = ++_ordinal;
+            string type = exception == null ? "" : exception.GetType().FullName;
+            string message = exception == null ? "" : exception.Message;
+            string line = "{\"ordinal\":" + ordinal.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"event\":\"" + Escape(eventName) + "\",\"detail\":\"" + Escape(detail) +
+                "\",\"mode\":\"" + Escape(_mode) + "\",\"stage\":\"" + Escape(_stage) +
+                "\",\"armed\":" + (_armed ? "true" : "false") +
+                ",\"fullReceiptChecks\":" + _fullReceiptChecks.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"exceptionType\":\"" + Escape(type) + "\",\"exceptionMessage\":\"" + Escape(message) + "\"}" + Environment.NewLine;
+            _events.Add(line.TrimEnd('\r', '\n'));
+            string tracePath = Environment.GetEnvironmentVariable("SYP326_SINK_FAULT_TRACE_PATH");
+            if (!String.IsNullOrWhiteSpace(tracePath)) File.AppendAllText(tracePath, line, new UTF8Encoding(false));
+        }
+
+        public override bool CanRead { get { return _inner.CanRead; } }
+        public override bool CanSeek { get { return _inner.CanSeek; } }
+        public override bool CanWrite { get { return _inner.CanWrite; } }
+        public override long Length { get { return _inner.Length; } }
+        public override long Position { get { return _inner.Position; } set { _inner.Position = value; } }
+        public override long Seek(long offset, SeekOrigin origin) { return _inner.Seek(offset, origin); }
+        public override void SetLength(long value) { _inner.SetLength(value); }
+        public override int Read(byte[] buffer, int offset, int count) { return _inner.Read(buffer, offset, count); }
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            Record("write", "count=" + count.ToString(System.Globalization.CultureInfo.InvariantCulture), null);
+            _inner.Write(buffer, offset, count);
+        }
+
+        public override void Flush()
+        {
+            if (_armed && _mode == "Flush" && !_faultThrown)
+            {
+                _faultThrown = true;
+                IOException failure = new IOException("controlled sink Flush fault");
+                Record("flush", "throw", failure);
+                throw failure;
+            }
+            if (_mode != "PersistentDispose" || !_armed || !UnderlyingClosed) _inner.Flush();
+            Record("flush", "completed", null);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (!disposing) { base.Dispose(disposing); return; }
+            Exception failure = null;
+            if (_armed && (_mode == "PersistentDispose" || (_mode == "Dispose" && !_faultThrown)))
+            {
+                _faultThrown = true;
+                failure = new IOException(_mode == "PersistentDispose" ? "controlled persistent sink Dispose fault" : "controlled sink Dispose fault");
+                Record("dispose", "throw", failure);
+            }
+            else { Record("dispose", "completed", null); }
+            try { _inner.Dispose(); }
+            finally
+            {
+                UnderlyingClosed = true;
+                base.Dispose(disposing);
+            }
+            if (failure != null) throw failure;
+        }
     }
+}
+'@
+                Add-Type -TypeDefinition $source -Language CSharp -ErrorAction Stop
+            }
+            $inner = [IO.File]::Open($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+            $stream = [Syp326.Testing.SourceResidentFaultStream]::new($inner, $Mode)
+            $script:SourceResidentFaultStreamForTest = $stream
+            if ($Mode -ceq 'PersistentDispose') {
+                [Syp326.Testing.SourceResidentFaultStream]::ArmLatest('source-resident-unsupported-open', 0)
+            }
+            return $stream
+        }
+
+        function Invoke-SourceResidentSinkFaultCaseForTest {
+            param([Parameter(Mandatory)][string] $Mode, [int] $FailureSample = 0)
+            $root = Join-Path $TestDrive ("source-resident-sink-fault-{0}-{1}" -f $Mode, [guid]::NewGuid().ToString('N'))
+            $fixture = $null
+            $savedConsoleError = [Console]::Error
+            $beforeState = $null
+            $afterState = $null
+            $result = $null
+            $invocationError = $null
+            $script:SourceResidentFaultStreamForTest = $null
+            $script:SourceResidentSinkFaultAstProofForTest = $null
+            $script:SourceResidentSinkFaultContractForTest = $null
+            try {
+                $fixture = New-SourceResidentSeriesFixtureForTest -Root $root -FailureSample $FailureSample
+                $beforeState = Get-SourceResidentModuleStateForTest -Module $fixture.module
+                $armAction = {
+                    param($stage, $fullReceiptChecks)
+                    if ([string]$stage -cne 'source-resident-postflight' -or [int]$fullReceiptChecks -ne 1) {
+                        throw 'The controlled stream fault was armed outside the final complete postflight receipt check.'
+                    }
+                    [Syp326.Testing.SourceResidentFaultStream]::ArmLatest([string]$stage, [int]$fullReceiptChecks)
+                }.GetNewClosure()
+                & $fixture.module { param($Action) $script:SourceResidentFixtureAfterPostflightReceipt = $Action } $armAction
+                try { $result = Invoke-SourceResidentSeriesForTest -Fixture $fixture -SinkFaultMode $Mode }
+                catch { $invocationError = $_.Exception.Message }
+                $afterState = Get-SourceResidentModuleStateForTest -Module $fixture.module
+                $consoleRestored = [object]::ReferenceEquals([Console]::Error, $savedConsoleError)
+                $stream = [Syp326.Testing.SourceResidentFaultStream]::Latest
+                $stateRestoredExactly = $null -ne $beforeState -and $null -ne $afterState -and
+                    [bool]$afterState.enabled -eq [bool]$beforeState.enabled -and
+                    [string]$afterState.stage -ceq [string]$beforeState.stage -and
+                    [object]::ReferenceEquals($afterState.closure, $beforeState.closure) -and
+                    [object]::ReferenceEquals($afterState.readObserver, $beforeState.readObserver)
+                $evidence = [ordered]@{
+                    case = if ($FailureSample -gt 0) { 'sample-error-plus-flush' } else { $Mode.ToLowerInvariant() }
+                    mode = $Mode; failureSample = $FailureSample; invocationError = $invocationError
+                    result = if ($null -eq $result) { $null } else { [ordered]@{
+                        complete = $result.complete; status = $result.status; reason = $result.reason; message = $result.message
+                        sampleCount = $result.sampleCount; sampleDiagnosticErrors = @($result.sampleDiagnosticErrors)
+                        postflightErrors = @($result.postflightErrors)
+                        cleanupErrors = if ($null -eq $result.PSObject.Properties['cleanupErrors']) { @() } else { @($result.cleanupErrors) }
+                        timingStateRestored = $result.timingStateRestored
+                    } }
+                    moduleStateBefore = if ($null -eq $beforeState) { $null } else { [ordered]@{ enabled = $beforeState.enabled; stage = $beforeState.stage } }
+                    moduleStateAfter = if ($null -eq $afterState) { $null } else { [ordered]@{ enabled = $afterState.enabled; stage = $afterState.stage } }
+                    moduleScalarsExact = ($null -ne $beforeState -and $null -ne $afterState -and [bool]$beforeState.enabled -eq [bool]$afterState.enabled -and [string]$beforeState.stage -ceq [string]$afterState.stage)
+                    closureTimingSameReference = ($null -ne $beforeState -and $null -ne $afterState -and [object]::ReferenceEquals($beforeState.closure, $afterState.closure))
+                    readObserverSameReference = ($null -ne $beforeState -and $null -ne $afterState -and [object]::ReferenceEquals($beforeState.readObserver, $afterState.readObserver))
+                    moduleStateRestoredExactly = $stateRestoredExactly; consoleErrorSameReference = $consoleRestored
+                    stream = if ($null -eq $stream) { $null } else { [ordered]@{
+                        mode = $stream.Mode; armed = $stream.Armed; stage = $stream.Stage; fullReceiptChecks = $stream.FullReceiptChecks
+                        faultThrown = $stream.FaultThrown; underlyingClosed = $stream.UnderlyingClosed; events = @($stream.Events)
+                    } }
+                    astProof = $script:SourceResidentSinkFaultAstProofForTest
+                    postflightFullReceiptChecks = if ($null -eq $fixture) { $null } else { & $fixture.module { $script:SourceResidentFixtureFullReceiptChecks } }
+                }
+                $resultPath = [Environment]::GetEnvironmentVariable('SYP326_SINK_FAULT_RESULT_PATH')
+                if (-not [string]::IsNullOrWhiteSpace($resultPath)) {
+                    [IO.File]::AppendAllText($resultPath, (($evidence | ConvertTo-Json -Depth 12 -Compress) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+                }
+                $assertionFailures = [Collections.Generic.List[string]]::new()
+                if ($null -eq $stream) { $assertionFailures.Add('controlled stream was not created') }
+                else {
+                    if (-not $stream.Armed) { $assertionFailures.Add('stream did not arm after final postflight') }
+                    if ($stream.Stage -cne 'source-resident-postflight' -or $stream.FullReceiptChecks -ne 1) { $assertionFailures.Add('fault arming stage/check count was not the final postflight') }
+                    if (-not $stream.FaultThrown) { $assertionFailures.Add('controlled stream fault did not execute') }
+                    if ($Mode -ceq 'Dispose' -and -not $stream.UnderlyingClosed) { $assertionFailures.Add('Dispose fault did not close the real backing stream') }
+                }
+                $astProof = $script:SourceResidentSinkFaultAstProofForTest
+                if ($null -eq $astProof -or [int]$astProof.replacementCount -ne 1 -or -not [bool]$astProof.reversibleSingleExpressionReplacement -or
+                    -not [bool]$astProof.streamWriterConstructionUnchanged -or -not [bool]$astProof.autoFlushUnchanged) {
+                    $assertionFailures.Add('test extraction did not prove the sole file-open substitution while preserving StreamWriter and AutoFlush')
+                }
+                if ($null -eq $result) { $assertionFailures.Add('resident sampling must return an incomplete result after sink failure') }
+                else {
+                    if ([bool]$result.complete) { $assertionFailures.Add('resident result was complete after sink failure') }
+                    if ([string]$result.status -cne 'incomplete') { $assertionFailures.Add('resident result status was not incomplete') }
+                    if ($null -eq $result.cleanupErrors -or @($result.cleanupErrors).Count -eq 0) { $assertionFailures.Add('result did not retain the secondary sink cleanup error') }
+                    if (-not [bool]$result.timingStateRestored) { $assertionFailures.Add('result did not report exact module timing-state restoration') }
+                }
+                if (-not $stateRestoredExactly) { $assertionFailures.Add('four module values and reference identities were not restored') }
+                if (-not $consoleRestored) { $assertionFailures.Add('Console.Error reference was not restored') }
+                if ($null -eq $fixture -or (& $fixture.module { [int]$script:SourceResidentFixtureFullReceiptChecks }) -ne 1) { $assertionFailures.Add('the complete postflight receipt check did not run exactly once') }
+                if ($FailureSample -gt 0) {
+                    if ($null -eq $result -or [string]$result.reason -cne 'sample-exception') { $assertionFailures.Add('earliest sample error reason was not preserved') }
+                    if ($null -eq $result -or [string]$result.message -cne 'fixture retained source receipt validation failure') { $assertionFailures.Add('earliest sample error message was overwritten') }
+                    if ($null -eq $result -or $null -eq $result.cleanupErrors -or @($result.cleanupErrors).Count -eq 0) { $assertionFailures.Add('secondary sink fault was not preserved alongside the sample error') }
+                }
+                if ($assertionFailures.Count -gt 0) { throw ('Controlled sink fault assertions failed: ' + ($assertionFailures -join '; ')) }
+            }
+            finally {
+                [Console]::SetError($savedConsoleError)
+                if ($null -ne $fixture -and $null -ne $fixture.module) { Remove-Module -ModuleInfo $fixture.module -Force -ErrorAction SilentlyContinue }
+                $script:SourceResidentFaultStreamForTest = $null
+                $script:SourceResidentSinkFaultAstProofForTest = $null
+            }
+        }
+
+        function Invoke-SourceResidentUnsupportedDisposeFaultCaseForTest {
+            $root = Join-Path $TestDrive ('source-resident-ff85-persistent-dispose-' + [guid]::NewGuid().ToString('N'))
+            $runId = [guid]::NewGuid().ToString('N')
+            $candidateRevision = 'd' * 40
+            $baseRevision = 'e' * 40
+            $savedConsoleError = [Console]::Error
+            $runner = $null
+            $fixture = $null
+            $contract = $null
+            $result = $null
+            $invocationError = $null
+            $script:SourceResidentFaultStreamForTest = $null
+            $script:SourceResidentSinkFaultAstProofForTest = $null
+            try {
+                $runner = New-SourceResidentActualRunnerForTest -Root (Join-Path $root 'runner') `
+                    -RunId $runId -CandidateRevision $candidateRevision -BaseRevision $baseRevision
+                $fixture = [pscustomobject]@{
+                    module = $runner.module; authority = $runner.authority; authorityPin = $runner.authorityPin
+                    runnerPath = [string]$runner.authority.path; runnerSha256 = [string]$runner.authority.sha256
+                    prepared = [pscustomobject]@{ runId = $runId; sourceRevision = $candidateRevision; authorityRevision = [string]$runner.authorityPin.commit }
+                    report = [pscustomobject]@{ artifacts = [pscustomobject]@{ outputPath = Join-Path $runner.artifactsRoot 'unsupported-report.json' } }
+                    timingEvidence = [pscustomobject]@{}; caseLedger = [pscustomobject]@{}
+                    preparedPath = Join-Path $root 'prepared-unused.json'; timingEvidencePath = Join-Path $root 'timing-unused.json'
+                    caseLedgerPath = Join-Path $root 'ledger-unused.json'; candidateRoot = $runner.candidateRoot
+                    baseRevision = $baseRevision; artifactsRoot = $runner.artifactsRoot; trustedToolRoot = $runner.trustedToolRoot
+                    evidenceRoot = [IO.Path]::GetFullPath((Join-Path $root 'resident-evidence'))
+                }
+                $ff85 = New-SourceResidentAuthorityModuleForTest -Fixture $fixture -AuthorityRevision 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
+                if ([string]$ff85.authorityPin.commit -cne 'ff85d5f80fe795b96354e753074b5ce59ad04ecd' -or
+                    [string]$ff85.runnerSha256 -cne [string]$ff85.authorityPin.files['scripts/Invoke-StandardValidation.ps1']) {
+                    throw 'The persistent Dispose case did not load the exact FF85 authority runner.'
+                }
+                Remove-Module -ModuleInfo $fixture.module -Force -ErrorAction Stop
+                $fixture.module = $ff85.module
+                $fixture.authority = $ff85.authority
+                $fixture.authorityPin = $ff85.authorityPin
+                $fixture.runnerPath = $ff85.runnerPath
+                $fixture.runnerSha256 = $ff85.runnerSha256
+                try { $result = Invoke-SourceResidentSeriesForTest -Fixture $fixture -SinkFaultMode PersistentDispose }
+                catch { $invocationError = $_.Exception.Message }
+                $contract = $script:SourceResidentSinkFaultContractForTest
+
+                $stream = [Syp326.Testing.SourceResidentFaultStream]::Latest
+                $events = if ($null -eq $stream) { @() } else { @($stream.Events | ForEach-Object { $_ | ConvertFrom-Json -ErrorAction Stop }) }
+                $disposeEvents = @($events | Where-Object { [string]$_.event -ceq 'dispose' })
+                $disposeFailures = @($disposeEvents | Where-Object { [string]$_.exceptionMessage -ceq 'controlled persistent sink Dispose fault' })
+                $flushFailures = @($events | Where-Object { [string]$_.event -ceq 'flush' -and -not [string]::IsNullOrEmpty([string]$_.exceptionMessage) })
+                $cleanupErrorText = if ($null -eq $result) { '' } else { @($result.cleanupErrors) -join ' | ' }
+                $outerWriterFlushFailedAfterEarlyDispose = $cleanupErrorText.Contains('outer fallback raw timing writer Flush failed') -and
+                    $cleanupErrorText.Contains('Cannot write to a closed TextWriter.')
+                $consoleRestored = [object]::ReferenceEquals([Console]::Error, $savedConsoleError)
+                $evidence = [ordered]@{
+                    case = 'ff85-unsupported-persistent-dispose'; authorityRevision = [string]$fixture.authorityPin.commit
+                    authorityRunnerPath = [string]$fixture.runnerPath; authorityRunnerSha256 = [string]$fixture.runnerSha256
+                    moduleName = [string]$fixture.module.Name; retainedApiContract = $contract
+                    invocationError = $invocationError
+                    result = if ($null -eq $result) { $null } else { [ordered]@{
+                        complete = $result.complete; status = $result.status; reason = $result.reason; message = $result.message
+                        sampleCount = $result.sampleCount; cleanupErrors = if ($null -eq $result.PSObject.Properties['cleanupErrors']) { @() } else { @($result.cleanupErrors) }
+                        timingStateRestored = $result.timingStateRestored
+                    } }
+                    moduleStateAccessesBySampler = 'none expected on unsupported API branch; contract timingStateProbed is false'
+                    sampleAccessCount = if ($null -eq $result) { $null } else { [int]$result.sampleCount }
+                    consoleErrorSameReference = $consoleRestored
+                    stream = if ($null -eq $stream) { $null } else { [ordered]@{
+                        mode = $stream.Mode; armed = $stream.Armed; stage = $stream.Stage; fullReceiptChecks = $stream.FullReceiptChecks
+                        underlyingClosed = $stream.UnderlyingClosed; events = $events
+                        disposeAttemptCount = $disposeEvents.Count; disposeFailureCount = $disposeFailures.Count; flushFailureCount = $flushFailures.Count
+                        outerWriterFlushFailedAfterEarlyDispose = $outerWriterFlushFailedAfterEarlyDispose
+                        underlyingDisposeRetryObserved = ($disposeFailures.Count -gt 1)
+                    } }
+                    astProof = $script:SourceResidentSinkFaultAstProofForTest
+                }
+                $resultPath = [Environment]::GetEnvironmentVariable('SYP326_SINK_FAULT_RESULT_PATH')
+                if (-not [string]::IsNullOrWhiteSpace($resultPath)) {
+                    [IO.File]::AppendAllText($resultPath, (($evidence | ConvertTo-Json -Depth 16 -Compress) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+                }
+
+                $assertionFailures = [Collections.Generic.List[string]]::new()
+                if ($null -eq $contract -or [bool]$contract.supported -or @($contract.missingParameters).Count -eq 0 -or [bool]$contract.timingStateProbed) {
+                    $assertionFailures.Add('actual FF85 API contract was not unsupported without timing-state probing')
+                }
+                if ($null -eq $result) { $assertionFailures.Add('FF85 unsupported resident sampling did not return a result') }
+                else {
+                    if ([bool]$result.complete) { $assertionFailures.Add('result was complete after persistent unsupported-branch Dispose failures') }
+                    if ([string]$result.status -cne 'incomplete') { $assertionFailures.Add("result status was '$($result.status)', expected incomplete after cleanup failure") }
+                    if ([string]$result.reason -cne 'retained-receipt-api-unsupported') { $assertionFailures.Add('the unsupported API reason was not retained') }
+                    if (-not [string]$result.message.Contains('controlled persistent sink Dispose fault')) { $assertionFailures.Add('the earliest Dispose error message was not retained') }
+                    if ($null -eq $result.cleanupErrors -or @($result.cleanupErrors).Count -eq 0) { $assertionFailures.Add('persistent cleanup errors were not retained') }
+                    if ([int]$result.sampleCount -ne 0) { $assertionFailures.Add('unsupported API branch accessed samples') }
+                }
+                if (-not $consoleRestored) { $assertionFailures.Add('Console.Error reference was not restored') }
+                if ($null -eq $stream -or -not $stream.Armed -or $stream.Stage -cne 'source-resident-unsupported-open' -or $stream.FullReceiptChecks -ne 0) {
+                    $assertionFailures.Add('persistent Dispose fault was not armed immediately after stream creation')
+                }
+                if ($null -eq $stream -or -not $stream.UnderlyingClosed) { $assertionFailures.Add('persistent Dispose failure did not close the real backing file') }
+                if ($disposeFailures.Count -ne 1) { $assertionFailures.Add('the controlled persistent fault did not match the single underlying Dispose invocation observed by the runtime') }
+                if (-not $outerWriterFlushFailedAfterEarlyDispose) { $assertionFailures.Add('the actual outer writer cleanup retry boundary after the early Dispose failure was not evidenced') }
+                if ($flushFailures.Count -ne 0) { $assertionFailures.Add('the controlled stream also faulted during Flush') }
+                if ($null -eq $script:SourceResidentSinkFaultAstProofForTest -or
+                    [int]$script:SourceResidentSinkFaultAstProofForTest.replacementCount -ne 1 -or
+                    -not [bool]$script:SourceResidentSinkFaultAstProofForTest.reversibleSingleExpressionReplacement -or
+                    -not [bool]$script:SourceResidentSinkFaultAstProofForTest.streamWriterConstructionUnchanged -or
+                    -not [bool]$script:SourceResidentSinkFaultAstProofForTest.autoFlushUnchanged) {
+                    $assertionFailures.Add('test extraction did not prove the sole File.Open replacement with real StreamWriter and AutoFlush')
+                }
+                if ($assertionFailures.Count -gt 0) { throw ('Unsupported FF85 persistent Dispose assertions failed: ' + ($assertionFailures -join '; ')) }
+            }
+            finally {
+                [Console]::SetError($savedConsoleError)
+                if ($null -ne $fixture -and $null -ne $fixture.module) { Remove-Module -ModuleInfo $fixture.module -Force -ErrorAction SilentlyContinue }
+                $script:SourceResidentFaultStreamForTest = $null
+                $script:SourceResidentSinkFaultAstProofForTest = $null
+                $script:SourceResidentSinkFaultContractForTest = $null
+            }
+        }
+
+    }
+
 
     # Scenario: the source authority allowlist exposes the reviewed ff85 commit and all 32 closure records.
     # Purpose: bind the active config to the complete adopted ff85 authority tuple.
@@ -1030,6 +2435,1036 @@ function Assert-AuthorityConfig { param([Parameter(Mandatory)] $Config) }
         }
     }
 
+    # Given: original setup stage maps and one frozen source input, with acquisition already complete.
+    # When: the extracted production setup receipt span runs through its real create-only JSON writer.
+    # Then: the completion receipt has independent late timings while the early receipt bytes and frozen hash remain unchanged.
+    # Scenario: source setup publishes late verification and prepared-write timing fields.
+    # Purpose: preserve frozen early timing evidence and the existing completion boundary.
+    It 'UnitT70_records_late_setup_stages_without_changing_frozen_early_receipt' {
+        $fixtureRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $result = Invoke-SourceSetupLateTimingBlockForTest -Root $fixtureRoot
+
+        $prepared = Get-Content -LiteralPath $result.preparedPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 80
+        $completed = Get-Content -LiteralPath $result.completedPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 40
+        $setupTimingBytes = [IO.File]::ReadAllBytes($result.setupTimingPath)
+        $setupTimingHash = ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($setupTimingBytes))).ToLowerInvariant()
+        $early = [Text.UTF8Encoding]::new($false).GetString($setupTimingBytes) | ConvertFrom-Json -Depth 40
+        $lateNames = @('finalFrozenVerificationSeconds', 'finalReceiptVerificationSeconds', 'preparedMetadataWriteSeconds')
+
+        $completed.schemaVersion | Should -Be 1
+        $completed.totalBoundary | Should -BeExactly 'after complete frozen-file verification and prepared metadata creation'
+        $completed.stageTimingSha256 | Should -BeExactly $setupTimingHash
+        $result.setupTimingHashAfter | Should -BeExactly $result.setupTimingHashBefore
+        $setupTimingHash | Should -BeExactly $result.setupTimingHashBefore
+        [Convert]::ToBase64String($setupTimingBytes) | Should -BeExactly ([Convert]::ToBase64String($result.setupTimingBytesBefore))
+        $early.stageSeconds.PSObject.Properties.Name | Should -Not -Contain 'finalFrozenVerificationSeconds'
+        $early.stageSeconds.PSObject.Properties.Name | Should -Not -Contain 'finalReceiptVerificationSeconds'
+        $early.stageSeconds.PSObject.Properties.Name | Should -Not -Contain 'preparedMetadataWriteSeconds'
+        foreach ($name in $lateNames) {
+            @($result.setupStageSeconds.Keys | Where-Object { $_ -ceq $name }).Count | Should -Be 0
+            $completed.stageSeconds.PSObject.Properties.Name | Should -Contain $name
+            $stageValue = $completed.stageSeconds.PSObject.Properties[$name].Value
+            ($stageValue -is [double]) | Should -BeTrue
+            [double]::IsNaN($stageValue) | Should -BeFalse
+            [double]::IsInfinity($stageValue) | Should -BeFalse
+            $stageValue | Should -BeGreaterOrEqual 0
+        }
+        foreach ($name in $result.setupStageSeconds.Keys) {
+            [double]$completed.stageSeconds.$name | Should -Be ([double]$early.stageSeconds.$name)
+        }
+        foreach ($name in $result.resolverStageSeconds.Keys) {
+            [double]$completed.resolverSeconds.$name | Should -Be ([double]$early.resolverSeconds.$name)
+        }
+        $setupBinding = @($prepared.sourceValidation.frozenFiles | Where-Object { [string]$_.path -ceq $result.setupTimingPath })
+        $setupBinding.Count | Should -Be 1
+        $setupBinding[0].sha256 | Should -BeExactly $setupTimingHash
+        $prepared.runId | Should -BeExactly $result.runId
+        [double]$prepared.sourceValidation.frozenFiles.Count | Should -BeGreaterThan 0
+        $result.failure | Should -BeNullOrEmpty
+    }
+
+    # Scenario: a final setup check or prepared metadata write fails before setup is complete.
+    # Purpose: preserve the existing completion boundary and frozen early timing bytes on every late-stage failure.
+    It 'UnitT71_does_not_publish_completed_setup_receipts_when_a_late_stage_fails' {
+        foreach ($failureStage in @('frozen', 'receipts', 'prepared')) {
+            $fixtureRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+            $result = Invoke-SourceSetupLateTimingBlockForTest -Root $fixtureRoot -FailureStage $failureStage
+            $expectedFailure = if ($failureStage -ceq 'prepared') { 'fixture prepared metadata write failure' } else { "fixture $failureStage verification failure" }
+            $result.failure | Should -BeExactly $expectedFailure -Because $failureStage
+            $result.preparedExists | Should -BeFalse
+            $result.completedExists | Should -BeFalse
+            $result.setupTimingHashAfter | Should -BeExactly $result.setupTimingHashBefore
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes($result.setupTimingPath)) | Should -BeExactly ([Convert]::ToBase64String($result.setupTimingBytesBefore))
+        }
+    }
+
+    # Scenario: the extracted production source transaction runs against a tiny child emitter, then retains its real JSON receipt and cleanup behavior.
+    # Purpose: validate numeric elapsed fields, null downstream stages, and unchanged failure decisions without invoking the full Standard Core gate.
+    It 'UnitT72_records_source_stage_timings_and_preserves_success_failure_and_cleanup_semantics' {
+        $success = Invoke-SourceValidationOuterTryForTest -Root (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))
+        $success.receipt | Should -Not -BeNullOrEmpty
+        $success.authorityHead | Should -BeExactly $success.prepared.authorityRevision
+        $success.receipt.runId | Should -BeExactly $success.fixture.runId
+        $success.receipt.candidateRevision | Should -BeExactly $success.fixture.candidateRevision
+        $success.receipt.authorityRevision | Should -BeExactly $success.prepared.authorityRevision
+        $success.receipt.diagnosticTargetSeconds | Should -Be 1200
+        $success.receipt.reportAccepted | Should -BeTrue
+        $success.receipt.cleanupSucceeded | Should -BeTrue
+        $success.receipt.processExitCode | Should -Be 0
+        $success.receipt.stageSeconds | Should -Not -BeNullOrEmpty
+        $success.receipt.stageSeconds.PSObject.Properties.Name | Should -Contain 'preadmissionSeconds'
+        $success.receipt.stageSeconds.PSObject.Properties.Name | Should -Not -Contain 'centralRunnerSeconds'
+        $success.receipt.centralRunnerSeconds | Should -BeGreaterOrEqual 0
+        foreach ($name in @('snapshotAndAdapterSeconds', 'outputRelaySeconds', 'protectedReportReaderSeconds', 'codeReportBindingSeconds', 'cleanupSeconds')) {
+            $success.receipt.stageSeconds.PSObject.Properties.Name | Should -Contain $name -Because 'the source timing receipt binds all stage names'
+            $value = $success.receipt.stageSeconds.PSObject.Properties[$name].Value
+            ($value -is [double]) | Should -BeTrue -Because $name
+            [double]::IsNaN($value) | Should -BeFalse -Because $name
+            [double]::IsInfinity($value) | Should -BeFalse -Because $name
+            $value | Should -BeGreaterOrEqual 0 -Because $name
+        }
+        $success.receipt.stageSeconds.preadmissionSeconds | Should -BeNullOrEmpty -Because 'the controlled AST seam starts after pre-admission'
+        $success.errorText | Should -BeNullOrEmpty
+        $success.priorTestValidateSourceAfter | Should -BeExactly 'fixture prior value'
+        (Test-Path -LiteralPath $success.adapterRoot) | Should -BeFalse
+
+        foreach ($case in @(
+            [pscustomobject]@{ scenario = 'snapshot'; attempted = 'snapshotAndAdapterSeconds'; next = 'outputRelaySeconds'; message = 'fixture authority snapshot failure'; processExitCode = 1; reportAccepted = $false; cleanupSucceeded = $true }
+            [pscustomobject]@{ scenario = 'adapter'; attempted = 'snapshotAndAdapterSeconds'; next = 'outputRelaySeconds'; message = 'fixture source adapter creation failure'; processExitCode = 1; reportAccepted = $false; cleanupSucceeded = $true }
+            [pscustomobject]@{ scenario = 'reader'; attempted = 'protectedReportReaderSeconds'; next = 'codeReportBindingSeconds'; message = 'fixture protected report reader failure'; processExitCode = 0; reportAccepted = $false; cleanupSucceeded = $true }
+            [pscustomobject]@{ scenario = 'binding'; attempted = 'codeReportBindingSeconds'; next = ''; message = 'fixture source report binding failure'; processExitCode = 0; reportAccepted = $false; cleanupSucceeded = $true }
+            [pscustomobject]@{ scenario = 'nonzero'; attempted = 'outputRelaySeconds'; next = 'protectedReportReaderSeconds'; message = ''; processExitCode = 23; reportAccepted = $false; cleanupSucceeded = $true }
+            [pscustomobject]@{ scenario = 'cancel'; attempted = 'codeReportBindingSeconds'; next = ''; message = 'fixture cancellation report binding failure'; processExitCode = 0; reportAccepted = $false; cleanupSucceeded = $true }
+            [pscustomobject]@{ scenario = 'cleanup'; attempted = 'cleanupSeconds'; next = ''; message = 'SOURCE_CLEANUP|'; processExitCode = 0; reportAccepted = $true; cleanupSucceeded = $false }
+        )) {
+            $result = Invoke-SourceValidationOuterTryForTest -Root (Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))) -Scenario $case.scenario
+            $result.receipt | Should -Not -BeNullOrEmpty -Because $case.scenario
+            $result.receipt.stageSeconds | Should -Not -BeNullOrEmpty -Because $case.scenario
+            $result.receipt.stageSeconds.PSObject.Properties.Name | Should -Contain $case.attempted -Because $case.scenario
+            $value = $result.receipt.stageSeconds.PSObject.Properties[$case.attempted].Value
+            ($value -is [double]) | Should -BeTrue -Because "$($case.scenario) attempted stage"
+            [double]::IsNaN($value) | Should -BeFalse -Because "$($case.scenario) attempted stage"
+            [double]::IsInfinity($value) | Should -BeFalse -Because "$($case.scenario) attempted stage"
+            $value | Should -BeGreaterOrEqual 0 -Because "$($case.scenario) attempted stage"
+            if (-not [string]::IsNullOrWhiteSpace([string]$case.next)) {
+                $result.receipt.stageSeconds.PSObject.Properties.Name | Should -Contain $case.next -Because $case.scenario
+                $result.receipt.stageSeconds.PSObject.Properties[$case.next].Value | Should -BeNullOrEmpty -Because "$($case.scenario) downstream stage"
+            }
+            $result.receipt.processExitCode | Should -Be $case.processExitCode -Because $case.scenario
+            $result.receipt.reportAccepted | Should -Be $case.reportAccepted -Because $case.scenario
+            $result.receipt.cleanupSucceeded | Should -Be $case.cleanupSucceeded -Because $case.scenario
+            if ([string]::IsNullOrWhiteSpace([string]$case.message)) { $result.errorText | Should -BeNullOrEmpty -Because $case.scenario }
+            else { $result.errorText | Should -Match ([regex]::Escape([string]$case.message)) -Because $case.scenario }
+            if ($case.scenario -ceq 'cleanup') { (Test-Path -LiteralPath $result.adapterRoot) | Should -BeTrue -Because $case.scenario }
+            else { (Test-Path -LiteralPath $result.adapterRoot) | Should -BeFalse -Because $case.scenario }
+        }
+    }
+
+    # Scenario: source authority admission fails before the existing outer try/finally.
+    # Purpose: ensure pre-admission rejection still creates no timing receipt, child process, or cleanup work.
+    It 'UnitT73_preserves_source_pre_admission_failure_boundary' {
+        $result = Invoke-SourcePreadmissionFailureForTest -Root (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))
+        $result.failure | Should -Match 'fixture pre-admission authority rejection'
+        $result.artifactsRootExists | Should -BeFalse
+        $result.sourceReceiptFiles | Should -Be 0
+        $result.cleanupFailed | Should -BeFalse
+        $result.invalidInput | Should -BeFalse
+        $result.functionPreservedTestValidateSource | Should -BeExactly 'fixture pre-admission value'
+    }
+
+    # Scenario: the new source-only resident measurement request is admitted independently of setup and the canonical source gate.
+    # Purpose: expose a strict resident mode guard before adding any sampling behavior.
+    It 'UnitT74_admits_only_the_explicit_source_resident_request' {
+        $validatePath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $validateAst = [System.Management.Automation.Language.Parser]::ParseFile($validatePath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $guardAst = $validateAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Assert-CodeSourceResidentRunRequest'
+        }, $true)
+        $guardAst | Should -Not -BeNullOrEmpty -Because 'the new mode needs an executable admission guard before it can be dispatched'
+        if ($null -eq $guardAst) { return }
+
+        Import-Module -Name $script:DriverPath -Force -ErrorAction Stop
+        . ([scriptblock]::Create($guardAst.Extent.Text))
+        $valid = Assert-CodeSourceResidentRunRequest -ExecutionMode 'Run' -AdapterVersion 2 `
+            -SourceResidentTiming -SourceToolsPath (Join-Path $TestDrive 'source-tools.json') `
+            -AuthorityRevision 'ff85d5f80fe795b96354e753074b5ce59ad04ecd' -RunId ('a' * 32)
+        $valid | Should -BeExactly 'SourceResidentTiming'
+
+        { Assert-CodeSourceResidentRunRequest -ExecutionMode 'Run' -AdapterVersion 2 `
+            -SourceResidentTiming -SourceValidation -SourceToolsPath (Join-Path $TestDrive 'source-tools.json') `
+            -AuthorityRevision 'ff85d5f80fe795b96354e753074b5ce59ad04ecd' -RunId ('a' * 32) } |
+            Should -Throw '*separate*'
+        { Assert-CodeSourceResidentRunRequest -ExecutionMode 'Run' -AdapterVersion 1 `
+            -SourceResidentTiming -SourceToolsPath (Join-Path $TestDrive 'source-tools.json') `
+            -AuthorityRevision 'ff85d5f80fe795b96354e753074b5ce59ad04ecd' -RunId ('a' * 32) } |
+            Should -Throw '*Core adapter v2*'
+        { Assert-CodeSourceResidentRunRequest -ExecutionMode 'Run' -AdapterVersion 2 `
+            -SourceResidentTiming -SourceToolsPath (Join-Path $TestDrive 'source-tools.json') `
+            -AuthorityRevision 'ff85d5f80fe795b96354e753074b5ce59ad04ecd' -RunId 'invalid' } |
+            Should -Throw '*RunId*'
+    }
+
+    # Scenario: the pinned legacy receipt API lacks retained-map arguments while the delivered 8e runner exposes them.
+    # Purpose: probe the actual command in the same owned module and decline unsupported authority without timing-state fallback.
+    It 'UnitT75_probes_the_owned_retained_receipt_api_without_fallback' {
+        Import-Module -Name $script:DriverPath -Force
+        $validatePath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $validateAst = [System.Management.Automation.Language.Parser]::ParseFile($validatePath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $probeAst = $validateAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Get-CodeSourceResidentRetainedApiContract'
+        }, $true)
+        $probeAst | Should -Not -BeNullOrEmpty -Because 'resident sampling needs an API probe before it can touch retained timing state'
+        if ($null -eq $probeAst) { return }
+        . ([scriptblock]::Create($probeAst.Extent.Text))
+        $moduleFactoryAst = $validateAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'New-CodeSourceStandardValidationModule'
+        }, $true)
+        $moduleFactoryAst | Should -Not -BeNullOrEmpty
+        if ($null -eq $moduleFactoryAst) { return }
+        . ([scriptblock]::Create($moduleFactoryAst.Extent.Text))
+
+        $legacyModule = New-Module -Name ('SourceResidentLegacyApi_' + [guid]::NewGuid().ToString('N')) -ScriptBlock {
+            function Assert-StandardCoreSourceToolReceipts {
+                param([object[]] $Bindings, [object[]] $FrozenFiles, [string] $RunId,
+                    [string] $CandidateRoot, [string] $ArtifactsRoot)
+            }
+            Export-ModuleMember -Function @() -Cmdlet @() -Alias @() -Variable @()
+        }
+        $actualModule = $null
+        try {
+            $legacyContract = Get-CodeSourceResidentRetainedApiContract -Module $legacyModule
+            $legacyContract.supported | Should -BeFalse
+            ($legacyContract.missingParameters -join ',') | Should -BeExactly 'RetainedReceiptMap,ToolNames,AdditionalPaths,ReturnReceiptMap'
+            $legacyContract.timingStateProbed | Should -BeFalse
+
+            $formalPin = Get-PreparedSourceAuthorityPin -AuthorityRevision '8e627baf54bd6e47862e6291b25e71cc45a2f2b7'
+            $fixtureRoot = [IO.Path]::GetFullPath((Join-Path $TestDrive ('resident-api-' + [guid]::NewGuid().ToString('N'))))
+            $candidateRoot = Join-Path $fixtureRoot 'candidate'
+            $artifactsRoot = Join-Path $fixtureRoot 'artifacts'
+            $trustedToolRoot = Split-Path -Parent ([IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName))
+            foreach ($directory in @($candidateRoot, $artifactsRoot, $trustedToolRoot)) {
+                [void](New-Item -ItemType Directory -Path $directory -Force)
+            }
+            $authorityFixture = New-SourceResidentAuthorityModuleForTest -Fixture ([pscustomobject]@{
+                candidateRoot = [IO.Path]::GetFullPath($candidateRoot)
+                artifactsRoot = [IO.Path]::GetFullPath($artifactsRoot)
+                trustedToolRoot = [IO.Path]::GetFullPath($trustedToolRoot)
+                prepared = [pscustomobject]@{ runId = 'c' * 32; sourceRevision = 'a' * 40 }
+                baseRevision = 'b' * 40
+            }) -AuthorityRevision ([string]$formalPin.commit)
+            $authority = [pscustomobject]@{
+                revision = [string]$authorityFixture.authorityPin.commit
+                sha256 = [string]$authorityFixture.runnerSha256
+                path = [string]$authorityFixture.runnerPath
+            }
+            [string]$authority.revision | Should -BeExactly ([string]$formalPin.commit)
+            [string]$authority.sha256 | Should -BeExactly ([string]$formalPin.files['scripts/Invoke-StandardValidation.ps1'])
+            $actualModule = $authorityFixture.module
+            $before = & $actualModule {
+                [pscustomobject]@{
+                    enabled = [bool]$script:StandardValidationTimingEnabled
+                    stage = [string]$script:StandardValidationTimingStage
+                    closure = $script:StandardValidationClosureTiming
+                    readObserver = $script:StandardValidationReadObserver
+                }
+            }
+            $before.enabled | Should -BeFalse
+            $before.stage | Should -BeExactly 'validation'
+            $before.closure | Should -BeNullOrEmpty
+            $before.readObserver | Should -BeNullOrEmpty
+
+            $actualContract = Get-CodeSourceResidentRetainedApiContract -Module $actualModule
+            $actualContract.supported | Should -BeTrue
+            $actualContract.missingParameters | Should -BeNullOrEmpty
+            $actualContract.timingStateProbed | Should -BeFalse
+            foreach ($name in @('RetainedReceiptMap', 'ToolNames', 'AdditionalPaths', 'ReturnReceiptMap')) {
+                $actualContract.parameterNames | Should -Contain $name
+            }
+            [IO.Path]::GetFullPath([string]$actualContract.runnerScriptFile) | Should -BeExactly ([IO.Path]::GetFullPath([string]$authority.path))
+            $after = & $actualModule {
+                [pscustomobject]@{
+                    enabled = [bool]$script:StandardValidationTimingEnabled
+                    stage = [string]$script:StandardValidationTimingStage
+                    closure = $script:StandardValidationClosureTiming
+                    readObserver = $script:StandardValidationReadObserver
+                }
+            }
+            $after.enabled | Should -BeExactly $before.enabled
+            $after.stage | Should -BeExactly $before.stage
+            $after.closure | Should -BeNullOrEmpty
+            $after.readObserver | Should -BeNullOrEmpty
+        }
+        finally {
+            if ($null -ne $actualModule) { Remove-Module -ModuleInfo $actualModule -Force -ErrorAction SilentlyContinue }
+            if ($null -ne $legacyModule) { Remove-Module -ModuleInfo $legacyModule -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    # Scenario: resident timing samples the two natural closure-size extremes only after an accepted, cleaned canonical run.
+    # Purpose: exercise same-run bindings, actual 8e frozen diagnostics, 3x2 retained calls, and failure-safe evidence restoration.
+    It 'UnitT76_samples_two_natural_closures_and_preserves_lifecycle_evidence' {
+        Import-Module -Name $script:DriverPath -Force
+        $validatePath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $validateAst = [System.Management.Automation.Language.Parser]::ParseFile($validatePath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $seriesAst = $validateAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Invoke-CodeSourceResidentSampleSeries'
+        }, $true)
+        $seriesAst | Should -Not -BeNullOrEmpty -Because 'the resident sample protocol must have behavior beyond mode admission and capability probing'
+        if ($null -eq $seriesAst) { return }
+        $contractAst = $validateAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Get-CodeSourceResidentRetainedApiContract'
+        }, $true)
+        $contractAst | Should -Not -BeNullOrEmpty -Because 'the FF85 capability case must use the production retained-API probe'
+        if ($null -eq $contractAst) { return }
+        . ([scriptblock]::Create($contractAst.Extent.Text))
+
+        $scenarioTrace = [Collections.Generic.List[string]]::new()
+        $scenarioErrors = [Collections.Generic.List[string]]::new()
+        if ($seriesAst.Extent.Text -match 'Get-A031AuthoritySupervisorBinding') {
+            [void]$scenarioErrors.Add('production sample identity depends on the test-only A031 authority helper')
+        }
+        $scenarios = @(
+            [pscustomobject]@{ name = 'success-3x2'; option = 'success' }
+            [pscustomobject]@{ name = 'same-count-different-bytes'; option = 'same-count-different-bytes' }
+            [pscustomobject]@{ name = 'insufficient-distinct-footprints'; option = 'equal' }
+            [pscustomobject]@{ name = 'sample-exception'; option = 'failure' }
+            [pscustomobject]@{ name = 'cancellation'; option = 'cancel' }
+            [pscustomobject]@{ name = 'missing-raw-sample-diagnostics'; option = 'omit' }
+            [pscustomobject]@{ name = 'malformed-sample-counters'; option = 'malformed' }
+            [pscustomobject]@{ name = 'postflight-frozen-change'; option = 'mutation' }
+            [pscustomobject]@{ name = 'postflight-unfrozen-file-added'; option = 'extra-file' }
+            [pscustomobject]@{ name = 'mismatched-case-ledger'; option = 'ledger' }
+            [pscustomobject]@{ name = 'wrong-retained-receipt-map'; option = 'receipt-map' }
+            [pscustomobject]@{ name = 'timing-candidate-revision-mismatch'; option = 'timing-candidate' }
+            [pscustomobject]@{ name = 'timing-base-revision-mismatch'; option = 'timing-base' }
+            [pscustomobject]@{ name = 'timing-authority-revision-mismatch'; option = 'timing-authority' }
+            [pscustomobject]@{ name = 'canonical-report-not-accepted'; option = 'report-failed' }
+            [pscustomobject]@{ name = 'canonical-cleanup-not-accepted'; option = 'cleanup-failed' }
+            [pscustomobject]@{ name = 'formal-ff85-retained-api-unsupported'; option = 'ff85-unsupported' }
+        )
+        foreach ($scenario in $scenarios) {
+            $scenarioTrace.Add([string]$scenario.name)
+            $fixture = $null
+            $result = $null
+            try {
+                $root = Join-Path $TestDrive ('resident-series-' + [guid]::NewGuid().ToString('N'))
+                $fixtureArguments = @{ Root = $root }
+                switch ([string]$scenario.option) {
+                    'same-count-different-bytes' { $fixtureArguments.FootprintMode = 'same-count-different-bytes' }
+                    'equal' { $fixtureArguments.FootprintMode = 'equal-footprints' }
+                    'failure' { $fixtureArguments.FailureSample = 3 }
+                    'cancel' { }
+                    'omit' { $fixtureArguments.OmitSampleDiagnostics = $true }
+                    'malformed' { $fixtureArguments.MalformedSampleDiagnostics = $true }
+                    'mutation' { $fixtureArguments.ChangeFrozenFileOnLastSample = $true }
+                    'extra-file' { $fixtureArguments.AddUnfrozenFileOnLastSample = $true }
+                    'ledger' { }
+                    'receipt-map' { }
+                    'timing-candidate' { $fixtureArguments.TimingRevisionMismatch = 'candidate' }
+                    'timing-base' { $fixtureArguments.TimingRevisionMismatch = 'base' }
+                    'timing-authority' { $fixtureArguments.TimingRevisionMismatch = 'authority' }
+                    'report-failed' { $fixtureArguments.RejectReport = $true }
+                    'cleanup-failed' { $fixtureArguments.TimingCleanupFailed = $true }
+                }
+                $fixture = New-SourceResidentSeriesFixtureForTest @fixtureArguments
+                if ([string]$scenario.option -ceq 'cancel') {
+                    [void](Write-SourceBindingFixtureFile -Path $fixture.cancellationPath -Text '{"cancelled":true}')
+                }
+                elseif ([string]$scenario.option -ceq 'ledger') {
+                    $badLedger = Get-Content -LiteralPath $fixture.caseLedgerPath -Raw | ConvertFrom-Json -Depth 20
+                    $badLedger.coreRunId = 'f' * 32
+                    [IO.File]::WriteAllText($fixture.caseLedgerPath, (($badLedger | ConvertTo-Json -Depth 20 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+                }
+                elseif ([string]$scenario.option -ceq 'receipt-map') {
+                    & $fixture.module { $script:SourceResidentFixtureMap.runId = 'f' * 32 }
+                }
+                elseif ([string]$scenario.option -ceq 'ff85-unsupported') {
+                    $ff85 = New-SourceResidentAuthorityModuleForTest -Fixture $fixture `
+                        -AuthorityRevision 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
+                    Remove-Module -ModuleInfo $fixture.module -Force -ErrorAction Stop
+                    $fixture.module = $ff85.module
+                    $fixture.authorityPin = $ff85.authorityPin
+                    $fixture.runnerPath = $ff85.runnerPath
+                    $fixture.runnerSha256 = $ff85.runnerSha256
+                    & $fixture.module {
+                        $script:SourceResidentFixtureCalls = 0
+                        $script:SourceResidentFixtureFullReceiptChecks = 0
+                    }
+                    $ff85Contract = Get-CodeSourceResidentRetainedApiContract -Module $fixture.module
+                    $ff85Contract.supported | Should -BeFalse
+                    $ff85Contract.timingStateProbed | Should -BeFalse
+                    @($ff85Contract.missingParameters).Count | Should -BeGreaterThan 0
+                }
+
+                $reportHashBefore = Get-SourceBindingFixtureHash -Path $fixture.reportPath
+                $stateBefore = Get-SourceResidentModuleStateForTest -Module $fixture.module
+                $consoleErrorBefore = [Console]::Error
+                $cancellationPath = if ([string]$scenario.option -ceq 'cancel') { $fixture.cancellationPath } else { '' }
+                $result = Invoke-SourceResidentSeriesForTest -Fixture $fixture -CancellationPath $cancellationPath
+                $sampleCalls = [int](& $fixture.module { $script:SourceResidentFixtureCalls })
+                $fullReceiptChecks = [int](& $fixture.module { $script:SourceResidentFixtureFullReceiptChecks })
+                $stateAfter = Get-SourceResidentModuleStateForTest -Module $fixture.module
+                [object]::ReferenceEquals($consoleErrorBefore, [Console]::Error) | Should -BeTrue
+                $stateAfter.enabledPresent | Should -BeExactly $stateBefore.enabledPresent
+                $stateAfter.enabled | Should -BeExactly $stateBefore.enabled
+                $stateAfter.stagePresent | Should -BeExactly $stateBefore.stagePresent
+                $stateAfter.stage | Should -BeExactly $stateBefore.stage
+                $stateAfter.closurePresent | Should -BeExactly $stateBefore.closurePresent
+                [object]::ReferenceEquals($stateBefore.closure, $stateAfter.closure) | Should -BeTrue
+                $stateAfter.readObserverPresent | Should -BeExactly $stateBefore.readObserverPresent
+                [object]::ReferenceEquals($stateBefore.readObserver, $stateAfter.readObserver) | Should -BeTrue
+                (Get-SourceBindingFixtureHash -Path $fixture.reportPath) | Should -BeExactly $reportHashBefore
+
+                switch ([string]$scenario.option) {
+                    'success' {
+                        $result.status | Should -BeExactly 'complete'
+                        $result.complete | Should -BeTrue
+                        $result.sampleCount | Should -Be 6
+                        $sampleCalls | Should -Be 6
+                        $fullReceiptChecks | Should -Be 1
+                        @($result.selectedGroups).Count | Should -Be 2
+                        @($result.selectedGroups | ForEach-Object { [int]$_.rootFileCount } | Sort-Object -Unique) | Should -Be @(1, 3)
+                        @($result.samples | Where-Object { [string]$_.sourceIntegrity.state -ceq 'completed' }).Count | Should -Be 6
+                        @($result.samples | Where-Object { [long]$_.sourceIntegrity.calls -ne 0 -or [long]$_.sourceIntegrity.files -ne 0 -or [long]$_.sourceIntegrity.bytes -ne 0 }).Count | Should -Be 0
+                        @($result.samples | Where-Object {
+                            @($_.phaseRecords | Where-Object phase -ceq 'source-receipt-bytes').Count -eq 0 -or
+                            @($_.phaseRecords | Where-Object phase -ceq 'frozen-file-hashes').Count -eq 0 -or
+                            @($_.phaseRecords | Where-Object phase -ceq 'closure-content-hash').Count -eq 0
+                        }).Count | Should -Be 0
+                        @($result.samples | Group-Object groupId | ForEach-Object Count | Where-Object { $_ -ne 3 }).Count | Should -Be 0
+                        $sampleArguments = @(& $fixture.module { $script:SourceResidentFixtureArguments.ToArray() })
+                        @($sampleArguments).Count | Should -Be 6
+                        @($sampleArguments | Where-Object { $_.mapRunId -cne [string]$fixture.prepared.runId -or $_.moduleName -cne $fixture.module.Name }).Count | Should -Be 0
+                        @($sampleArguments | Where-Object { $_.timingStage -cne 'source-resident-sample' }).Count | Should -Be 0
+                        foreach ($sampleArgument in $sampleArguments) {
+                            $expectedDispatchSlots = foreach ($tool in @($sampleArgument.toolNames)) {
+                                switch ([string]$tool) { 'skill-validator' { 'skillValidator' } 'skill-tools' { 'skillTools' } 'skillspector' { 'staticAnalyzer' } }
+                            }
+                            $expectedPaths = [Collections.Generic.List[string]]::new()
+                            foreach ($slot in @($expectedDispatchSlots)) {
+                                $dispatch = $fixture.prepared.sourceValidation.PSObject.Properties[[string]$slot].Value
+                                $expectedPaths.Add([IO.Path]::GetFullPath([string]$dispatch.command))
+                                foreach ($argument in @($dispatch.arguments)) {
+                                    if ([IO.Path]::IsPathRooted([string]$argument)) { $expectedPaths.Add([IO.Path]::GetFullPath([string]$argument)) }
+                                }
+                            }
+                            @($sampleArgument.additionalPaths | Sort-Object -Unique) | Should -Be @($expectedPaths.ToArray() | Sort-Object -Unique)
+                        }
+                        $raw = Get-Content -LiteralPath $result.rawDiagnosticsPath -Raw
+                        $raw | Should -Match '\[StandardValidation timing\].*frozen-file-hashes'
+                        $raw | Should -Match '\[StandardValidation timing\].*source-receipt-bytes'
+                        $raw | Should -Match '\[StandardValidation timing\].*source-resident-sample'
+                        $result.counters | Should -Not -BeNullOrEmpty
+                        [double]$result.seriesWallSeconds | Should -BeGreaterThan 0
+                        [string]$result.preparedSha256 | Should -Be (Get-SourceBindingFixtureHash -Path $fixture.preparedPath)
+                        [string]$result.reportSha256 | Should -Be $reportHashBefore
+                    }
+                    'same-count-different-bytes' {
+                        $result.status | Should -BeExactly 'complete'
+                        $result.sampleCount | Should -Be 6
+                        @($result.selectedGroups | ForEach-Object { [int]$_.rootFileCount } | Sort-Object -Unique) | Should -Be @(2)
+                        @($result.selectedGroups | ForEach-Object { [long]$_.rootBytes } | Sort-Object -Unique).Count | Should -Be 2
+                        $fullReceiptChecks | Should -Be 1
+                    }
+                    'equal' {
+                        $result.complete | Should -BeFalse
+                        $result.reason | Should -BeExactly 'insufficient-distinct-closure-footprints'
+                        $result.sampleCount | Should -Be 0
+                        $sampleCalls | Should -Be 0
+                        $fullReceiptChecks | Should -Be 1
+                    }
+                    'failure' {
+                        $result.complete | Should -BeFalse
+                        $result.status | Should -BeExactly 'incomplete'
+                        $result.sampleCount | Should -Be 3
+                        $sampleCalls | Should -Be 3
+                        @($result.samples | Where-Object { [string]$_.sourceIntegrity.state -ceq 'failed' }).Count | Should -Be 1
+                        (Get-Content -LiteralPath $result.rawDiagnosticsPath -Raw) | Should -Match '"state":"failed"'
+                        $fullReceiptChecks | Should -Be 1
+                    }
+                    'cancel' {
+                        $result.complete | Should -BeFalse
+                        $result.status | Should -BeExactly 'cancelled'
+                        $result.sampleCount | Should -Be 0
+                        $sampleCalls | Should -Be 0
+                        $fullReceiptChecks | Should -Be 1
+                    }
+                    'omit' {
+                        $result.complete | Should -BeFalse
+                        $result.reason | Should -BeExactly 'missing-sample-terminal-diagnostics'
+                        $result.sampleCount | Should -Be 6
+                        $result.counters | Should -BeNullOrEmpty
+                        $sampleCalls | Should -Be 6
+                        $fullReceiptChecks | Should -Be 1
+                    }
+                    'malformed' {
+                        $result.complete | Should -BeFalse
+                        $result.reason | Should -BeExactly 'invalid-sample-diagnostic-counters'
+                        $result.sampleCount | Should -Be 6
+                        $sampleCalls | Should -Be 6
+                        $result.sampleDiagnosticCountersValid | Should -BeFalse
+                        @($result.sampleDiagnosticErrors | Where-Object { $_ -match 'calls' }).Count | Should -BeGreaterThan 0
+                        $fullReceiptChecks | Should -Be 1
+                    }
+                    'mutation' {
+                        $result.complete | Should -BeFalse
+                        $result.status | Should -BeExactly 'incomplete'
+                        $result.sampleCount | Should -Be 6
+                        $sampleCalls | Should -Be 6
+                        $fullReceiptChecks | Should -Be 1
+                    }
+                    'extra-file' {
+                        $result.complete | Should -BeFalse
+                        $result.status | Should -BeExactly 'incomplete'
+                        $result.sampleCount | Should -Be 6
+                        $sampleCalls | Should -Be 6
+                        $fullReceiptChecks | Should -Be 1
+                        @($result.postflightErrors).Count | Should -BeGreaterThan 0
+                    }
+                    'ledger' {
+                        $result.complete | Should -BeFalse
+                        $result.reason | Should -BeExactly 'metadata-mismatch'
+                        $result.sampleCount | Should -Be 0
+                        $sampleCalls | Should -Be 0
+                    }
+                    'receipt-map' {
+                        $result.complete | Should -BeFalse
+                        $result.reason | Should -BeExactly 'receipt-map-mismatch'
+                        $result.sampleCount | Should -Be 0
+                        $sampleCalls | Should -Be 0
+                    }
+                    { $_ -in @('timing-candidate', 'timing-base', 'timing-authority') } {
+                        $result.complete | Should -BeFalse
+                        $result.reason | Should -BeExactly 'metadata-mismatch'
+                        $result.sampleCount | Should -Be 0
+                        $sampleCalls | Should -Be 0
+                    }
+                    { $_ -in @('report-failed', 'cleanup-failed') } {
+                        $result.complete | Should -BeFalse
+                        $result.reason | Should -BeExactly 'metadata-mismatch'
+                        $result.sampleCount | Should -Be 0
+                        $sampleCalls | Should -Be 0
+                    }
+                    'ff85-unsupported' {
+                        $result.complete | Should -BeFalse
+                        $result.status | Should -BeExactly 'unsupported'
+                        $result.reason | Should -BeExactly 'retained-receipt-api-unsupported'
+                        $result.sampleCount | Should -Be 0
+                        $sampleCalls | Should -Be 0
+                        $fullReceiptChecks | Should -Be 0
+                    }
+                }
+            }
+            catch {
+                $resultDetail = if ($null -eq $result) { '' } else {
+                    " [status=$($result.status); reason=$($result.reason); message=$($result.message); postflight=$(@($result.postflightErrors) -join ' | ')]"
+                }
+                $scenarioErrors.Add("$($scenario.name)$resultDetail`: $($_.Exception.Message)")
+            }
+            finally {
+                if ($null -ne $fixture -and $null -ne $fixture.module) {
+                    Remove-Module -ModuleInfo $fixture.module -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+        @($scenarioTrace.ToArray()) | Should -Be @(
+            'success-3x2', 'same-count-different-bytes', 'insufficient-distinct-footprints', 'sample-exception', 'cancellation',
+            'missing-raw-sample-diagnostics', 'malformed-sample-counters', 'postflight-frozen-change', 'postflight-unfrozen-file-added',
+            'mismatched-case-ledger', 'wrong-retained-receipt-map', 'timing-candidate-revision-mismatch',
+            'timing-base-revision-mismatch', 'timing-authority-revision-mismatch', 'canonical-report-not-accepted',
+            'canonical-cleanup-not-accepted', 'formal-ff85-retained-api-unsupported'
+        )
+        @($scenarioErrors.ToArray()) | Should -BeNullOrEmpty -Because 'every resident sub-scenario must execute before the consolidated assertion'
+    }
+
+    # Scenario: resident receipt timing has a separate command and runs only after the accepted canonical source gate.
+    # Purpose: keep optional resident evidence on the protected event-base driver and existing native supervisor path.
+    It 'UnitT77_routes_resident_timing_through_the_protected_post_gate_entry' {
+        $validatePath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $validateAst = [System.Management.Automation.Language.Parser]::ParseFile($validatePath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $parameterNames = @($validateAst.ParamBlock.Parameters | ForEach-Object { [string]$_.Name.VariablePath.UserPath })
+        $issues = [Collections.Generic.List[string]]::new()
+        foreach ($requiredParameter in @('SourceResidentTiming', 'ResidentEvidenceRoot')) {
+            if ($parameterNames -cnotcontains $requiredParameter) { $issues.Add("CLI parameter is missing: $requiredParameter") }
+        }
+        $mainTry = @($validateAst.EndBlock.Statements | Where-Object {
+            $_ -is [System.Management.Automation.Language.TryStatementAst] -and
+            $_.Body.Extent.Text.Contains('Assert-CodeSourceRunRequest')
+        } | Select-Object -First 1)
+        if ($mainTry.Count -ne 1 -or
+            -not $mainTry[0].Body.Extent.Text.Contains('Assert-CodeSourceResidentRunRequest') -or
+            -not $mainTry[0].Body.Extent.Text.Contains('Invoke-CodeSourceResidentTiming')) {
+            $issues.Add('Top-level request routing does not select the explicit resident guard and resident operation.')
+        }
+
+        $workflowPath = Join-Path $script:RepositoryRoot '.github/workflows/validate.yml'
+        $workflowText = Get-Content -LiteralPath $workflowPath -Raw
+        $gateMarker = '- name: Run full source validation'
+        $residentMarker = '- name: Capture resident source timing'
+        $uploadMarker = '- name: Upload source validation evidence'
+        $gateIndex = $workflowText.IndexOf($gateMarker, [StringComparison]::Ordinal)
+        $residentIndex = $workflowText.IndexOf($residentMarker, [StringComparison]::Ordinal)
+        $uploadIndex = $workflowText.IndexOf($uploadMarker, [StringComparison]::Ordinal)
+        if ($gateIndex -lt 0 -or $residentIndex -le $gateIndex -or $uploadIndex -le $residentIndex) {
+            $issues.Add('Resident source timing is not ordered after the full gate and before evidence upload.')
+        }
+        if ($residentIndex -ge 0 -and $uploadIndex -gt $residentIndex) {
+            $residentStep = $workflowText.Substring($residentIndex, $uploadIndex - $residentIndex)
+            foreach ($requiredPattern in @(
+                '\$protectedDriver', '\$candidateRoot', '\$supervisor', '\$supervisorSha256',
+                'Invoke-StandardValidationProcess', '\$pwshPath', '-SourceResidentTiming', '-ResidentEvidenceRoot'
+            )) {
+                if ($residentStep -notmatch $requiredPattern) { $issues.Add("Workflow resident step is missing protected entry contract: $requiredPattern") }
+            }
+            if ($residentStep -match 'Join-Path\s+\$candidateRoot\s+''scripts/Validate[.]ps1''' -or
+                $residentStep -match 'evidence-index[.]json') {
+                $issues.Add('Workflow resident step uses a candidate driver or rewrites the parent-owned evidence index.')
+            }
+        }
+        $issues.ToArray() | Should -BeNullOrEmpty -Because 'the resident timing request stays separate, protected, and downstream of canonical acceptance'
+    }
+
+    # Scenario: an accepted source run is admitted into the resident route, while failed report or cleanup evidence is stopped before sampling.
+    # Purpose: bind the same prepared run, canonical report, timing receipt, case ledger, owned runtime and selected authority into the sampler call.
+    It 'UnitT78_binds_resident_sampling_to_the_accepted_canonical_run' {
+        $fixture = New-SourceResidentRouteFixtureForTest -Root (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))
+        $script:SourceRepository = 'https://github.com/SyuanTsai/Skill-Code-Collaboration.git'
+        Import-Module -Name $script:DriverPath -Force
+        $validatePath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $validateAst = [System.Management.Automation.Language.Parser]::ParseFile($validatePath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        foreach ($functionName in @(
+            'Assert-CodeSourceAuthorityCheckout', 'Assert-NoReparseAncestors', 'Assert-PathWithinRoot',
+            'Convert-JsonElementToPowerShellObject', 'Get-CodeSourceCoreRunPaths', 'Get-FileSha256',
+            'Get-GitBlobSha256', 'Get-ResolvedGitPath', 'Get-CodeSourceResidentRetainedApiContract',
+            'Invoke-CodeSourceResidentSampleSeries', 'Invoke-CodeSourceStandardValidationModule',
+            'New-CodeSourceStandardValidationModule', 'Read-JsonFile', 'Resolve-GitRevision',
+            'Test-PathEqual', 'Test-PathWithinOrEqual', 'Assert-NoDuplicateJsonProperties',
+            'Get-CodeSourceResidentCaseCountValues', 'Invoke-CodeSourceResidentTiming'
+        )) {
+            $definition = $validateAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $functionName }, $true)
+            $definition | Should -Not -BeNullOrEmpty -Because "the route depends on production function $functionName"
+            if ($null -ne $definition) { . ([scriptblock]::Create($definition.Extent.Text)) }
+        }
+
+        $invoke = {
+            param([string] $EvidenceRoot, [Parameter(Mandatory)] $RouteFixture)
+            $routeArguments = @{
+                GitPath = $RouteFixture.gitPath
+                PowerShellPath = [string]$RouteFixture.source.fixture.runtimeExecutable
+                RepositoryRoot = $RouteFixture.candidateRoot
+                CandidateRevision = [string]$RouteFixture.prepared.sourceRevision
+                BaseRevision = [string]$RouteFixture.source.baseRevision
+                AuthorityConfig = $RouteFixture.authorityConfig
+                AuthorityRepositoryRoot = $RouteFixture.authorityRoot
+                SourceToolsPath = $RouteFixture.preparedPath
+                RunId = [string]$RouteFixture.prepared.runId
+                EventName = 'pull_request'
+                ArtifactsRoot = $RouteFixture.artifactsRoot
+                OutputPath = $RouteFixture.reportPath
+                ArtifactsRootWasExplicit = $true
+                ResidentEvidenceRoot = $EvidenceRoot
+                TrustedToolRoot = [string]$RouteFixture.prepared.pesterRuntime.sourceTrustedToolRoot
+                TimeoutSeconds = 10800
+            }
+            $routeDefinition = $validateAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-CodeSourceResidentTiming' }, $true)
+            if (@($routeDefinition.Body.ParamBlock.Parameters | ForEach-Object { [string]$_.Name.VariablePath.UserPath }) -ccontains 'ProtectedBaseRoot') {
+                $routeArguments.ProtectedBaseRoot = [string]$RouteFixture.protectedBaseRoot
+            }
+            Invoke-CodeSourceResidentTiming @routeArguments
+        }
+
+        $valid = & $invoke $fixture.evidenceRoot $fixture
+        $valid.status | Should -BeExactly 'unsupported'
+        $valid.reason | Should -BeExactly 'retained-receipt-api-unsupported'
+        $valid.sampleCount | Should -Be 0
+        $valid.runId | Should -BeExactly ([string]$fixture.prepared.runId)
+        (Test-Path -LiteralPath $valid.summaryPath -PathType Leaf) | Should -BeTrue
+        $summary = Get-Content -LiteralPath $valid.summaryPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 40
+        $summary.status | Should -BeExactly 'unsupported'
+        $summary.sampleCount | Should -Be 0
+        $summary.runId | Should -BeExactly ([string]$fixture.prepared.runId)
+
+        $fixtureEvidenceParent = Split-Path -Parent $fixture.root
+        $wrongRunRootEvidence = Join-Path $fixtureEvidenceParent ("resident-wrong-run-root-$([guid]::NewGuid().ToString('N'))")
+        $fixture.report.artifacts.runRoot = Join-Path $fixture.artifactsRoot 'runs/wrong-run-id'
+        [IO.File]::WriteAllText($fixture.reportPath, (($fixture.report | ConvertTo-Json -Depth 80 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+        { & $invoke $wrongRunRootEvidence $fixture } | Should -Throw '*exact prepared Core run namespace*'
+        (Test-Path -LiteralPath $wrongRunRootEvidence) | Should -BeFalse
+
+        $fixture.report.artifacts.runRoot = [string]$fixture.coreRunRoot
+        [IO.File]::WriteAllText($fixture.reportPath, (($fixture.report | ConvertTo-Json -Depth 80 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+        $badReportEvidence = Join-Path $fixtureEvidenceParent ("resident-bad-report-$([guid]::NewGuid().ToString('N'))")
+        $fixture.report.state = 'FAIL'
+        $fixture.report.exitCode = 1
+        [IO.File]::WriteAllText($fixture.reportPath, (($fixture.report | ConvertTo-Json -Depth 80 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+        { & $invoke $badReportEvidence $fixture } | Should -Throw '*partial, cross-run, wrong candidate/base/authority/event, or failing identity*'
+        (Test-Path -LiteralPath $badReportEvidence) | Should -BeFalse
+
+        $badCleanupEvidence = Join-Path $fixtureEvidenceParent ("resident-bad-cleanup-$([guid]::NewGuid().ToString('N'))")
+        $fixture.report.state = 'PASS'
+        $fixture.report.exitCode = 0
+        $fixture.timing.cleanupSucceeded = $false
+        [IO.File]::WriteAllText($fixture.reportPath, (($fixture.report | ConvertTo-Json -Depth 80 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($fixture.timingPath, (($fixture.timing | ConvertTo-Json -Depth 20 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+        { & $invoke $badCleanupEvidence $fixture } | Should -Throw '*cannot pass after cancellation, cleanup failure*'
+        (Test-Path -LiteralPath $badCleanupEvidence) | Should -BeFalse
+
+        $script:residentRouteSamplerCalls = 0
+        function Invoke-CodeSourceResidentSampleSeries {
+            [CmdletBinding()]
+            param(
+                [Parameter(Mandatory)] $Module, [Parameter(Mandatory)] $Prepared, [Parameter(Mandatory)] $Report,
+                [Parameter(Mandatory)] $TimingEvidence, [Parameter(Mandatory)] $CaseLedger,
+                [Parameter(Mandatory)][string] $PreparedPath, [Parameter(Mandatory)][string] $TimingEvidencePath,
+                [Parameter(Mandatory)][string] $CaseLedgerPath, [Parameter(Mandatory)] $AuthorityPin,
+                [Parameter(Mandatory)][string] $RunnerPath, [Parameter(Mandatory)][string] $RunnerSha256,
+                [Parameter(Mandatory)][string] $RepositoryRoot, [Parameter(Mandatory)][string] $CandidateRoot,
+                [Parameter(Mandatory)][string] $BaseRevision, [Parameter(Mandatory)][string] $ArtifactsRoot,
+                [Parameter(Mandatory)][string] $EvidenceRoot, [string] $CancellationPath
+            )
+            $script:residentRouteSamplerCalls++
+            $script:residentRouteSamplerArguments = [pscustomobject]@{
+                repositoryRoot = $RepositoryRoot
+                candidateRoot = $CandidateRoot
+                evidenceRoot = $EvidenceRoot
+            }
+            return [pscustomobject]@{
+                status = 'captured'; reason = 'test-leaf-capture'; sampleCount = 0
+                runId = [string]$Prepared.runId; summaryPath = ''
+            }
+        }
+        $routeAuthorityRoot = [string]$fixture.authorityRoot
+        $fixture = New-SourceResidentRouteFixtureForTest -Root (Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))) `
+            -AuthorityRoot $routeAuthorityRoot
+        $protectedBaseFailures = [Collections.Generic.List[string]]::new()
+        $forwardedEvidenceRoot = Join-Path (Split-Path -Parent $fixture.root) ("resident-forwarded-root-$([guid]::NewGuid().ToString('N'))")
+        $forwarded = $null
+        try { $forwarded = & $invoke $forwardedEvidenceRoot $fixture }
+        catch { $protectedBaseFailures.Add("valid sampler route failed before root assertions: $($_.Exception.Message)") }
+        if ($null -eq $forwarded -or [string]$forwarded.status -cne 'captured') { $protectedBaseFailures.Add('valid sampler route did not reach the captured leaf sampler') }
+        if ($script:residentRouteSamplerCalls -ne 1) { $protectedBaseFailures.Add("expected one leaf call before overlap check; observed $script:residentRouteSamplerCalls") }
+        if ([string]$script:residentRouteSamplerArguments.repositoryRoot -cne [string]$fixture.protectedBaseRoot) { $protectedBaseFailures.Add('sampler RepositoryRoot did not bind to protectedBaseRoot') }
+        if ([string]$script:residentRouteSamplerArguments.candidateRoot -cne [string]$fixture.candidateRoot) { $protectedBaseFailures.Add('sampler CandidateRoot did not remain bound to candidateRoot') }
+
+        $insideProtectedBaseEvidenceRoot = Join-Path $fixture.protectedBaseRoot 'resident-under-protected-base'
+        $protectedOverlapError = $null
+        try { [void](& $invoke $insideProtectedBaseEvidenceRoot $fixture) }
+        catch { $protectedOverlapError = $_.Exception.Message }
+        if ($protectedOverlapError -notlike '*overlap*') { $protectedBaseFailures.Add("protected-base evidence overlap was not rejected: $protectedOverlapError") }
+        if (Test-Path -LiteralPath $insideProtectedBaseEvidenceRoot) { $protectedBaseFailures.Add('protected-base evidence directory was created before rejection') }
+        if ($script:residentRouteSamplerCalls -ne 1) { $protectedBaseFailures.Add('protected-base evidence overlap reached the leaf sampler') }
+
+        $unpassedLedgerFailures = [Collections.Generic.List[string]]::new()
+        foreach ($counterName in @('Failed', 'Skipped', 'Inconclusive', 'NotRun')) {
+            $fixture = New-SourceResidentRouteFixtureForTest -Root (Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))) `
+                -AuthorityRoot $routeAuthorityRoot
+            $fixture.caseLedger.reportedCounts.Passed = 0
+            $fixture.caseLedger.reportedCounts.$counterName = 1
+            [IO.File]::WriteAllText($fixture.caseLedgerPath, (($fixture.caseLedger | ConvertTo-Json -Depth 30 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+            $fixture.report.sourceValidation.pesterCaseInventory.sha256 = Get-FileSha256 -Path $fixture.caseLedgerPath
+            [IO.File]::WriteAllText($fixture.reportPath, (($fixture.report | ConvertTo-Json -Depth 80 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+            $failedEvidenceRoot = Join-Path (Split-Path -Parent $fixture.root) ("resident-unpassed-$counterName-$([guid]::NewGuid().ToString('N'))")
+            $beforeCalls = $script:residentRouteSamplerCalls
+            $routeError = $null
+            try { [void](& $invoke $failedEvidenceRoot $fixture) }
+            catch { $routeError = $_.Exception.Message }
+            if ($routeError -notlike '*requires every discovered Pester case to pass*') { $unpassedLedgerFailures.Add("$counterName did not fail the zero-unpassed case guard: $routeError") }
+            if (Test-Path -LiteralPath $failedEvidenceRoot) { $unpassedLedgerFailures.Add("$counterName created resident evidence before rejection") }
+            if ($script:residentRouteSamplerCalls -ne $beforeCalls) { $unpassedLedgerFailures.Add("$counterName reached the leaf sampler") }
+        }
+        $typedCountScenarios = @(
+            [pscustomobject]@{ field = 'Passed'; value = [double]1.5; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'Failed'; value = [double]0.5; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'Skipped'; value = '0'; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'Inconclusive'; value = [bool]$false; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'NotRun'; value = $null; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'caseDiscoveryCount'; value = [double]2.1; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'caseExecutionCount'; value = [double]2.2; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'Passed'; value = [double]::PositiveInfinity; rawJsonValue = '1e400'; rangeFailure = $false }
+            [pscustomobject]@{ field = 'Passed'; value = [System.Numerics.BigInteger]::Parse('9223372036854775808'); rawJsonValue = '9223372036854775808'; rangeFailure = $true }
+        )
+        foreach ($scenario in $typedCountScenarios) {
+            $typedRouteFixture = New-SourceResidentRouteFixtureForTest -Root (Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))) `
+                -AuthorityRoot $routeAuthorityRoot
+            foreach ($name in @('Passed', 'Failed', 'Skipped', 'Inconclusive', 'NotRun')) {
+                $typedRouteFixture.caseLedger.reportedCounts.$name = if ($name -ceq 'Passed') { 2 } else { 0 }
+            }
+            $typedRouteFixture.caseLedger.caseDiscoveryCount = 2
+            $typedRouteFixture.caseLedger.caseExecutionCount = 2
+            if ($scenario.field -in @('Passed', 'Failed', 'Skipped', 'Inconclusive', 'NotRun')) {
+                $typedRouteFixture.caseLedger.reportedCounts.PSObject.Properties[[string]$scenario.field].Value = $scenario.value
+            }
+            else {
+                $typedRouteFixture.caseLedger.PSObject.Properties[[string]$scenario.field].Value = $scenario.value
+            }
+            $typedLedgerText = $typedRouteFixture.caseLedger | ConvertTo-Json -Depth 30 -Compress
+            if ($null -ne $scenario.rawJsonValue) {
+                $infinityFragment = '"' + [string]$scenario.field + '":"Infinity"'
+                $rawNumberFragment = '"' + [string]$scenario.field + '":' + [string]$scenario.rawJsonValue
+                if ($scenario.rawJsonValue -ceq '1e400') {
+                    if (-not $typedLedgerText.Contains($infinityFragment)) { $unpassedLedgerFailures.Add("$($scenario.field) non-finite route fixture did not serialize the expected source value") }
+                    $typedLedgerText = $typedLedgerText.Replace($infinityFragment, $rawNumberFragment)
+                }
+                elseif (-not $typedLedgerText.Contains($rawNumberFragment)) {
+                    $unpassedLedgerFailures.Add("$($scenario.field) out-of-range route fixture did not emit the exact numeric JSON literal $($scenario.rawJsonValue)")
+                }
+            }
+            [IO.File]::WriteAllText($typedRouteFixture.caseLedgerPath, ($typedLedgerText + "`n"), [Text.UTF8Encoding]::new($false))
+            $typedRouteFixture.report.sourceValidation.pesterCaseInventory.sha256 = Get-FileSha256 -Path $typedRouteFixture.caseLedgerPath
+            [IO.File]::WriteAllText($typedRouteFixture.reportPath, (($typedRouteFixture.report | ConvertTo-Json -Depth 80 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+            $typedEvidenceRoot = Join-Path (Split-Path -Parent $typedRouteFixture.root) ("resident-invalid-$($scenario.field)-$([guid]::NewGuid().ToString('N'))")
+            $typedSamplerCallsBefore = $script:residentRouteSamplerCalls
+            $typedRouteError = $null
+            try { [void](& $invoke $typedEvidenceRoot $typedRouteFixture) }
+            catch { $typedRouteError = $_.Exception.Message }
+            $fieldPattern = [regex]::Escape([string]$scenario.field)
+            $diagnosticIsSpecific = $typedRouteError -match "(?i)\b$fieldPattern\b" -and
+                $typedRouteError -match '(?i)count' -and $typedRouteError -match '(?i)finite' -and
+                $typedRouteError -match '(?i)\bnon[- ]negative\b' -and $typedRouteError -match '(?i)\binteger\b'
+            if (-not $diagnosticIsSpecific) { $unpassedLedgerFailures.Add("$($scenario.field) typed count did not name the field and finite non-negative integer contract: $typedRouteError") }
+            if ($scenario.rangeFailure -and $typedRouteError -notmatch '(?i)range') { $unpassedLedgerFailures.Add("$($scenario.field) out-of-range count did not explain the supported range: $typedRouteError") }
+            if (Test-Path -LiteralPath $typedEvidenceRoot) { $unpassedLedgerFailures.Add("$($scenario.field) typed count created resident evidence before rejection") }
+            if ($script:residentRouteSamplerCalls -ne $typedSamplerCallsBefore) { $unpassedLedgerFailures.Add("$($scenario.field) typed count reached the leaf sampler") }
+        }
+
+        $routeFailures = [Collections.Generic.List[string]]::new()
+        foreach ($failure in @($unpassedLedgerFailures.ToArray())) { $routeFailures.Add($failure) }
+        foreach ($failure in @($protectedBaseFailures.ToArray())) { $routeFailures.Add($failure) }
+        if ($routeFailures.Count -gt 0) {
+            Write-Host ("Resident route boundary failures: " + ($routeFailures.ToArray() | ConvertTo-Json -Compress))
+        }
+        @($routeFailures.ToArray()) | Should -BeNullOrEmpty -Because 'every resident route boundary must be verified before evidence creation or sampling'
+    }
+
+    # Scenario: a legacy protected-driver command shape lacks the optional resident endpoint.
+    # Purpose: exercise the workflow's bounded capability probe with a self-contained fixture that does not require Git metadata in the candidate snapshot.
+    It 'UnitT79_records_unsupported_for_the_old_protected_driver_without_launching_it' {
+        $workflowPath = Join-Path $script:RepositoryRoot '.github/workflows/validate.yml'
+        $workflowText = Get-Content -LiteralPath $workflowPath -Raw
+        $residentMarker = '- name: Capture resident source timing'
+        $uploadMarker = '- name: Upload source validation evidence'
+        $residentIndex = $workflowText.IndexOf($residentMarker, [StringComparison]::Ordinal)
+        $uploadIndex = $workflowText.IndexOf($uploadMarker, [StringComparison]::Ordinal)
+        ($residentIndex -ge 0 -and $uploadIndex -gt $residentIndex) | Should -BeTrue
+        $residentStep = $workflowText.Substring($residentIndex, $uploadIndex - $residentIndex)
+        $runMarker = 'run: |'
+        $runIndex = $residentStep.IndexOf($runMarker, [StringComparison]::Ordinal)
+        ($runIndex -ge 0) | Should -BeTrue
+        $scriptLines = @($residentStep.Substring($runIndex + $runMarker.Length) -split "`r?`n" | ForEach-Object {
+            if ($_.StartsWith('          ')) { $_.Substring(10) } elseif ([string]::IsNullOrWhiteSpace($_)) { '' } else { $_ }
+        })
+        $workflowScript = $scriptLines -join [Environment]::NewLine
+        $tokens = $null
+        $parseErrors = $null
+        $workflowAst = [System.Management.Automation.Language.Parser]::ParseInput($workflowScript, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $probeAst = $workflowAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-ResidentDriverCompatibilityProbe' }, $true)
+        $probeAst | Should -Not -BeNullOrEmpty
+
+        $oldDriverText = @'
+[CmdletBinding()]
+param(
+    [string] $RepositoryRoot,
+    [string] $BaseCommit,
+    [switch] $PrepareSourceTools,
+    [switch] $SourceValidation,
+    [string] $SourceToolsPath
+)
+$sentinelPath = [Environment]::GetEnvironmentVariable('SYP326_TEST_LEGACY_DRIVER_EXECUTION_SENTINEL', 'Process')
+if ([string]::IsNullOrWhiteSpace($sentinelPath)) { throw 'Legacy protected driver fixture was executed without its test sentinel path.' }
+[IO.File]::WriteAllText($sentinelPath, 'executed', [Text.UTF8Encoding]::new($false))
+throw 'Legacy protected driver fixture must not be executed.'
+'@
+        $oldDriver = Write-SourceBindingFixtureFile -Path (Join-Path $TestDrive (([guid]::NewGuid().ToString('N')) + '-Validate.ps1')) -Text $oldDriverText
+        . ([scriptblock]::Create($probeAst.Extent.Text))
+        $evidenceRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $sentinelPath = Join-Path $TestDrive 'legacy-driver-executed.txt'
+        $sentinelVariableName = 'SYP326_TEST_LEGACY_DRIVER_EXECUTION_SENTINEL'
+        $previousSentinelPath = [Environment]::GetEnvironmentVariable($sentinelVariableName, 'Process')
+        [Environment]::SetEnvironmentVariable($sentinelVariableName, $sentinelPath, 'Process')
+        $script:residentNativeLaunchCount = 0
+        function Invoke-StandardValidationProcess { $script:residentNativeLaunchCount++ }
+        try {
+            $probe = Invoke-ResidentDriverCompatibilityProbe -DriverPath $oldDriver -EvidenceRoot $evidenceRoot `
+                -CandidateRevision ('a' * 40) -BaseRevision ('b' * 40) -RunId ('c' * 32)
+        }
+        finally {
+            [Environment]::SetEnvironmentVariable($sentinelVariableName, $previousSentinelPath, 'Process')
+        }
+
+        $probe.supported | Should -BeFalse
+        $probe.reason | Should -BeExactly 'protected-driver-resident-entry-unsupported'
+        $script:residentNativeLaunchCount | Should -Be 0
+        (Test-Path -LiteralPath $sentinelPath -PathType Leaf) | Should -BeFalse
+        (Test-Path -LiteralPath (Join-Path $evidenceRoot 'resident-timing-summary.json') -PathType Leaf) | Should -BeTrue
+        $summary = Get-Content -LiteralPath (Join-Path $evidenceRoot 'resident-timing-summary.json') -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+        $summary.status | Should -BeExactly 'unsupported'
+        $summary.reason | Should -BeExactly 'protected-driver-resident-entry-unsupported'
+        $summary.runId | Should -BeExactly ('c' * 32)
+        $probeParameters = @($probeAst.Extent.Text)
+        $probeParameters[0] | Should -Match 'Get-Command'
+
+        $probeCallIndex = $workflowScript.IndexOf('Invoke-ResidentDriverCompatibilityProbe', [StringComparison]::Ordinal)
+        $unsupportedGuardIndex = $workflowScript.IndexOf('if (-not $driverCapability.supported)', [StringComparison]::Ordinal)
+        $launchIndex = $workflowScript.IndexOf('Invoke-StandardValidationProcess', [StringComparison]::Ordinal)
+        ($probeCallIndex -ge 0 -and $unsupportedGuardIndex -gt $probeCallIndex -and $launchIndex -gt $unsupportedGuardIndex) | Should -BeTrue
+        $workflowScript.Substring($unsupportedGuardIndex, $launchIndex - $unsupportedGuardIndex) | Should -Match 'return'
+        $workflowScript | Should -Not -Match 'Join-Path\s+\$candidateRoot\s+''scripts/Validate[.]ps1'''
+    }
+
+    # Scenario: the hosted workflow resolves the executable basename for its Windows-owned PowerShell runtime.
+    # Purpose: accept the prepared pwsh.exe identity and reject an extensionless pwsh path on Windows.
+    It 'UnitT80_requires_the_prepared_windows_resident_runtime_executable' {
+        $workflowPath = Join-Path $script:RepositoryRoot '.github/workflows/validate.yml'
+        $workflowText = Get-Content -LiteralPath $workflowPath -Raw
+        $residentMarker = '- name: Capture resident source timing'
+        $uploadMarker = '- name: Upload source validation evidence'
+        $residentIndex = $workflowText.IndexOf($residentMarker, [StringComparison]::Ordinal)
+        $uploadIndex = $workflowText.IndexOf($uploadMarker, [StringComparison]::Ordinal)
+        ($residentIndex -ge 0 -and $uploadIndex -gt $residentIndex) | Should -BeTrue
+        $residentStep = $workflowText.Substring($residentIndex, $uploadIndex - $residentIndex)
+        $runIndex = $residentStep.IndexOf('run: |', [StringComparison]::Ordinal)
+        ($runIndex -ge 0) | Should -BeTrue
+        $scriptLines = @($residentStep.Substring($runIndex + 'run: |'.Length) -split "`r?`n" | ForEach-Object {
+            if ($_.StartsWith('          ')) { $_.Substring(10) } elseif ([string]::IsNullOrWhiteSpace($_)) { '' } else { $_ }
+        })
+        $workflowScript = $scriptLines -join [Environment]::NewLine
+        $tokens = $null
+        $parseErrors = $null
+        $workflowAst = [System.Management.Automation.Language.Parser]::ParseInput($workflowScript, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $runtimeAst = $workflowAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Assert-ResidentDriverPreparedRuntime' }, $true)
+        $runtimeGuardAst = $workflowAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.IfStatementAst] -and
+                $node.Extent.Text.Contains('Prepared owned PowerShell runtime') -and
+                $node.Extent.Text.Contains('runtimeExecutableSha256')
+        }, $true)
+        ($null -ne $runtimeAst -or $null -ne $runtimeGuardAst) | Should -BeTrue
+        if ($null -eq $runtimeAst -and $null -eq $runtimeGuardAst) { return }
+        if ($null -ne $runtimeAst) {
+            . ([scriptblock]::Create($runtimeAst.Extent.Text))
+            $workflowScript | Should -Match 'Assert-ResidentDriverPreparedRuntime\s+-Prepared\s+\$prepared'
+        }
+        $runtimeGuardScript = if ($null -ne $runtimeGuardAst) { [scriptblock]::Create($runtimeGuardAst.Extent.Text) } else { $null }
+
+        $ownedRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $runtimeRoot = Join-Path $ownedRoot 'runtime'
+        $trustedToolRoot = Join-Path $ownedRoot 'trusted-tools'
+        [void](New-Item -ItemType Directory -Path $runtimeRoot -Force)
+        [void](New-Item -ItemType Directory -Path $trustedToolRoot -Force)
+        $windowsExecutable = Join-Path $runtimeRoot 'pwsh.exe'
+        $extensionlessExecutable = Join-Path $runtimeRoot 'pwsh'
+        [IO.File]::WriteAllText($windowsExecutable, 'prepared Windows runtime bytes', [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($extensionlessExecutable, 'alternate runtime bytes', [Text.UTF8Encoding]::new($false))
+        $prepared = [pscustomobject]@{
+            ownedRoot = $ownedRoot
+            pesterRuntime = [pscustomobject]@{
+                runtimeRoot = $runtimeRoot
+                runtimeExecutablePath = $windowsExecutable
+                runtimeExecutableSha256 = (Get-FileHash -LiteralPath $windowsExecutable -Algorithm SHA256).Hash.ToLowerInvariant()
+                sourceTrustedToolRoot = $trustedToolRoot
+            }
+        }
+
+        $validatePreparedRuntime = {
+            param($Candidate)
+            if ($null -ne $runtimeAst) {
+                return (Assert-ResidentDriverPreparedRuntime -Prepared $Candidate -Windows $true)
+            }
+            $prepared = $Candidate
+            $runtimeRoot = [IO.Path]::GetFullPath([string]$prepared.pesterRuntime.runtimeRoot)
+            $trustedToolRoot = [IO.Path]::GetFullPath([string]$prepared.pesterRuntime.sourceTrustedToolRoot)
+            $pwshPath = [IO.Path]::GetFullPath([string]$prepared.pesterRuntime.runtimeExecutablePath)
+            . $runtimeGuardScript
+            return [pscustomobject]@{ runtimeExecutablePath = $pwshPath }
+        }
+        $windowsAccepted = $true
+        try { $resolved = & $validatePreparedRuntime $prepared } catch { $windowsAccepted = $false }
+        $resolvedWindowsPath = if ($null -ne $resolved) { [string]$resolved.runtimeExecutablePath } else { '' }
+        $prepared.pesterRuntime.runtimeExecutablePath = $extensionlessExecutable
+        $prepared.pesterRuntime.runtimeExecutableSha256 = (Get-FileHash -LiteralPath $extensionlessExecutable -Algorithm SHA256).Hash.ToLowerInvariant()
+        $extensionlessRejected = $false
+        try { [void](& $validatePreparedRuntime $prepared) } catch { $extensionlessRejected = $true }
+        ($windowsAccepted -and $extensionlessRejected) | Should -BeTrue -Because 'a Windows prepared run must name pwsh.exe, and an extensionless pwsh path must not be accepted'
+        $resolvedWindowsPath | Should -BeExactly ([IO.Path]::GetFullPath($windowsExecutable))
+    }
+
+    # Scenario: an explicitly false optional switch must keep ordinary Core on the legacy request guard.
+    # Purpose: preserve compatibility for callers that bind SourceResidentTiming:$false.
+    It 'UnitT81_keeps_explicitly_false_resident_switch_on_the_legacy_core_guard' {
+        Import-Module -Name $script:DriverPath -Force
+        $validatePath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $validateAst = [System.Management.Automation.Language.Parser]::ParseFile($validatePath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $mainTry = @($validateAst.EndBlock.Statements | Where-Object {
+            $_ -is [System.Management.Automation.Language.TryStatementAst] -and
+            $_.Body.Extent.Text.Contains('Assert-CodeSourceRunRequest')
+        } | Select-Object -First 1)
+        $mainTry.Count | Should -Be 1
+        if ($mainTry.Count -ne 1) { return }
+        $statements = @($mainTry[0].Body.Statements)
+        $assignmentIndex = -1
+        $guardIndex = -1
+        for ($index = 0; $index -lt $statements.Count; $index++) {
+            $statement = $statements[$index]
+            if ($statement -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                $statement.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and
+                [string]$statement.Left.VariablePath.UserPath -ceq 'sourceRequestArgs') { $assignmentIndex = $index }
+            if ($statement -is [System.Management.Automation.Language.TryStatementAst] -and
+                $statement.Body.Extent.Text.Contains('Assert-CodeSourceRunRequest') -and
+                $statement.Body.Extent.Text.Contains('Assert-CodeSourceResidentRunRequest')) { $guardIndex = $index; break }
+        }
+        ($assignmentIndex -ge 0 -and $guardIndex -gt $assignmentIndex) | Should -BeTrue
+        if ($assignmentIndex -lt 0 -or $guardIndex -le $assignmentIndex) { return }
+        $routerText = ($statements[$assignmentIndex..$guardIndex] | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
+        $wrapperTemplate = @'
+function Invoke-SourceResidentFalseGuardCase {
+    [CmdletBinding()]
+    param([switch] $SourceResidentTiming)
+    $ExecutionMode = 'Run'
+    $AdapterVersion = 2
+    $PrepareSourceTools = $false
+    $SourceValidation = $false
+    $SourceToolsPath = ''
+    $config = [pscustomobject]@{ authority = [pscustomobject]@{ commit = '' } }
+    $script:SourceModeRequested = $false
+__ROUTER_BODY__
+    return $sourceRequest
+}
+'@
+        $wrapperText = $wrapperTemplate.Replace('__ROUTER_BODY__', $routerText)
+        . ([scriptblock]::Create($wrapperText))
+        Invoke-SourceResidentFalseGuardCase -SourceResidentTiming:$false | Should -BeExactly 'Core'
+    }
+
     # Scenario: the Core v2 adapter receives an admitted setup receipt and the exact candidate mode manifest.
     # Purpose: prove positive routing produces one general check plus the complete Pester closure and runtime identity arguments.
     It 'UnitT41_builds_the_complete_two_check_core_adapter_from_prepared_metadata' {
@@ -1056,6 +3491,117 @@ function Assert-AuthorityConfig { param([Parameter(Mandatory)] $Config) }
             $encodedOrCommandArguments | Should -BeNullOrEmpty
         }
         $adapter.checks[1].arguments | Should -Contain '-CandidateAuthorityAdapterRunId'
+    }
+
+    # Scenario: canonical ledger JSON uses types that the sampler's integer casts can disguise independently.
+    # Purpose: exercise the real JSON reader and prove each count field is rejected before the first resident sample.
+    It 'UnitT82_rejects_noninteger_resident_case_ledger_values_before_sampling' {
+        Import-Module -Name $script:DriverPath -Force
+        $validatePath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $validateAst = [System.Management.Automation.Language.Parser]::ParseFile($validatePath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        foreach ($functionName in @('Assert-NoDuplicateJsonProperties', 'Convert-JsonElementToPowerShellObject', 'Read-JsonFile')) {
+            $definition = $validateAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $functionName }, $true)
+            $definition | Should -Not -BeNullOrEmpty -Because "the resident test reads the ledger through production helper $functionName"
+            if ($null -ne $definition) { . ([scriptblock]::Create($definition.Extent.Text)) }
+        }
+        $scenarios = @(
+            [pscustomobject]@{ field = 'Passed'; value = [double]1.5; jsonType = 'System.Double'; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'Failed'; value = [double]0.5; jsonType = 'System.Double'; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'Skipped'; value = '0'; jsonType = 'System.String'; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'Inconclusive'; value = [bool]$false; jsonType = 'System.Boolean'; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'NotRun'; value = $null; jsonType = 'null'; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'caseDiscoveryCount'; value = [double]2.1; jsonType = 'System.Double'; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'caseExecutionCount'; value = [double]2.2; jsonType = 'System.Double'; rawJsonValue = $null; rangeFailure = $false }
+            [pscustomobject]@{ field = 'Passed'; value = [double]::PositiveInfinity; jsonType = 'System.Double'; rawJsonValue = '1e400'; rangeFailure = $false }
+            [pscustomobject]@{ field = 'Passed'; value = [System.Numerics.BigInteger]::Parse('9223372036854775808'); rawJsonValue = '9223372036854775808'; rangeFailure = $true }
+        )
+        $failures = [Collections.Generic.List[string]]::new()
+        $readerObservations = [Collections.Generic.List[string]]::new()
+        foreach ($scenario in $scenarios) {
+            $fixture = New-SourceResidentSeriesFixtureForTest -Root (Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))) -FailureSample 1
+            foreach ($name in @('Passed', 'Failed', 'Skipped', 'Inconclusive', 'NotRun')) {
+                $fixture.caseLedger.reportedCounts.$name = if ($name -ceq 'Passed') { 2 } else { 0 }
+            }
+            $fixture.caseLedger.caseDiscoveryCount = 2
+            $fixture.caseLedger.caseExecutionCount = 2
+            if ($scenario.field -in @('Passed', 'Failed', 'Skipped', 'Inconclusive', 'NotRun')) {
+                $fixture.caseLedger.reportedCounts.PSObject.Properties[[string]$scenario.field].Value = $scenario.value
+            }
+            else {
+                $fixture.caseLedger.PSObject.Properties[[string]$scenario.field].Value = $scenario.value
+            }
+            $ledgerText = $fixture.caseLedger | ConvertTo-Json -Depth 30 -Compress
+            if ($null -ne $scenario.rawJsonValue) {
+                $infinityFragment = '"' + [string]$scenario.field + '":"Infinity"'
+                $rawNumberFragment = '"' + [string]$scenario.field + '":' + [string]$scenario.rawJsonValue
+                if ($scenario.rawJsonValue -ceq '1e400') {
+                    if (-not $ledgerText.Contains($infinityFragment)) { $failures.Add("$($scenario.field) non-finite sampler fixture did not serialize the expected source value") }
+                    $ledgerText = $ledgerText.Replace($infinityFragment, $rawNumberFragment)
+                }
+                elseif (-not $ledgerText.Contains($rawNumberFragment)) {
+                    $failures.Add("$($scenario.field) out-of-range sampler fixture did not emit the exact numeric JSON literal $($scenario.rawJsonValue)")
+                }
+            }
+            $ledgerText += "`n"
+            [IO.File]::WriteAllText($fixture.caseLedgerPath, $ledgerText, [Text.UTF8Encoding]::new($false))
+            $fixture.report.sourceValidation.pesterCaseInventory.sha256 = Get-SourceBindingFixtureHash -Path $fixture.caseLedgerPath
+            [IO.File]::WriteAllText($fixture.reportPath, (($fixture.report | ConvertTo-Json -Depth 40 -Compress) + "`n"), [Text.UTF8Encoding]::new($false))
+            $fixture.reportSha256 = Get-SourceBindingFixtureHash -Path $fixture.reportPath
+
+            $readLedger = Read-JsonFile -Path $fixture.caseLedgerPath -Context "Typed resident ledger test $($scenario.field)"
+            $readValue = if ($scenario.field -in @('Passed', 'Failed', 'Skipped', 'Inconclusive', 'NotRun')) {
+                $readLedger.reportedCounts.PSObject.Properties[[string]$scenario.field].Value
+            }
+            else { $readLedger.PSObject.Properties[[string]$scenario.field].Value }
+            $actualReadType = if ($null -eq $readValue) { 'null' } else { $readValue.GetType().FullName }
+            $actualReadValue = if ($null -eq $readValue) { '<null>' } else { [string]$readValue }
+            if ($null -ne $scenario.rawJsonValue) { $readerObservations.Add("$($scenario.field) raw=$($scenario.rawJsonValue) readType=$actualReadType readValue=$actualReadValue") }
+            if ($scenario.rawJsonValue -ceq '1e400') {
+                if ($actualReadType -cne 'System.Double' -or -not [double]::IsPositiveInfinity([double]$readValue)) {
+                    $failures.Add("$($scenario.field) raw 1e400 did not remain a positive-infinity Double in Read-JsonFile: type=$actualReadType value=$actualReadValue")
+                }
+            }
+            elseif ($scenario.rangeFailure) {
+                $numericTypes = @('System.Byte', 'System.SByte', 'System.Int16', 'System.UInt16', 'System.Int32', 'System.UInt32', 'System.Int64', 'System.UInt64', 'System.Single', 'System.Double', 'System.Decimal', 'System.Numerics.BigInteger')
+                if ($actualReadType -notin $numericTypes) { $failures.Add("$($scenario.field) out-of-range JSON literal was not read as a numeric type: $actualReadType") }
+            }
+            elseif ([string]$scenario.jsonType -ceq 'null') {
+                if ($null -ne $readValue) { $failures.Add("$($scenario.field) JSON null did not remain null in Read-JsonFile") }
+            }
+            elseif ($null -eq $readValue -or $readValue.GetType().FullName -cne [string]$scenario.jsonType) {
+                $actualType = if ($null -eq $readValue) { 'null' } else { $readValue.GetType().FullName }
+                $failures.Add("$($scenario.field) JSON type changed in Read-JsonFile: expected $($scenario.jsonType), observed $actualType")
+            }
+
+            $result = $null
+            $invokeError = $null
+            try { $result = Invoke-SourceResidentSeriesForTest -Fixture $fixture }
+            catch { $invokeError = $_.Exception.Message }
+            if ($null -ne $invokeError) { $failures.Add("$($scenario.field) threw before returning a rejection receipt: $invokeError") }
+            elseif ($result.complete -or $result.reason -cne 'metadata-mismatch' -or [int]$result.sampleCount -ne 0) {
+                $failures.Add("$($scenario.field) did not reject its malformed count before sampling (complete=$($result.complete), reason=$($result.reason), samples=$($result.sampleCount))")
+            }
+            if ($null -ne $result) {
+                $fieldPattern = [regex]::Escape([string]$scenario.field)
+                $message = [string]$result.message
+                $diagnosticIsSpecific = $message -match "(?i)\b$fieldPattern\b" -and
+                    $message -match '(?i)count' -and $message -match '(?i)finite' -and
+                    $message -match '(?i)\bnon[- ]negative\b' -and $message -match '(?i)\binteger\b'
+                if (-not $diagnosticIsSpecific) { $failures.Add("$($scenario.field) did not return a field-specific finite non-negative integer count message: $message") }
+                if ($scenario.rangeFailure -and $message -notmatch '(?i)range') { $failures.Add("$($scenario.field) out-of-range sampler count did not explain the supported range: $message") }
+                if (@($result.samples).Count -ne 0) { $failures.Add("$($scenario.field) retained $(@($result.samples).Count) sample record(s) before count rejection") }
+                $sampleOrdinals = @($result.samples | Where-Object { $_.PSObject.Properties.Name -contains 'sampleIndex' -or $_.PSObject.Properties.Name -contains 'sampleOrdinal' })
+                if ($sampleOrdinals.Count -ne 0) { $failures.Add("$($scenario.field) recorded sample ordinals before count rejection") }
+            }
+            $sampleCalls = [int](& $fixture.module { $script:SourceResidentFixtureCalls })
+            if ($sampleCalls -ne 0) { $failures.Add("$($scenario.field) reached the retained sampler $sampleCalls time(s)") }
+        }
+        if ($readerObservations.Count -gt 0) { Write-Host ("Typed resident ledger raw JSON reader observations: " + ($readerObservations.ToArray() | ConvertTo-Json -Compress)) }
+        if ($failures.Count -gt 0) { Write-Host ("Typed resident ledger failures: " + ($failures.ToArray() | ConvertTo-Json -Compress)) }
+        @($failures.ToArray()) | Should -BeNullOrEmpty -Because 'each JSON count value must remain typed and be rejected before the retained sampler runs'
     }
 
     # Scenario: one prepared resolver receipt references a skill-tools shim omitted from the frozen file inventory.
@@ -2042,5 +4588,41 @@ exit 0
         $workflow | Should -Match ([regex]::Escape("'-SourceToolsPath', `$sourceToolsPath"))
         $workflow | Should -Match ([regex]::Escape("'-AuthorityRepositoryRoot', `$authorityRoot"))
         $workflow | Should -Not -Match 'CompleteLifecycle|DevelopmentHarness'
+    }
+
+    # Scenario: the resident raw timing sink throws from Flush after postflight completes.
+    # Purpose: exercise the actual extracted production cleanup path and require timing state, Console.Error, and the earliest result to survive.
+    It 'UnitT83_preserves_resident_state_when_raw_timing_flush_fails' {
+        # Given: a fresh resident fixture and a controlled real-file stream armed only after the final postflight receipt check.
+        # When: the extracted production sampler reaches raw-writer Flush and the stream throws once.
+        # Then: the result stays incomplete, all four module values and Console.Error are restored, and the secondary cleanup error is retained.
+        Invoke-SourceResidentSinkFaultCaseForTest -Mode Flush
+    }
+
+    # Scenario: the resident raw timing sink throws from Dispose after Flush succeeds.
+    # Purpose: exercise production disposal and require cleanup evidence without losing state restoration.
+    It 'UnitT84_preserves_resident_state_when_raw_timing_dispose_fails' {
+        # Given: a fresh resident fixture and a controlled real-file stream armed only after the final postflight receipt check.
+        # When: the extracted production sampler disposes the raw stream and the stream closes its backing file before throwing once.
+        # Then: the result stays incomplete, all four module values and Console.Error are restored, and the secondary disposal error is retained.
+        Invoke-SourceResidentSinkFaultCaseForTest -Mode Dispose
+    }
+
+    # Scenario: a sample failure precedes a raw timing sink Flush failure during cleanup.
+    # Purpose: preserve the original sample error and record the later sink failure as secondary cleanup evidence.
+    It 'UnitT85_keeps_the_sample_error_when_raw_timing_flush_also_fails' {
+        # Given: a fresh resident fixture whose first sample throws and a controlled stream armed after postflight.
+        # When: the postflight cleanup Flush also throws.
+        # Then: the sample-exception reason and message remain primary while sink failure evidence is retained and state is restored.
+        Invoke-SourceResidentSinkFaultCaseForTest -Mode Flush -FailureSample 1
+    }
+
+    # Scenario: the unsupported FF85 retained API branch encounters persistent raw stream Dispose failures.
+    # Purpose: ensure an early writer Dispose and its real outer cleanup retry cannot leave cleanup-failed evidence classified as unsupported.
+    It 'UnitT86_downgrades_ff85_unsupported_result_after_persistent_dispose_failure' {
+        # Given: the actual FF85 runner lacks the retained receipt API and a real create-new stream that faults only on every Dispose.
+        # When: the production sampler reaches its unsupported-branch writer cleanup and outer fallback cleanup.
+        # Then: the backing file closes, the actual Dispose failure and closed-writer fallback Flush are evidenced, and the result is incomplete with the first error retained.
+        Invoke-SourceResidentUnsupportedDisposeFaultCaseForTest
     }
 }
