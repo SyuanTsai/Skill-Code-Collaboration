@@ -1321,14 +1321,14 @@ exit $code
             $activeAuthorityBinding = Get-A031AuthoritySupervisorBinding
             $activeConfigPath = Join-Path $script:RepositoryRoot 'config/standard-v1.json'
             $activeConfig = Get-Content -LiteralPath $activeConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 40 -ErrorAction Stop
-            if ([string]$activeConfig.authority.commit -cne 'ff85d5f80fe795b96354e753074b5ce59ad04ecd' -or
+            if ([string]$activeConfig.authority.commit -cne '8e627baf54bd6e47862e6291b25e71cc45a2f2b7' -or
                 @($activeConfig.authority.files).Count -ne 32) {
-                throw 'Resident authority fixture requires the exact configured FF85 32-file source pin.'
+                throw 'Resident authority fixture requires the exact configured 8e 32-file source pin.'
             }
             $activeAuthorityPin = Get-PreparedSourceAuthorityPin -AuthorityRevision ([string]$activeConfig.authority.commit)
             if ([string]$activeAuthorityBinding.revision -cne [string]$activeAuthorityPin.commit -or
                 [string]$activeAuthorityBinding.sha256 -cne [string]$activeAuthorityPin.files['scripts/Invoke-StandardValidation.ps1']) {
-                throw 'The configured resident authority checkout does not match its exact active FF85 pin.'
+                throw 'The configured resident authority checkout does not match its exact active 8e pin.'
             }
             $activeAuthority = Assert-CodeSourceAuthorityCheckout -GitPath $gitPath `
                 -AuthorityRoot ([string]$activeAuthorityBinding.root) -AuthorityPin $activeAuthorityPin
@@ -3020,7 +3020,7 @@ function Assert-AuthorityConfig { param([Parameter(Mandatory)] $Config) }
     }
 
     # Scenario: resident receipt timing has a separate command and runs only after the accepted canonical source gate.
-    # Purpose: keep optional resident evidence on the protected event-base driver and existing native supervisor path.
+    # Purpose: keep resident evidence on the protected event-base driver and the exact active authority supervisor.
     It 'UnitT77_routes_resident_timing_through_the_protected_post_gate_entry' {
         $validatePath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
         $tokens = $null
@@ -3055,6 +3055,22 @@ function Assert-AuthorityConfig { param([Parameter(Mandatory)] $Config) }
         }
         if ($residentIndex -ge 0 -and $uploadIndex -gt $residentIndex) {
             $residentStep = $workflowText.Substring($residentIndex, $uploadIndex - $residentIndex)
+            $activeAuthority = (Get-Content -LiteralPath $script:ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json).authority
+            $supervisorBindings = @($activeAuthority.files | Where-Object { $_.path -ceq 'scripts/Invoke-StandardValidation.ps1' })
+            if ($supervisorBindings.Count -ne 1) {
+                $issues.Add('Active authority does not contain exactly one supervisor binding.')
+            }
+            else {
+                foreach ($requiredBinding in @(
+                    'SYP154_CANDIDATE_AUTHORITY_ROOT: ${{ github.workspace }}/authority-8e627',
+                    "Join-Path `$env:GITHUB_WORKSPACE 'authority-8e627'",
+                    [string]$supervisorBindings[0].sha256
+                )) {
+                    if (-not $residentStep.Contains($requiredBinding, [StringComparison]::Ordinal)) {
+                        $issues.Add("Workflow resident step differs from its active authority binding: $requiredBinding")
+                    }
+                }
+            }
             foreach ($requiredPattern in @(
                 '\$protectedDriver', '\$candidateRoot', '\$supervisor', '\$supervisorSha256',
                 'Invoke-StandardValidationProcess', '\$pwshPath', '-SourceResidentTiming', '-ResidentEvidenceRoot'
