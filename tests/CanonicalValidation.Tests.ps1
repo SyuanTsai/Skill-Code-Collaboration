@@ -67,17 +67,17 @@ __TERMINAL_EXIT__
             'scripts/Validate-UpstreamAdapter.ps1' = '3b6e6474690b1ae9f9486544b68f50ca29b96f5dbe6aa8d6c6cd8570afad500b'
         }
         Import-Module -Name (Join-Path $script:RepositoryRoot 'scripts/StandardSourceDriver.psm1') -Force
-        $script:ExpectedAuthorityPin = Get-PreparedSourceAuthorityPin
-        $script:ExpectedAuthorityCommit = 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
-        $script:ExpectedAuthorityArchiveSha256 = '3dc38613f2e2316ad8fcc79d4bf48d0b03fd8398f8dacc72d156abcbce95ea9d'
+        $script:ExpectedAuthorityCommit = '8e627baf54bd6e47862e6291b25e71cc45a2f2b7'
+        $script:ExpectedAuthorityPin = Get-PreparedSourceAuthorityPin -AuthorityRevision $script:ExpectedAuthorityCommit
+        $script:ExpectedAuthorityArchiveSha256 = '9aa4a7fc8fc7c7f0ff9e774c79c77a64077b4003212a523dda519d034ff99989'
         $script:ExpectedAuthorityFiles = $script:ExpectedAuthorityPin.files
     }
 
-    # Scenario: The active Code adapter and protected source driver use the reviewed 32-file ff85 authority inventory.
-    # Purpose: Reject mismatched commit, archive, order, or required-file hashes before validation.
+    # Scenario: The active Code adapter and protected source driver explicitly select the reviewed 32-file 8e authority inventory.
+    # Purpose: Reject mismatched commit, archive, order, or required-file hashes while preserving the reader's ff85 default.
     It 'UnitT10_pins_exact_authority_without_local_deviation_policy' {
         # Scenario: a consumer repository changes the active authority pin or silently adds a local policy.
-        # Purpose: require the complete ff85 closure and keep policy ownership in the central authority.
+        # Purpose: require the complete active 8e closure and keep policy ownership in the central authority.
         @($script:Adapter.PSObject.Properties.Name) | Should -Be @('schemaVersion', 'standardVersion', 'authority')
         $script:ExpectedAuthorityPin.commit | Should -Be $script:ExpectedAuthorityCommit
         $script:ExpectedAuthorityPin.archiveSha256 | Should -Be $script:ExpectedAuthorityArchiveSha256

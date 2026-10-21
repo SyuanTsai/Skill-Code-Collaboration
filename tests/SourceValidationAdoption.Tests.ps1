@@ -49,27 +49,49 @@ Describe 'Protected Standard Core SourceValidation preparation' {
         }
 
         function New-FormalSourceAuthorityPinFixture {
-            # Start from the checked-in ff85 config fixture, not the production getter,
-            # so the formal tuple expectation independently checks all 32 returned hashes.
+            # Start from the checked-in active config fixture, never the production getter,
+            # so this expectation independently checks all 32 returned hashes.
             $baseConfig = Get-Content -LiteralPath $script:ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
             $basePin = $baseConfig.authority
+            $ff85Commit = 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
+            $ff85ArchiveSha256 = '3dc38613f2e2316ad8fcc79d4bf48d0b03fd8398f8dacc72d156abcbce95ea9d'
+            $formalCommit = '8e627baf54bd6e47862e6291b25e71cc45a2f2b7'
+            $formalArchiveSha256 = '9aa4a7fc8fc7c7f0ff9e774c79c77a64077b4003212a523dda519d034ff99989'
+            $formalHashes = [ordered]@{
+                'docs/standards/skill-repository-standard.md' = 'f7457bc6dbc13b475bcffc532b75961ff838e8d184162188dbbb1c766fd17e98'
+                'scripts/Invoke-StandardAuthorityGate.ps1' = 'c4609b7f88f9b88be8583cc52f939837d49f2fa5e784977156cfe3d7c752082e'
+                'scripts/Invoke-StandardValidation.ps1' = 'd13cea68b471aea60142665ee787a1bb2111d5ea7f8d45dfea14e0a2a59409b8'
+            }
             if ([string]$basePin.repository -cne 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git' -or
-                [string]$basePin.commit -cne 'ff85d5f80fe795b96354e753074b5ce59ad04ecd' -or
-                [string]$basePin.archiveSha256 -cne '3dc38613f2e2316ad8fcc79d4bf48d0b03fd8398f8dacc72d156abcbce95ea9d' -or
                 @($basePin.files).Count -ne 32) {
-                throw 'The checked-in ff85 config fixture does not match the established 32-file authority tuple.'
+                throw 'The checked-in active config fixture does not match the known repository and 32-file authority shape.'
             }
             $files = [ordered]@{}
             foreach ($entry in @($basePin.files)) { $files[[string]$entry.path] = [string]$entry.sha256 }
-            $files['docs/standards/skill-repository-standard.md'] = 'f7457bc6dbc13b475bcffc532b75961ff838e8d184162188dbbb1c766fd17e98'
-            $files['scripts/Invoke-StandardAuthorityGate.ps1'] = 'c4609b7f88f9b88be8583cc52f939837d49f2fa5e784977156cfe3d7c752082e'
-            $files['scripts/Invoke-StandardValidation.ps1'] = 'd13cea68b471aea60142665ee787a1bb2111d5ea7f8d45dfea14e0a2a59409b8'
-            $commit = '8e627baf54bd6e47862e6291b25e71cc45a2f2b7'
+            $expectedUrl = "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/$($basePin.commit)"
+            if ([string]$basePin.commit -ceq $ff85Commit) {
+                if ([string]$basePin.archiveUrl -cne $expectedUrl -or [string]$basePin.archiveSha256 -cne $ff85ArchiveSha256) {
+                    throw 'The checked-in ff85 config fixture does not match its reviewed archive identity.'
+                }
+                foreach ($path in $formalHashes.Keys) { $files[[string]$path] = [string]$formalHashes[$path] }
+            }
+            elseif ([string]$basePin.commit -ceq $formalCommit) {
+                if ([string]$basePin.archiveUrl -cne $expectedUrl -or [string]$basePin.archiveSha256 -cne $formalArchiveSha256) {
+                    throw 'The checked-in formal config fixture does not match its reviewed archive identity.'
+                }
+                foreach ($path in $formalHashes.Keys) {
+                    if ([string]$files[[string]$path] -cne [string]$formalHashes[$path]) {
+                        throw "The checked-in formal config fixture has an unreviewed hash for $path."
+                    }
+                }
+            }
+            else { throw 'The checked-in config fixture must name an exact reviewed ff85 or 8e authority revision.' }
+
             return [pscustomobject]@{
                 repository = $basePin.repository
-                commit = $commit
-                archiveUrl = "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/$commit"
-                archiveSha256 = '9aa4a7fc8fc7c7f0ff9e774c79c77a64077b4003212a523dda519d034ff99989'
+                commit = $formalCommit
+                archiveUrl = "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/$formalCommit"
+                archiveSha256 = $formalArchiveSha256
                 files = $files
             }
         }
@@ -2095,9 +2117,9 @@ namespace Syp326.Testing
     }
 
 
-    # Scenario: the source authority allowlist exposes the reviewed ff85 commit and all 32 closure records.
-    # Purpose: bind the active config to the complete adopted ff85 authority tuple.
-    It 'UnitT10_accepts_only_the_complete_prepared_authority_closure' {
+    # Scenario: a no-argument reader caller coexists with the newly active formal config.
+    # Purpose: preserve the ff85 reader default while requiring the active config to select the complete 8e tuple.
+    It 'UnitT10_preserves_ff85_default_and_selects_the_formal_active_authority' {
         Test-Path -LiteralPath $script:DriverPath -PathType Leaf | Should -BeTrue
         Import-Module -Name $script:DriverPath -Force
         $pin = Get-PreparedSourceAuthorityPin
@@ -2108,8 +2130,9 @@ namespace Syp326.Testing
         $pin.files.Count | Should -Be 32
 
         $active = Get-Content -LiteralPath $script:ConfigPath -Raw | ConvertFrom-Json -Depth 20
-        $active.authority.commit | Should -Be 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
-        $active.authority.archiveSha256 | Should -Be '3dc38613f2e2316ad8fcc79d4bf48d0b03fd8398f8dacc72d156abcbce95ea9d'
+        $active.authority.commit | Should -Be '8e627baf54bd6e47862e6291b25e71cc45a2f2b7'
+        $active.authority.archiveUrl | Should -Be 'https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/8e627baf54bd6e47862e6291b25e71cc45a2f2b7'
+        $active.authority.archiveSha256 | Should -Be '9aa4a7fc8fc7c7f0ff9e774c79c77a64077b4003212a523dda519d034ff99989'
         Assert-CodeSourceAuthorityConfig -Config $active
     }
 
@@ -4500,9 +4523,9 @@ exit 0
         $workflow | Should -Match ([regex]::Escape('ref: ${{ github.event.pull_request.head.sha || github.sha }}'))
         $workflow | Should -Not -Match 'github\.event\.pull_request\.merge_commit_sha'
         $workflow | Should -Match 'runs-on:\s*windows-latest'
-        $workflow | Should -Match 'Checkout immutable ff85 authority fixture'
-        $workflow | Should -Match 'ref:\s*ff85d5f80fe795b96354e753074b5ce59ad04ecd'
-        $workflow | Should -Match 'path:\s*authority-ff85'
+        $workflow | Should -Match 'Checkout immutable 8e authority fixture'
+        $workflow | Should -Match 'ref:\s*8e627baf54bd6e47862e6291b25e71cc45a2f2b7'
+        $workflow | Should -Match 'path:\s*authority-8e627'
         $workflow | Should -Match 'fetch-depth:\s*0'
         $workflow | Should -Match 'PULL_REQUEST_BASE_SHA:\s*\$\{\{\s*github\.event\.pull_request\.base\.sha\s*\}\}'
         $workflow | Should -Match 'PULL_REQUEST_HEAD_SHA:\s*\$\{\{\s*github\.event\.pull_request\.head\.sha\s*\}\}'

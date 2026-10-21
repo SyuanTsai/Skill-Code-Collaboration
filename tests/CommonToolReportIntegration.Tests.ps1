@@ -125,10 +125,10 @@ Describe 'Code child uses central package tool report rules' {
         $activeConfig = Get-Content -LiteralPath (Join-Path $repositoryRoot 'config/standard-v1.json') -Raw | ConvertFrom-Json -Depth 20
         $authority = $activeConfig.authority
         $expectedRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
+        $expectedCommit = '8e627baf54bd6e47862e6291b25e71cc45a2f2b7'
+        $expectedArchiveSha256 = '9aa4a7fc8fc7c7f0ff9e774c79c77a64077b4003212a523dda519d034ff99989'
         Import-Module -Name (Join-Path $repositoryRoot 'scripts/StandardSourceDriver.psm1') -Force
-        $activePin = Get-PreparedSourceAuthorityPin
-        $expectedCommit = 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
-        $expectedArchiveSha256 = '3dc38613f2e2316ad8fcc79d4bf48d0b03fd8398f8dacc72d156abcbce95ea9d'
+        $activePin = Get-PreparedSourceAuthorityPin -AuthorityRevision $expectedCommit
         $activePaths = @($authority.files | ForEach-Object { [string]$_.path })
         $pinnedPaths = @($activePin.files.Keys | ForEach-Object { [string]$_ })
         if ($authority.repository -cne $expectedRepository -or $authority.commit -cne $expectedCommit -or
@@ -136,7 +136,7 @@ Describe 'Code child uses central package tool report rules' {
             $authority.archiveSha256 -cne $expectedArchiveSha256 -or @($authority.files).Count -ne 32 -or
             $activePin.commit -cne $expectedCommit -or $activePin.archiveSha256 -cne $expectedArchiveSha256 -or
             [string]::Join('|', $activePaths) -cne [string]::Join('|', $pinnedPaths)) {
-            throw 'The Pester child fixture requires the exact active ff85 authority tuple and ordered 32-file closure.'
+            throw 'The Pester child fixture requires the exact active formal 8e authority tuple and ordered 32-file closure.'
         }
         foreach ($entry in @($authority.files)) {
             if ([string]$entry.sha256 -cne [string]$activePin.files[[string]$entry.path]) {
@@ -177,10 +177,10 @@ Describe 'Code child uses central package tool report rules' {
         }
 
         if ([string]::IsNullOrWhiteSpace($env:SYP154_CANDIDATE_AUTHORITY_ROOT)) {
-            throw 'The common tool report integration requires the active ff85 authority checkout supplied by SourceValidation.'
+            throw 'The common tool report integration requires the active 8e authority checkout supplied by SourceValidation.'
         }
         if (-not [string]::IsNullOrWhiteSpace($env:SYP154_CANDIDATE_AUTHORITY_ROOT)) {
-            # Admit the active ff85 checkout used by SourceValidation, then use
+            # Admit the active 8e checkout used by SourceValidation, then use
             # its complete Git history to build the distinct historical 8a fixture.
             $script:authorityFixtureMode = 'verified-git-checkout'
             $moduleRoot = [IO.Path]::GetFullPath([string]$env:SYP154_CANDIDATE_AUTHORITY_ROOT)
@@ -372,8 +372,8 @@ Describe 'Code child uses central package tool report rules' {
         $BaseRevision = 'e' * 40
         $activeAuthority = (Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'config/standard-v1.json') -Raw | ConvertFrom-Json -Depth 20).authority
         $AuthorityRevision = [string]$activeAuthority.commit
-        $expectedSourceValidation = $AuthorityRevision -ceq 'ff85d5f80fe795b96354e753074b5ce59ad04ecd'
-        $AuthorityRevision | Should -BeIn @('8aabd22694a05771f98639f6d726cc9a620eb94b', 'ff85d5f80fe795b96354e753074b5ce59ad04ecd')
+        $expectedSourceValidation = $AuthorityRevision -cin @('ff85d5f80fe795b96354e753074b5ce59ad04ecd', '8e627baf54bd6e47862e6291b25e71cc45a2f2b7')
+        $AuthorityRevision | Should -BeIn @('8aabd22694a05771f98639f6d726cc9a620eb94b', 'ff85d5f80fe795b96354e753074b5ce59ad04ecd', '8e627baf54bd6e47862e6291b25e71cc45a2f2b7')
         $SourceRepository = 'https://github.com/SyuanTsai/Skill-Code-Collaboration.git'
         $expectedCallerBindings = [ordered]@{
             runId = $runId
