@@ -731,7 +731,7 @@ jobs:
       - name: Capture resident source timing
         shell: pwsh
         env:
-          SYP154_CANDIDATE_AUTHORITY_ROOT: ${{ github.workspace }}/authority-ff85
+          SYP154_CANDIDATE_AUTHORITY_ROOT: ${{ github.workspace }}/authority-8e627
         run: |
           $ErrorActionPreference = 'Stop'
 
@@ -843,7 +843,7 @@ jobs:
 
           $baseRoot = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
           $candidateRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'candidate'))
-          $authorityRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'authority-ff85'))
+          $authorityRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'authority-8e627'))
           $protectedDriver = Join-Path $baseRoot 'scripts/Validate.ps1'
           $sourceToolsPath = [IO.Path]::GetFullPath($env:CODE_SOURCE_TOOLS_PATH)
           $artifactsRoot = [IO.Path]::GetFullPath($env:CODE_SOURCE_ARTIFACTS_ROOT)
@@ -867,7 +867,7 @@ jobs:
 
           $supervisor = Join-Path $authorityRoot 'scripts/Invoke-StandardValidation.ps1'
           $supervisorSha256 = (Get-FileHash -LiteralPath $supervisor -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($supervisorSha256 -cne 'a4ee880810171428a6abd2e8fd5db2da1eaeda4abc0fc6c72dc259b4a709174b') { throw 'The ff85 process supervisor differs from its reviewed identity.' }
+          if ($supervisorSha256 -cne 'd13cea68b471aea60142665ee787a1bb2111d5ea7f8d45dfea14e0a2a59409b8') { throw 'The 8e process supervisor differs from its reviewed identity.' }
           . $supervisor -DefineFunctionsOnly -CandidateRoot $candidateRoot -AdapterPath $protectedDriver `
             -ArtifactsRoot $artifactsRoot -SourceRepository 'https://github.com/SyuanTsai/Skill-Code-Collaboration.git' `
             -SourceRevision $candidateCommit -BaseRevision $(if ($baseCommit) { $baseCommit } else { $candidateCommit })
