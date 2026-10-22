@@ -11,6 +11,8 @@ Independent Agent Skills source repository for code-delegation workflows.
 - Profile catalog extension: `catalog/profiles.json`
 - Current repository version: `0.1.0`
 
+For source maintenance and review, follow the [central Skill maintenance guidelines](https://github.com/SyuanTsai/SyuanTsai-AI-Instructions/blob/76cee33b5e9b91b8a21f362f2936078c74a68fb7/docs/skill-maintenance-guidelines.md) when deciding scope, supporting resources, dependencies, and replacement cleanup.
+
 ## Skills
 
 | Skill | Profile | Purpose | Capability gate |
