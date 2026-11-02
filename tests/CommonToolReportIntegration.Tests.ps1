@@ -702,8 +702,8 @@ if ($callArguments -notcontains '--no-llm') {
     return
 }
 $outputIndex = [Array]::IndexOf($callArguments, '--output')
-if ($outputIndex -lt 0 -or $outputIndex + 1 -ge $callArguments.Count) {
-    [Console]::Error.WriteLine('TEST_SPY_REJECTED_MISSING_OUTPUT_PATH')
+if ($outputIndex -ge 0) {
+    [Console]::Error.WriteLine('TEST_SPY_REJECTED_OUTPUT_ARGUMENT')
     $global:LASTEXITCODE = 98
     return
 }
@@ -729,8 +729,7 @@ $report = [ordered]@{
     components = @($components)
     issues = @()
 }
-$outputPath = [string]$callArguments[$outputIndex + 1]
-[IO.File]::WriteAllText($outputPath, (ConvertTo-Json -InputObject $report -Depth 20 -Compress), [Text.UTF8Encoding]::new($false))
+Write-Output (ConvertTo-Json -InputObject $report -Depth 20 -Compress)
 $global:LASTEXITCODE = 0
 '@
         [IO.File]::WriteAllText($spyToolPath, $spySource, [Text.UTF8Encoding]::new($false))
@@ -743,6 +742,8 @@ $global:LASTEXITCODE = 0
         $previousSpy = [Environment]::GetEnvironmentVariable('SYP154_TEST_STATIC_SPY')
         [Environment]::SetEnvironmentVariable('SYP154_TEST_STATIC_SPY', $spyPath)
         try {
+            $reportPath = Join-Path $script:testRoot 'skillspector-demo.json'
+            (Test-Path -LiteralPath $reportPath) | Should -BeFalse
             $rawBefore = @(Get-ChildItem -LiteralPath $script:testRoot -File -Filter 'native-raw-skillspector-*' | ForEach-Object { $_.FullName })
             $child = Invoke-IntegrationChildProcess -Arguments @(
                 '-NoProfile', '-NonInteractive', '-File', $script:childPath,
@@ -762,6 +763,7 @@ $global:LASTEXITCODE = 0
             $child.exitCode | Should -Be 0 -Because ($child.output -join "`n")
             $calls.Count | Should -Be 1
             @($calls[0].arguments | Where-Object { $_ -ceq '--no-llm' }).Count | Should -Be 1
+            $calls[0].arguments | Should -Not -Contain '--output'
             $envelope = ($child.output -join "`n") | ConvertFrom-Json -Depth 20
             $envelope.status | Should -Be 'passed'
             $envelope.decision | Should -Be 'PASS'
@@ -776,8 +778,14 @@ $global:LASTEXITCODE = 0
             @($envelope.nativeReports).Count | Should -Be 1
             $native = $envelope.nativeReports[0]
             $native.arguments | Should -Contain '--no-llm'
+            $native.arguments | Should -Not -Contain '--output'
             [int]$native.exitCode | Should -Be 0
-            $stdoutFiles.Count | Should -Be 1
+            (Test-Path -LiteralPath $reportPath -PathType Leaf) | Should -BeTrue
+            [string]$native.path | Should -Be ([IO.Path]::GetFullPath($reportPath))
+            [string]$native.stdoutPath | Should -Be ([IO.Path]::GetFullPath($reportPath))
+            [string]$native.sha256 | Should -Be ([string]$native.stdoutSha256)
+            (Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20).execution_successful | Should -BeTrue
+            $stdoutFiles.Count | Should -Be 0
             $stderrFiles.Count | Should -Be 1
         }
         finally {
