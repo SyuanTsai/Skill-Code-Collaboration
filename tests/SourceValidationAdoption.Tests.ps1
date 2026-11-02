@@ -4560,9 +4560,9 @@ exit 0
         $workflow | Should -Match 'if:\s*\$\{\{\s*always\(\)\s*\}\}'
         $uploadBlock = [regex]::Match($workflow, '(?ms)- name: Upload source validation evidence(?<body>.*?)(?=^\s{2}[A-Za-z0-9_-]+:)')
         $uploadBlock.Success | Should -BeTrue
-        $uploadBlock.Groups['body'].Value | Should -Match '\$\{\{\s*runner\.temp\s*\}\}/code-collaboration/'
-        $uploadBlock.Groups['body'].Value | Should -Match '!\$\{\{\s*runner\.temp\s*\}\}/code-collaboration/source-tools/source-tools-\*/runtime/\*\*'
-        $uploadBlock.Groups['body'].Value | Should -Match '!\$\{\{\s*runner\.temp\s*\}\}/code-collaboration/source-tools/source-tools-\*/installed/\*\*'
+        $uploadBlock.Groups['body'].Value | Should -Match '\$\{\{\s*runner\.temp\s*\}\}/cc/'
+        $uploadBlock.Groups['body'].Value | Should -Match '!\$\{\{\s*runner\.temp\s*\}\}/cc/source-tools/source-tools-\*/runtime/\*\*'
+        $uploadBlock.Groups['body'].Value | Should -Match '!\$\{\{\s*runner\.temp\s*\}\}/cc/source-tools/source-tools-\*/installed/\*\*'
         $uploadBlock.Groups['body'].Value | Should -Not -Match '!.*(?:core-v2|runs|repository-pester-case-inventory)'
         $sourceToolsSetup = [regex]::Match($workflow, '(?ms)- name: Prepare source tools once(?<body>.*?)(?=^      - name: Run full source validation)')
         $sourceValidation = [regex]::Match($workflow, '(?ms)- name: Run full source validation(?<body>.*?)(?=^      - name: Upload source validation evidence)')
