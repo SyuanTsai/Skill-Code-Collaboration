@@ -220,7 +220,7 @@ function Get-CopilotAvailableModels {
 
     $configProbe = Invoke-CopilotHelpConfig
     if ($configProbe.ExitCode -ne 0) {
-        throw "copilot help config exited with code $($configProbe.ExitCode)."
+        throw ('copilot help config exited with code {0}.' -f $configProbe.ExitCode)
     }
 
     foreach ($modelId in @(Get-CopilotConfigModelIds -Lines @($configProbe.Lines))) {
@@ -451,9 +451,11 @@ function Invoke-ModelAvailabilityUpdate {
     )
 
     $skillDirectory = Split-Path -Parent $PSScriptRoot
-    $resolvedCacheDirectory = Resolve-ModelAvailabilityCacheDirectory `
-        -RequestedDirectory $CacheDirectory `
-        -SkillDirectory $skillDirectory
+    $cacheDirectoryArguments = @{
+        RequestedDirectory = $CacheDirectory
+        SkillDirectory     = $skillDirectory
+    }
+    $resolvedCacheDirectory = Resolve-ModelAvailabilityCacheDirectory @cacheDirectoryArguments
     $cachePath = Join-Path $resolvedCacheDirectory "model-availability.$Environment.json"
 
     if ([string]::IsNullOrWhiteSpace($BaselinePath)) {
@@ -564,13 +566,15 @@ function Invoke-ModelAvailabilityUpdate {
 
         if ($null -eq $command) {
             foreach ($entry in $cliBaseline) {
-                $models.Add((New-AvailabilityModelRecord `
-                            -CliName $cliName `
-                            -Id ([string]$entry.id) `
-                            -Family ([string]$entry.family) `
-                            -Status 'unavailable' `
-                            -Selectable $false `
-                            -Reason 'cli-not-found'))
+                $recordArguments = @{
+                    CliName    = $cliName
+                    Id         = [string]$entry.id
+                    Family     = [string]$entry.family
+                    Status     = 'unavailable'
+                    Selectable = $false
+                    Reason     = 'cli-not-found'
+                }
+                $models.Add((New-AvailabilityModelRecord @recordArguments))
             }
             $cliStates[$cliName] = [pscustomobject][ordered]@{
                 stale      = $false
@@ -613,25 +617,29 @@ function Invoke-ModelAvailabilityUpdate {
                 }
                 $availabilityStatus = if ($isFound) { 'available' } else { 'unavailable' }
                 $isSelectable = $isFound -and [string]$entry.status -eq 'active'
-                $models.Add((New-AvailabilityModelRecord `
-                            -CliName $cliName `
-                            -Id ([string]$entry.id) `
-                            -Family ([string]$entry.family) `
-                            -Status $availabilityStatus `
-                            -Selectable $isSelectable `
-                            -Reason $reason))
+                $recordArguments = @{
+                    CliName    = $cliName
+                    Id         = [string]$entry.id
+                    Family     = [string]$entry.family
+                    Status     = $availabilityStatus
+                    Selectable = $isSelectable
+                    Reason     = $reason
+                }
+                $models.Add((New-AvailabilityModelRecord @recordArguments))
             }
 
             $baselineIds = @($cliBaseline.id)
             foreach ($foundId in @($foundIds | Select-Object -Unique)) {
                 if ([string]$foundId -notin $baselineIds) {
-                    $models.Add((New-AvailabilityModelRecord `
-                                -CliName $cliName `
-                                -Id ([string]$foundId) `
-                                -Family 'unknown' `
-                                -Status 'unevaluated' `
-                                -Selectable $false `
-                                -Reason 'not-in-baseline'))
+                    $recordArguments = @{
+                        CliName    = $cliName
+                        Id         = [string]$foundId
+                        Family     = 'unknown'
+                        Status     = 'unevaluated'
+                        Selectable = $false
+                        Reason     = 'not-in-baseline'
+                    }
+                    $models.Add((New-AvailabilityModelRecord @recordArguments))
                 }
             }
 
@@ -652,13 +660,15 @@ function Invoke-ModelAvailabilityUpdate {
             }
             else {
                 foreach ($entry in $cliBaseline) {
-                    $models.Add((New-AvailabilityModelRecord `
-                                -CliName $cliName `
-                                -Id ([string]$entry.id) `
-                                -Family ([string]$entry.family) `
-                                -Status 'unknown' `
-                                -Selectable $false `
-                                -Reason 'probe-failed'))
+                    $recordArguments = @{
+                        CliName    = $cliName
+                        Id         = [string]$entry.id
+                        Family     = [string]$entry.family
+                        Status     = 'unknown'
+                        Selectable = $false
+                        Reason     = 'probe-failed'
+                    }
+                    $models.Add((New-AvailabilityModelRecord @recordArguments))
                 }
             }
             $cliStates[$cliName] = [pscustomobject][ordered]@{
@@ -671,7 +681,7 @@ function Invoke-ModelAvailabilityUpdate {
     $suggestions = @($models | Where-Object {
             $_.status -eq 'unevaluated' -and $_.reason -eq 'not-in-baseline'
         } | ForEach-Object {
-            "$($_.cli)/$($_.id): add to references/models.json via pull request after rating"
+            ('{0}/{1}: add to references/models.json via pull request after rating' -f $_.cli, $_.id)
         } | Select-Object -Unique)
 
     $overallStatus = if ($failureCount -eq 0) {

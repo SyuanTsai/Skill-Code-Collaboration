@@ -20,6 +20,20 @@ Only launching and usage collection differ.
 
 ## External CLI reference
 
+Every model-calling dispatch, resume, or review command in this reference runs
+through the user's own CLI account and consumes that account's quota or
+credits; model-free commands such as `codex debug models`, `codex login status`,
+`copilot help config`, and `claude auth status` do not. Before the first
+dispatch of an issue, show the Plan with each Step's executor CLI and every
+planned review CLI, each with its exact model and effort, so the user can see
+which accounts and models will be billed. The
+user's request to run this Skill approves model-calling dispatches to the
+executor CLI the user named and to the review CLIs required by
+`references/review.md`; ask first before a model-calling dispatch to any other
+CLI or account.
+The command blocks below are templates with `<placeholder>` values, not
+commands to run as written.
+
 ### Codex CLI
 
 `codex-cli 0.154.0` provides the following verified interface.
@@ -59,7 +73,7 @@ Get-Content -Raw <prompt-file> | codex exec -C <worktree> --sandbox workspace-wr
 ```
 
 POSIX-shell implementation example:
-```sh
+```text
 codex exec -C <worktree> --sandbox workspace-write -m <model> -c 'model_reasoning_effort="<effort>"' -c 'approval_policy="never"' --json - < <prompt-file>
 ```
 
@@ -82,7 +96,7 @@ Get-Content -Raw <prompt-file> | codex exec resume <thread-id> -m <model> -c san
 ```
 
 POSIX-shell resume example:
-```sh
+```text
 cd <worktree>
 codex exec resume <thread-id> -m <model> -c 'sandbox_mode="workspace-write"' -c 'approval_policy="never"' --json -o <output-file> - < <prompt-file>
 ```
@@ -98,7 +112,7 @@ Choose an `active`, C3-or-higher reviewer from `references/models.md` and pass
 its slug to `codex exec review -m <slug>`.
 
 Read-only review example:
-```sh
+```text
 codex exec -C <worktree> --sandbox read-only -m <model> -c 'model_reasoning_effort="<effort>"' --json --ephemeral "<review-prompt>"
 ```
 
@@ -149,13 +163,13 @@ copilot -C <worktree> -p (Get-Content -Raw <prompt-file>) --no-ask-user --allow-
 
 POSIX-shell implementation example:
 
-```sh
+```text
 copilot -C <worktree> -p "$(cat <prompt-file>)" --no-ask-user --allow-all-tools --model <model> --effort <effort>
 ```
 
 Read-only review example:
 
-```sh
+```text
 copilot -C <worktree> -p "<review-prompt>" --no-ask-user --deny-tool=write --deny-tool=shell --model <model> --effort <effort>
 ```
 
@@ -194,13 +208,13 @@ Run `claude` from inside the Step's worktree: set the working directory to
 `<worktree>` before launching.
 
 Implementation example:
-```sh
+```text
 claude -p "<implementation-prompt>" --model <model> --effort <effort> --output-format json --no-session-persistence
 ```
 
 Read-only review example:
 
-```sh
+```text
 claude -p "<review-prompt>" --model <model> --effort <effort> --permission-mode plan --output-format json --no-session-persistence
 ```
 

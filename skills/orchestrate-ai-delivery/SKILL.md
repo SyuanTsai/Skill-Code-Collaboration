@@ -13,7 +13,7 @@ SPDX-License-Identifier: Apache-2.0
 
 ### Inputs
 
-Collect the controller AI, Jira issue key, repository and branch, and execution mode (`external CLI` or `built-in sub agent`). If execution mode is missing, ask; never assume it. Ask only for truly missing required information, and do not ask the user to reconfirm routine model choices.
+Collect the controller AI, Jira issue key, repository and branch, and execution mode (`external CLI` or `built-in sub agent`). If execution mode is missing, ask; never assume it. Ask only for truly missing required information. Show routine model choices made under [references/models.md](references/models.md) in the Plan instead of asking about each one again.
 
 ### Environment Boundary
 
@@ -43,8 +43,8 @@ Only Jira, Git, and CLIs are in scope. Confluence is not.
 
 ### Steps
 
-1. **Plan:** Before planning, read repository instructions and CI workflows. Define the Objective, Acceptance Criteria, Scope, required Steps, and verification method; include their mandatory synchronization rules, affected locally reproducible CI checks, and remote workflows, and map every Jira acceptance criterion to a Step. Run independent Steps in parallel, each in its own Git worktree when it touches the repository.
-2. **Dispatch:** Produce every Step prompt with the `write-implementation-prompt` Skill, including objective, allowed files, scope, acceptance criteria, required tests, and completion report. Choose the executor and exact model using [references/models.md](references/models.md), then launch it using [references/dispatch.md](references/dispatch.md).
+1. **Plan:** Before planning, read repository instructions and CI workflows. Define the Objective, Acceptance Criteria, Scope, required Steps, and verification method; include their mandatory synchronization rules, affected locally reproducible CI checks, and remote workflows, and map every Jira acceptance criterion to a Step. Choose each Step's executor and the review CLIs, each with an exact model and effort, using [references/models.md](references/models.md) and show them in the Plan. Run independent Steps in parallel, each in its own Git worktree when it touches the repository.
+2. **Dispatch:** Produce every Step prompt with the `write-implementation-prompt` Skill, including objective, allowed files, scope, acceptance criteria, required tests, and completion report. Launch it with the executor and model chosen in the Plan using [references/dispatch.md](references/dispatch.md).
 3. **Step Review:** Have the controller and review CLI both review the implemented Step using [references/review.md](references/review.md).
 4. **Judge findings:** Verify that each finding exists and satisfies a [Valid Findings](references/review.md#valid-findings) condition before dispatching a fix. Use the smallest fix; record everything else as a follow-up item.
 5. **Fix and re-review:** Re-review only the fixed part and related regressions.
