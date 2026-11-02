@@ -109,7 +109,13 @@ JSONL event stream as the completion signal: `turn.completed` means success,
 while `turn.failed` or a top-level `error` event means failure. If the
 process has ended without any of those events, treat it as an abnormal failure
 and inspect the output. The existence of the `-o` last-message file or whether
-the process is still running is not a completion signal. `turn.completed.usage`
+the process is still running is not a completion signal. While waiting, poll
+both the JSONL stream and the process: on every poll check whether the process
+ID is still alive and when the JSONL file was last written. A process that has
+exited without a terminal event is an abnormal failure. If the process is alive
+but the JSONL file has had no new event for 30 minutes, treat the Step as
+stalled: stop that process, then resume the thread or dispatch the Step again.
+Never wait on events alone. `turn.completed.usage`
 is the single source of truth for usage. If a review's usage fields are all
 zero, record usage as unavailable rather than as zero.
 Credits and cost are not reported; record them as unavailable. `codex debug models`
@@ -249,6 +255,11 @@ the delivery; do not claim support.
    later Git ownership warnings. For Built-in sub-agent mode, confirm that the
    sub agent can execute the required test command; if it cannot, use the same
    prompt instruction and have the controller run the tests.
+   If the user's global instructions require an instruction bootstrap hook, the
+   controller runs it once outside the sandbox before dispatch, because a
+   sandboxed executor may be unable to read the user-level inventory and the
+   hook then fails closed. After it passes, state that result in the prompt and
+   instruct the executor not to run the bootstrap again.
 6. Choose models according to `references/models.md`. For every Step state the
    exact model identifier, effort, and reason. Escalate only for a concrete
    difficulty; never carry a high-cost model into later Steps by default.
