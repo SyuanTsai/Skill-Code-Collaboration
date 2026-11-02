@@ -1,0 +1,222 @@
+{
+  "schemaVersion": 1,
+  "reviewedOn": "2026-11-02",
+  "models": [
+    {
+      "cli": "claude",
+      "id": "claude-fable-5-1",
+      "family": "anthropic",
+      "capability": 4,
+      "cost": 4,
+      "status": "active",
+      "evidence": "official",
+      "notes": "alias `fable`; availability depends on CLI login"
+    },
+    {
+      "cli": "claude",
+      "id": "claude-opus-5-5",
+      "family": "anthropic",
+      "capability": 4,
+      "cost": 3,
+      "status": "active",
+      "evidence": "official",
+      "notes": "alias `opus`"
+    },
+    {
+      "cli": "claude",
+      "id": "claude-sonnet-5-5",
+      "family": "anthropic",
+      "capability": 3,
+      "cost": 2,
+      "status": "active",
+      "evidence": "official",
+      "notes": "alias `sonnet`"
+    },
+    {
+      "cli": "claude",
+      "id": "claude-haiku-5-5",
+      "family": "anthropic",
+      "capability": 1,
+      "cost": 1,
+      "status": "active",
+      "evidence": "measured",
+      "notes": "alias `haiku`; verified as a sub agent"
+    },
+    {
+      "cli": "codex",
+      "id": "gpt-6-astra",
+      "family": "openai",
+      "capability": 4,
+      "cost": 4,
+      "status": "active",
+      "evidence": "official",
+      "notes": "CLI description \"Frontier intelligence\""
+    },
+    {
+      "cli": "codex",
+      "id": "gpt-5.6-sol",
+      "family": "openai",
+      "capability": 3,
+      "cost": 2,
+      "status": "active",
+      "evidence": "official",
+      "notes": "\"workhorse\""
+    },
+    {
+      "cli": "codex",
+      "id": "gpt-5.6-terra",
+      "family": "openai",
+      "capability": 2,
+      "cost": 2,
+      "status": "active",
+      "evidence": "official",
+      "notes": "\"balanced\""
+    },
+    {
+      "cli": "codex",
+      "id": "gpt-5.6-luna",
+      "family": "openai",
+      "capability": 1,
+      "cost": 1,
+      "status": "active",
+      "evidence": "official",
+      "notes": "\"fast and efficient\""
+    },
+    {
+      "cli": "codex",
+      "id": "gpt-reserve",
+      "family": "openai",
+      "capability": null,
+      "cost": null,
+      "status": "unevaluated",
+      "evidence": "official",
+      "notes": "hidden in the CLI catalog"
+    },
+    {
+      "cli": "codex",
+      "id": "codex-auto-review",
+      "family": "openai",
+      "capability": null,
+      "cost": null,
+      "status": "excluded",
+      "evidence": "official",
+      "notes": "internal approval-review model"
+    },
+    {
+      "cli": "copilot",
+      "id": "claude-opus-5",
+      "family": "anthropic",
+      "capability": 4,
+      "cost": 4,
+      "status": "active",
+      "evidence": "official",
+      "notes": ""
+    },
+    {
+      "cli": "copilot",
+      "id": "claude-opus-4.8",
+      "family": "anthropic",
+      "capability": 4,
+      "cost": 4,
+      "status": "active",
+      "evidence": "official",
+      "notes": "older; prefer claude-opus-5 at equal rating"
+    },
+    {
+      "cli": "copilot",
+      "id": "claude-sonnet-5",
+      "family": "anthropic",
+      "capability": 3,
+      "cost": 2,
+      "status": "active",
+      "evidence": "official",
+      "notes": ""
+    },
+    {
+      "cli": "copilot",
+      "id": "claude-haiku-4.5",
+      "family": "anthropic",
+      "capability": 1,
+      "cost": 1,
+      "status": "active",
+      "evidence": "official",
+      "notes": ""
+    },
+    {
+      "cli": "copilot",
+      "id": "gpt-5.6-sol",
+      "family": "openai",
+      "capability": 3,
+      "cost": 2,
+      "status": "active",
+      "evidence": "official",
+      "notes": ""
+    },
+    {
+      "cli": "copilot",
+      "id": "gpt-5.6-terra",
+      "family": "openai",
+      "capability": 2,
+      "cost": 2,
+      "status": "active",
+      "evidence": "official",
+      "notes": ""
+    },
+    {
+      "cli": "copilot",
+      "id": "gpt-5.6-luna",
+      "family": "openai",
+      "capability": 1,
+      "cost": 1,
+      "status": "active",
+      "evidence": "measured",
+      "notes": "measured: one minimal call cost 0.41 AI Credits"
+    },
+    {
+      "cli": "copilot",
+      "id": "gpt-5.3-codex",
+      "family": "openai",
+      "capability": 2,
+      "cost": 2,
+      "status": "active",
+      "evidence": "official",
+      "notes": ""
+    },
+    {
+      "cli": "copilot",
+      "id": "kimi-k3",
+      "family": "moonshot",
+      "capability": null,
+      "cost": null,
+      "status": "unevaluated",
+      "evidence": "measured",
+      "notes": "available but no rating basis yet"
+    }
+  ],
+  "efforts": {
+    "claude": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "codex": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra"
+    ],
+    "copilot": [
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]
+  }
+}

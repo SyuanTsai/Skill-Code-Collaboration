@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: 2026 SyuanTsai
+# SPDX-License-Identifier: Apache-2.0
+interface:
+  display_name: "Write Implementation Prompt"
+  short_description: "Write delegated implementation prompts"
+  default_prompt: "Use $write-implementation-prompt to prepare a self-contained implementation prompt for the chosen executor."

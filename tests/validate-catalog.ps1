@@ -144,7 +144,7 @@ $copilotProfiles = @($profiles | Where-Object { [string]$_.id -ceq 'copilot' })
 Assert-True ($copilotProfiles.Count -eq 1) 'The established copilot profile is required.'
 $copilotProfile = $copilotProfiles[0]
 Assert-True ($copilotProfile.default -eq $false) 'Copilot profile must be opt-in.'
-$copilotSkillId = 'write-copilot-implementation-prompt'
+$copilotSkillId = 'write-implementation-prompt'
 $defaultCopilotProfiles = @($profiles | Where-Object { $_.default -eq $true -and @($_.includes) -ccontains $copilotSkillId })
 Assert-True ($defaultCopilotProfiles.Count -eq 0) 'The established Copilot Skill must not be included in a default profile.'
 

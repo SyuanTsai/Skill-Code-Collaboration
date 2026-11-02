@@ -10,28 +10,65 @@
   "profiles": [
     {
       "id": "copilot",
-      "description": "GitHub Copilot implementation delegation workflow supported on Windows hosts.",
+      "description": "Implementation-prompt delegation workflow for any supported executor.",
       "default": false,
       "includes": [
-        "write-copilot-implementation-prompt"
+        "write-implementation-prompt"
+      ],
+      "excludes": []
+    },
+    {
+      "id": "ai-delivery",
+      "description": "Controller workflow that plans, dispatches, reviews, and gates delivery of a Jira issue with any AI controller and executor.",
+      "default": false,
+      "includes": [
+        "orchestrate-ai-delivery",
+        "write-implementation-prompt"
       ],
       "excludes": []
     }
   ],
   "skills": [
     {
-      "id": "write-copilot-implementation-prompt",
+      "id": "orchestrate-ai-delivery",
       "group": "code-collaboration",
       "source": {
         "sourceId": "code-collaboration",
-        "path": "skills/write-copilot-implementation-prompt"
+        "path": "skills/orchestrate-ai-delivery"
       },
       "profiles": [
-        "copilot"
+        "ai-delivery"
       ],
       "compatibility": {
         "platforms": [
-          "windows"
+          "any"
+        ],
+        "shells": [],
+        "requiredCapabilities": [],
+        "anyOfCapabilities": []
+      },
+      "dependencies": [
+        "write-implementation-prompt"
+      ],
+      "lifecycle": {
+        "status": "active",
+        "aliases": []
+      }
+    },
+    {
+      "id": "write-implementation-prompt",
+      "group": "code-collaboration",
+      "source": {
+        "sourceId": "code-collaboration",
+        "path": "skills/write-implementation-prompt"
+      },
+      "profiles": [
+        "copilot",
+        "ai-delivery"
+      ],
+      "compatibility": {
+        "platforms": [
+          "any"
         ],
         "shells": [],
         "requiredCapabilities": [],

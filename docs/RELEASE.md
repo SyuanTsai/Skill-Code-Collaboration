@@ -19,7 +19,7 @@ This repository is versioned independently from any consumer repository. Use Sem
 3. The repository contract diagnostic and profile catalog regression suite remain internal components, not additional release commands.
 4. Run the source-pin metadata helper for the candidate ref and retain the reported commit and content SHA-256 in release evidence.
 5. Confirm `catalog/profiles.json` exposes only the intended Skills and profiles.
-6. Confirm the Copilot profile selects only `write-copilot-implementation-prompt`.
+6. Confirm the Copilot profile selects only `write-implementation-prompt`.
 7. Merge the release commit to `main`.
 8. Create an annotated release tag matching `VERSION`, for example `v0.1.0`.
 9. Resolve that tag to its immutable 40-character commit SHA and generate the source content hash again from the tagged commit.
