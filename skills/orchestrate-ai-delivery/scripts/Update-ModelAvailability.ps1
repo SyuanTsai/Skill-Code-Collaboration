@@ -470,35 +470,60 @@ function Invoke-ModelAvailabilityUpdate {
 
     $weekStartUtc = Get-TaipeiWeekStartUtc -Instant $Now
     if ($null -ne $previous -and -not $Force) {
-        $hasStaleCli = $false
-        if ($null -ne $previous.PSObject.Properties['clis']) {
-            $hasStaleCli = @($previous.clis.PSObject.Properties | Where-Object {
-                    $null -ne $_.Value.PSObject.Properties['stale'] -and [bool]$_.Value.stale
-                }).Count -gt 0
-        }
-        $lastCheckedProperty = $previous.PSObject.Properties['lastCheckedUtc']
-        if ($null -ne $lastCheckedProperty) {
-            $lastCheckedValue = $lastCheckedProperty.Value
-            $lastChecked = if ($lastCheckedValue -is [DateTimeOffset]) {
-                $lastCheckedValue
+        $allCliStatesFresh = $null -ne $previous.PSObject.Properties['clis']
+        foreach ($requiredCli in @('claude', 'codex', 'copilot')) {
+            if (-not $allCliStatesFresh) {
+                break
             }
-            elseif ($lastCheckedValue -is [DateTime]) {
-                [DateTimeOffset]::new($lastCheckedValue)
+
+            $cliStateProperty = $previous.clis.PSObject.Properties[$requiredCli]
+            if ($null -eq $cliStateProperty) {
+                $allCliStatesFresh = $false
+                break
             }
-            else {
-                [DateTimeOffset]::Parse(
-                    [string]$lastCheckedValue,
-                    [System.Globalization.CultureInfo]::InvariantCulture,
-                    [System.Globalization.DateTimeStyles]::RoundtripKind
-                )
+
+            $cliState = $cliStateProperty.Value
+            $checkedUtcProperty = $cliState.PSObject.Properties['checkedUtc']
+            if (
+                ($null -ne $cliState.PSObject.Properties['stale'] -and [bool]$cliState.stale) -or
+                $null -eq $checkedUtcProperty
+            ) {
+                $allCliStatesFresh = $false
+                break
             }
-            if ($lastChecked -ge $weekStartUtc -and -not $hasStaleCli) {
-                $previous | Add-Member -NotePropertyName status -NotePropertyValue 'fresh' -Force
-                if ($null -eq $previous.PSObject.Properties['warnings']) {
-                    $previous | Add-Member -NotePropertyName warnings -NotePropertyValue @()
+
+            try {
+                $checkedUtcValue = $checkedUtcProperty.Value
+                $checkedUtc = if ($checkedUtcValue -is [DateTimeOffset]) {
+                    $checkedUtcValue
                 }
-                return $previous
+                elseif ($checkedUtcValue -is [DateTime]) {
+                    [DateTimeOffset]::new($checkedUtcValue)
+                }
+                else {
+                    [DateTimeOffset]::Parse(
+                        [string]$checkedUtcValue,
+                        [System.Globalization.CultureInfo]::InvariantCulture,
+                        [System.Globalization.DateTimeStyles]::RoundtripKind
+                    )
+                }
+                if ($checkedUtc -lt $weekStartUtc) {
+                    $allCliStatesFresh = $false
+                    break
+                }
             }
+            catch {
+                $allCliStatesFresh = $false
+                break
+            }
+        }
+
+        if ($allCliStatesFresh) {
+            $previous | Add-Member -NotePropertyName status -NotePropertyValue 'fresh' -Force
+            if ($null -eq $previous.PSObject.Properties['warnings']) {
+                $previous | Add-Member -NotePropertyName warnings -NotePropertyValue @()
+            }
+            return $previous
         }
     }
 
@@ -528,6 +553,10 @@ function Invoke-ModelAvailabilityUpdate {
 
     $warnings = [System.Collections.Generic.List[string]]::new()
     $failureCount = 0
+    $checkedUtc = $Now.UtcDateTime.ToString(
+        "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'",
+        [System.Globalization.CultureInfo]::InvariantCulture
+    )
 
     foreach ($cliName in $selectedClis) {
         $cliBaseline = @($baselineModels | Where-Object { $_.cli -eq $cliName })
@@ -543,7 +572,10 @@ function Invoke-ModelAvailabilityUpdate {
                             -Selectable $false `
                             -Reason 'cli-not-found'))
             }
-            $cliStates[$cliName] = [pscustomobject][ordered]@{ stale = $false }
+            $cliStates[$cliName] = [pscustomobject][ordered]@{
+                stale      = $false
+                checkedUtc = $checkedUtc
+            }
             continue
         }
 
@@ -603,7 +635,10 @@ function Invoke-ModelAvailabilityUpdate {
                 }
             }
 
-            $cliStates[$cliName] = [pscustomobject][ordered]@{ stale = $false }
+            $cliStates[$cliName] = [pscustomobject][ordered]@{
+                stale      = $false
+                checkedUtc = $checkedUtc
+            }
         }
         catch {
             $failureCount++
@@ -626,7 +661,10 @@ function Invoke-ModelAvailabilityUpdate {
                                 -Reason 'probe-failed'))
                 }
             }
-            $cliStates[$cliName] = [pscustomobject][ordered]@{ stale = $true }
+            $cliStates[$cliName] = [pscustomobject][ordered]@{
+                stale      = $true
+                checkedUtc = $checkedUtc
+            }
         }
     }
 

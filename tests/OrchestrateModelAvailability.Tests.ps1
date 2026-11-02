@@ -51,6 +51,24 @@ BeforeAll {
         Set-Content -LiteralPath $path -Value ($cache | ConvertTo-Json -Depth 6) -Encoding utf8
         return $path
     }
+
+    function New-TestCliStates {
+        param(
+            [Parameter(Mandatory)]
+            [string]$CheckedUtc,
+
+            [string]$StaleCli
+        )
+
+        $states = [ordered]@{}
+        foreach ($cliName in @('claude', 'codex', 'copilot')) {
+            $states[$cliName] = [pscustomobject][ordered]@{
+                stale      = $cliName -eq $StaleCli
+                checkedUtc = $CheckedUtc
+            }
+        }
+        return [pscustomobject]$states
+    }
 }
 
 BeforeEach {
@@ -69,7 +87,8 @@ Context 'Weekly availability trigger' {
         $null = Write-TestAvailabilityCache `
             -Directory $cacheDirectory `
             -Environment personal `
-            -LastCheckedUtc $mondayUtc
+            -LastCheckedUtc $mondayUtc `
+            -Clis (New-TestCliStates -CheckedUtc $mondayUtc)
 
         $result = Invoke-ModelAvailabilityUpdate `
             -Environment personal `
@@ -87,7 +106,8 @@ Context 'Weekly availability trigger' {
         $null = Write-TestAvailabilityCache `
             -Directory $cacheDirectory `
             -Environment personal `
-            -LastCheckedUtc '2026-10-25T16:00:00.0000000Z'
+            -LastCheckedUtc '2026-10-25T16:00:00.0000000Z' `
+            -Clis (New-TestCliStates -CheckedUtc '2026-10-25T16:00:00.0000000Z')
 
         $result = Invoke-ModelAvailabilityUpdate `
             -Environment personal `
@@ -103,7 +123,8 @@ Context 'Weekly availability trigger' {
         $null = Write-TestAvailabilityCache `
             -Directory $cacheDirectory `
             -Environment personal `
-            -LastCheckedUtc '2026-11-01T15:59:00.0000000Z'
+            -LastCheckedUtc '2026-11-01T15:59:00.0000000Z' `
+            -Clis (New-TestCliStates -CheckedUtc '2026-11-01T15:59:00.0000000Z')
 
         $result = Invoke-ModelAvailabilityUpdate `
             -Environment personal `
@@ -122,9 +143,7 @@ Context 'Weekly availability trigger' {
             -Directory $cacheDirectory `
             -Environment personal `
             -LastCheckedUtc '2026-11-01T16:30:00.0000000Z' `
-            -Clis ([pscustomobject]@{
-                codex = [pscustomobject]@{ stale = $true }
-            })
+            -Clis (New-TestCliStates -CheckedUtc '2026-11-01T16:30:00.0000000Z' -StaleCli codex)
 
         $result = Invoke-ModelAvailabilityUpdate `
             -Environment personal `
@@ -134,6 +153,51 @@ Context 'Weekly availability trigger' {
 
         $result.status | Should -Be 'updated'
         Should -Invoke Get-CodexAvailableModels -Times 1 -Exactly
+    }
+
+    It 're-probes every CLI when carried-over CLI states were checked last week' {
+        $cacheDirectory = Join-Path $TestDrive 'mixed-cli-freshness'
+        $thisWeek = '2026-11-01T16:30:00.0000000Z'
+        $lastWeek = '2026-10-25T16:00:00.0000000Z'
+        $null = Write-TestAvailabilityCache `
+            -Directory $cacheDirectory `
+            -Environment personal `
+            -LastCheckedUtc $thisWeek `
+            -Clis ([pscustomobject][ordered]@{
+                claude  = [pscustomobject]@{ stale = $false; checkedUtc = $lastWeek }
+                codex   = [pscustomobject]@{ stale = $false; checkedUtc = $thisWeek }
+                copilot = [pscustomobject]@{ stale = $false; checkedUtc = $lastWeek }
+            })
+
+        $result = Invoke-ModelAvailabilityUpdate `
+            -Environment personal `
+            -CacheDirectory $cacheDirectory `
+            -Now ([DateTimeOffset]'2026-11-02T01:00:00+08:00')
+
+        $result.status | Should -Be 'updated'
+        Should -Invoke Get-ClaudeLoginState -Times 1 -Exactly
+        Should -Invoke Get-CodexAvailableModels -Times 1 -Exactly
+        Should -Invoke Get-CopilotAvailableModels -Times 1 -Exactly
+    }
+
+    It 'returns fresh when every CLI state was checked this week and is not stale' {
+        $cacheDirectory = Join-Path $TestDrive 'all-cli-fresh'
+        $thisWeek = '2026-11-01T16:30:00.0000000Z'
+        $null = Write-TestAvailabilityCache `
+            -Directory $cacheDirectory `
+            -Environment personal `
+            -LastCheckedUtc $thisWeek `
+            -Clis (New-TestCliStates -CheckedUtc $thisWeek)
+
+        $result = Invoke-ModelAvailabilityUpdate `
+            -Environment personal `
+            -CacheDirectory $cacheDirectory `
+            -Now ([DateTimeOffset]'2026-11-02T01:00:00+08:00')
+
+        $result.status | Should -Be 'fresh'
+        Should -Invoke Get-ClaudeLoginState -Times 0 -Exactly
+        Should -Invoke Get-CodexAvailableModels -Times 0 -Exactly
+        Should -Invoke Get-CopilotAvailableModels -Times 0 -Exactly
     }
 }
 
