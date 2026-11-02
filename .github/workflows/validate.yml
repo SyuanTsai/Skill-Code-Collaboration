@@ -79,7 +79,7 @@ jobs:
           $baseRoot = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
           $candidateRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'candidate'))
           $authorityRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'authority-8e627'))
-          $runRoot = Join-Path $env:RUNNER_TEMP 'code-collaboration'
+          $runRoot = Join-Path $env:RUNNER_TEMP 'cc'
           [void](New-Item -ItemType Directory -Path $runRoot -Force)
           $sourceToolsPath = [IO.Path]::GetFullPath((Join-Path (Join-Path $runRoot 'source-tools') 'source-tools.json'))
           $artifactsRoot = [IO.Path]::GetFullPath((Join-Path $runRoot 'core-v2'))
@@ -391,7 +391,7 @@ jobs:
             throw "The materialized Go executable reports a different version. Evidence='$($materializedVersionOutput -join ' | ')'; exit=$materializedExitCode."
           }
 
-          $runRoot = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'code-collaboration'))
+          $runRoot = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'cc'))
           Assert-GoRuntimeDirectoryChain -Path $runRoot
           $indexPath = Join-Path $runRoot 'evidence-index.json'
           $inventoryPath = Join-Path $runRoot 'go-runtime-inventory.json'
@@ -468,7 +468,7 @@ jobs:
           $expectedNodeVersion = '24.21.0'
           $expectedNpmVersion = '11.19.0'
           $expectedNodeSha256 = 'ba4e6d110e8c1592a1ecd390f6b05f3da124b13871a5be62b341a07a853c6c32'
-          $runRoot = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'code-collaboration'))
+          $runRoot = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'cc'))
           if (-not (Test-Path -LiteralPath $runRoot -PathType Container)) {
             throw "The source-validation evidence root is missing: $runRoot"
           }
@@ -895,9 +895,9 @@ jobs:
         with:
           name: standard-core-source-validation-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}/code-collaboration/
-            !${{ runner.temp }}/code-collaboration/source-tools/source-tools-*/runtime/**
-            !${{ runner.temp }}/code-collaboration/source-tools/source-tools-*/installed/**
+            ${{ runner.temp }}/cc/
+            !${{ runner.temp }}/cc/source-tools/source-tools-*/runtime/**
+            !${{ runner.temp }}/cc/source-tools/source-tools-*/installed/**
           if-no-files-found: warn
           compression-level: 0
           retention-days: 30

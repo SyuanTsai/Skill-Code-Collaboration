@@ -16,9 +16,45 @@
         "write-copilot-implementation-prompt"
       ],
       "excludes": []
+    },
+    {
+      "id": "ai-delivery",
+      "description": "Controller workflow that plans, dispatches, reviews, and gates delivery of a Jira issue with any AI controller and executor.",
+      "default": false,
+      "includes": [
+        "orchestrate-ai-delivery",
+        "write-implementation-prompt"
+      ],
+      "excludes": []
     }
   ],
   "skills": [
+    {
+      "id": "orchestrate-ai-delivery",
+      "group": "code-collaboration",
+      "source": {
+        "sourceId": "code-collaboration",
+        "path": "skills/orchestrate-ai-delivery"
+      },
+      "profiles": [
+        "ai-delivery"
+      ],
+      "compatibility": {
+        "platforms": [
+          "any"
+        ],
+        "shells": [],
+        "requiredCapabilities": [],
+        "anyOfCapabilities": []
+      },
+      "dependencies": [
+        "write-implementation-prompt"
+      ],
+      "lifecycle": {
+        "status": "active",
+        "aliases": []
+      }
+    },
     {
       "id": "write-copilot-implementation-prompt",
       "group": "code-collaboration",
@@ -32,6 +68,30 @@
       "compatibility": {
         "platforms": [
           "windows"
+        ],
+        "shells": [],
+        "requiredCapabilities": [],
+        "anyOfCapabilities": []
+      },
+      "dependencies": [],
+      "lifecycle": {
+        "status": "active",
+        "aliases": []
+      }
+    },
+    {
+      "id": "write-implementation-prompt",
+      "group": "code-collaboration",
+      "source": {
+        "sourceId": "code-collaboration",
+        "path": "skills/write-implementation-prompt"
+      },
+      "profiles": [
+        "ai-delivery"
+      ],
+      "compatibility": {
+        "platforms": [
+          "any"
         ],
         "shells": [],
         "requiredCapabilities": [],

@@ -17,15 +17,39 @@ For source maintenance and review, follow the [central Skill maintenance guideli
 
 | Skill | Profile | Purpose | Capability gate |
 | --- | --- | --- | --- |
-| `write-copilot-implementation-prompt` | `copilot` | Build self-contained GitHub Copilot implementation prompts and select an exact available model. | None |
+| `orchestrate-ai-delivery` | `ai-delivery` | Plan, dispatch, review, and gate delivery of one Jira issue through an AI controller and executor. | External CLI mode needs at least one of the claude, codex, or copilot CLIs installed and logged in |
+| `write-copilot-implementation-prompt` | `copilot` | Compatibility name kept while the protected catalog validator still requires it. New work should use `write-implementation-prompt`. | None |
+| `write-implementation-prompt` | `ai-delivery` | Build self-contained implementation prompts for a delegated executor and select an exact available model. | None |
 
 Bitbucket pull-request review belongs to the separately versioned `Skill-Atlassian-Ecosystem` source so Atlassian credentials and product workflows have one ownership boundary.
+
+## Usage examples
+
+Skills can be triggered by naming the Skill or by making a request that matches its description.
+
+- `orchestrate-ai-delivery`: “Use orchestrate-ai-delivery for SYP-123 in this repository on branch feature/x. Controller: you. Execution mode: external CLI, executor codex.”
+- `write-implementation-prompt`: “Use write-implementation-prompt to write a prompt for codex CLI that adds input validation to the order form.”
+
+The controller never commits, pushes, or writes Jira without the user's consent. Jira issues from a work environment are read-only.
 
 ## Repository layout
 
 ```text
 skills/
+  orchestrate-ai-delivery/
+    SKILL.md
+    agents/openai.yaml
+    references/
+      dispatch.md
+      models.json
+      models.md
+      review.md
+      usage-report.md
+    scripts/Update-ModelAvailability.ps1
   write-copilot-implementation-prompt/
+    SKILL.md
+    agents/openai.yaml
+  write-implementation-prompt/
     SKILL.md
     agents/openai.yaml
 catalog/
@@ -50,6 +74,8 @@ Consumers discover this source through the canonical `catalog/source.json` inven
 Direct paths are stable within a pinned version:
 
 - `skills/write-copilot-implementation-prompt`
+- `skills/write-implementation-prompt`
+- `skills/orchestrate-ai-delivery`
 
 Consumers should resolve a release tag to an immutable commit SHA and persist that SHA plus a reproducible repository content hash. The source-pin metadata helper produces the pin evidence used for that purpose.
 
