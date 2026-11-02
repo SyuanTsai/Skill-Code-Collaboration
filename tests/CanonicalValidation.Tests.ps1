@@ -190,7 +190,9 @@ __TERMINAL_EXIT__
         # Scenario: a Skill change or static Finding requires central semantic review.
         # Purpose: keep Static mode no-LLM and pass the typed requirement to the central consent boundary.
         $script:Validator | Should -Match '\$semanticTriggered = \(\$SemanticRequired -ceq ''true''\) -or \$findings\.Count -gt 0'
-        $script:Validator | Should -Match '\$staticArguments = @\(''scan'', \$skillRoot, ''--no-llm'', ''--format'', ''json'', ''--output'', \$reportPath\)'
+        $script:Validator | Should -Match '\$staticArguments = @\(''scan'', \$skillRoot, ''--no-llm'', ''--format'', ''json''\)'
+        $script:Validator | Should -Not -Match '\$staticArguments = .*--output'
+        $script:Validator | Should -Match '& \(\[string\]\$toolchain\.skillSpectorPath\) @staticArguments 1> \$reportPath 2> \$staticStderrPath'
         $script:Validator | Should -Not -Match '& \(\[string\]\$toolchain\.skillSpectorPath\) scan \$skillRoot --format json --output \$semanticReportPath'
         $script:Validator | Should -Match '\$semanticStatus = ''not-run'''
         $script:Validator | Should -Match 'semanticScan = \[ordered\]@'

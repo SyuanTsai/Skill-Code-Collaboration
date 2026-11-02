@@ -1110,21 +1110,21 @@ try {
                 $skillRoot = Get-SkillRoot -SkillId $skillId
                 $inventory = Get-InventoryPaths -SkillRoot $skillRoot
                 $reportPath = Join-Path (Get-Location) ("skillspector-$skillId.json")
-                $staticArguments = @('scan', $skillRoot, '--no-llm', '--format', 'json', '--output', $reportPath)
+                if (Test-Path -LiteralPath $reportPath) { throw "SkillSpector stdout report path already exists for '$skillId'." }
+                $staticArguments = @('scan', $skillRoot, '--no-llm', '--format', 'json')
                 $staticRawId = [guid]::NewGuid().ToString('N')
-                $staticStdoutPath = Join-Path (Get-Location) "native-raw-skillspector-$staticRawId.stdout.txt"
                 $staticStderrPath = Join-Path (Get-Location) "native-raw-skillspector-$staticRawId.stderr.txt"
-                & ([string]$toolchain.skillSpectorPath) @staticArguments 1> $staticStdoutPath 2> $staticStderrPath
+                & ([string]$toolchain.skillSpectorPath) @staticArguments 1> $reportPath 2> $staticStderrPath
                 $staticExitCode = $LASTEXITCODE
-                $staticStdoutSha256 = Get-FileSha256 -Path $staticStdoutPath
+                $staticStdoutSha256 = Get-FileSha256 -Path $reportPath
                 $staticStderrSha256 = Get-FileSha256 -Path $staticStderrPath
                 if ($staticExitCode -ne 0) { throw "SkillSpector static scan failed for '$skillId' with exit code $staticExitCode." }
                 if ($Mode -ceq 'static') {
                     $script:NativeReports += [ordered]@{
                         skillId = $skillId
                         path = [IO.Path]::GetFullPath($reportPath)
-                        sha256 = Get-FileSha256 -Path $reportPath
-                        stdoutPath = [IO.Path]::GetFullPath($staticStdoutPath)
+                        sha256 = $staticStdoutSha256
+                        stdoutPath = [IO.Path]::GetFullPath($reportPath)
                         stdoutSha256 = $staticStdoutSha256
                         stderrPath = [IO.Path]::GetFullPath($staticStderrPath)
                         stderrSha256 = $staticStderrSha256
