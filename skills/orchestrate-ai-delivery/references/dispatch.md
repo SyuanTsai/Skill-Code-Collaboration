@@ -29,6 +29,9 @@ Only launching and usage collection differ.
 | Non-interactive execution | `codex exec [options] "<prompt>"` |
 | Long prompt on standard input | Use `-` as the prompt argument |
 | Model | `-m <slug>` or `--model <slug>` |
+| Approval policy | `-c approval_policy="never"` for non-interactive write-capable `exec` and `exec resume`; `codex exec` does not accept `-a` or `--ask-for-approval` |
+| Resume | `codex exec resume <thread-id>` with `-m`, `--json`, `-o`, and `-`; set `sandbox_mode` and `approval_policy` with `-c`, and set the shell cwd to `<worktree>` |
+| Review | `codex exec review` with `-m`, `--json`, `-o`, `--uncommitted`, `--base <branch>`, or `--commit <sha>` |
 | Reasoning effort | `-c model_reasoning_effort="<level>"`; levels depend on the model in `references/models.json` |
 | Working root | `-C <dir>` or `--cd <dir>` |
 | Write scope | `--sandbox workspace-write` |
@@ -36,9 +39,15 @@ Only launching and usage collection differ.
 | Read-only execution | `--sandbox read-only` |
 | Machine-readable events | `--json` JSONL |
 | Final message file | `-o <file>` or `--output-last-message <file>` |
-| Do not persist session | `--ephemeral` |
+| Do not persist session | `--ephemeral`; use only for a known one-shot execution that will not need `resume` |
 | List models without a model call | `codex debug models` |
 | Login check | `codex login status` |
+
+The approval and resume details in this section were tested on a Windows host
+with `codex-cli 0.154.0`. The user's Codex configuration may name a model that
+no longer exists; an invocation without `-m` can therefore fail with HTTP 400
+`model_not_found`. Always pass an explicit `-m <slug>`, including when resuming
+or reviewing.
 
 Without a prompt argument, or when standard input is attached, Codex prints
 `Reading additional input from stdin...` and reads standard input. Always supply
@@ -46,26 +55,63 @@ standard-input content or close standard input so it does not wait.
 
 PowerShell 7 implementation example:
 ```powershell
-Get-Content -Raw <prompt-file> | codex exec -C <worktree> --sandbox workspace-write -m <model> -c model_reasoning_effort="<effort>" --json --ephemeral -
+Get-Content -Raw <prompt-file> | codex exec -C <worktree> --sandbox workspace-write -m <model> -c model_reasoning_effort="<effort>" -c approval_policy="never" --json -
 ```
 
 POSIX-shell implementation example:
 ```sh
-codex exec -C <worktree> --sandbox workspace-write -m <model> -c 'model_reasoning_effort="<effort>"' --json --ephemeral - < <prompt-file>
+codex exec -C <worktree> --sandbox workspace-write -m <model> -c 'model_reasoning_effort="<effort>"' -c 'approval_policy="never"' --json - < <prompt-file>
 ```
+
+An implementation that may enter a findings-fix loop must not use
+`--ephemeral` at its initial launch, so its `thread.started` ID remains
+resumable. Reserve `--ephemeral` for confirmed one-shot work such as a
+read-only review. If an implementation was already started with `--ephemeral`,
+start a new session for the fix and provide a short handoff.
+
+Resume uses a thread ID from the `thread.started` event in the initial `--json`
+output. On `codex-cli 0.154.0`, `codex exec resume` accepts `-m`, `--json`,
+`-o`, and `-` for a stdin prompt, but does not accept `-s`/`--sandbox` or
+`-C`/`--cd`. Set the shell's current directory to the Step worktree and set
+the sandbox with `-c sandbox_mode="workspace-write"`:
+
+PowerShell 7 resume example:
+```powershell
+Set-Location <worktree>
+Get-Content -Raw <prompt-file> | codex exec resume <thread-id> -m <model> -c sandbox_mode="workspace-write" -c approval_policy="never" --json -o <output-file> -
+```
+
+POSIX-shell resume example:
+```sh
+cd <worktree>
+codex exec resume <thread-id> -m <model> -c 'sandbox_mode="workspace-write"' -c 'approval_policy="never"' --json -o <output-file> - < <prompt-file>
+```
+
+`codex exec review` is available and, in the same Windows-host test, accepts
+`-m <slug>`, `--json`, `-o <file>`, and the review selectors
+`--uncommitted`, `--base <branch>`, and `--commit <sha>`. `--uncommitted`
+cannot be combined with a custom prompt. For a custom review scope or prompt,
+use `codex exec --sandbox read-only` with the review prompt template instead.
+The `codex debug models` catalog also lists the hidden `codex-auto-review`
+model, but `references/models.json` marks it `excluded`; do not select it.
+Choose an `active`, C3-or-higher reviewer from `references/models.md` and pass
+its slug to `codex exec review -m <slug>`.
 
 Read-only review example:
 ```sh
 codex exec -C <worktree> --sandbox read-only -m <model> -c 'model_reasoning_effort="<effort>"' --json --ephemeral "<review-prompt>"
 ```
 
-`codex review --uncommitted`, `codex review --base <branch>`, and `codex review
---commit <sha>` exist. They have no `--model` flag: use `-c model="<slug>"`.
-Their default sandbox is **Unverified**; prefer `codex exec --sandbox read-only`
-with the review prompt template.
-
 The `turn.completed` event reports `usage.input_tokens`, `cached_input_tokens`,
 `cache_write_input_tokens`, `output_tokens`, and `reasoning_output_tokens`.
+For a background execution, treat `turn.completed` or `turn.failed` in the
+JSONL event stream as the completion signal: `turn.completed` means success,
+while `turn.failed` or a top-level `error` event means failure. If the
+process has ended without any of those events, treat it as an abnormal failure
+and inspect the output. The existence of the `-o` last-message file or whether
+the process is still running is not a completion signal. `turn.completed.usage`
+is the single source of truth for usage. If a review's usage fields are all
+zero, record usage as unavailable rather than as zero.
 Credits and cost are not reported; record them as unavailable. `codex debug models`
 prints a JSON model catalog for free, without calling a model; all listed models are
 OpenAI family.
@@ -184,19 +230,33 @@ the delivery; do not claim support.
    names, absolute paths, machine identifiers, credentials, tokens, or sensitive
    full outputs.
 3. Dispatch only work required for the objective. Record out-of-scope discoveries
-   as follow-up items. Executors never commit or push.
+   as follow-up items. Executors never commit or push. Every model-calling Codex
+   command (`exec`, `exec resume`, or `exec review`) must pass an explicit
+   `-m <slug>`; never rely on the user's configuration file default. Commands
+   such as `codex debug models` that do not call a model are excluded.
 4. Run independent Steps in parallel, each in its own Git worktree on its own
    branch. The default maximum is three concurrent executors. State the reason for
    any different limit. Before launch, check running executors, worktrees, and
    branches so the same Step is never started twice.
-5. Choose models according to `references/models.md`. For every Step state the
+5. For External CLI mode, before launch run one low-cost preflight that verifies
+   the executor can run the Step's required test command in its sandbox. If it
+   cannot execute the required PowerShell or Pester test (for example, because
+   the workspace-write sandbox cannot see a user-installed `pwsh`), say so
+   explicitly in the dispatch prompt: "If you cannot execute the required
+   tests, state that in the completion report; the controller will run them
+   locally." The controller must then run those tests itself. Note that
+   sandbox-created files may be owned by the sandbox account and can cause
+   later Git ownership warnings. For Built-in sub-agent mode, confirm that the
+   sub agent can execute the required test command; if it cannot, use the same
+   prompt instruction and have the controller run the tests.
+6. Choose models according to `references/models.md`. For every Step state the
    exact model identifier, effort, and reason. Escalate only for a concrete
    difficulty; never carry a high-cost model into later Steps by default.
-6. If a model fails at launch because it is unavailable, removed, or rejected,
+7. If a model fails at launch because it is unavailable, removed, or rejected,
    immediately re-run `scripts/Update-ModelAvailability.ps1` with its force option,
    as specified by `references/models.md`. Select again from the refreshed list and
    report the change.
-7. Keep prompts concise. Do not pass whole conversations, unrelated code, or full
+8. Keep prompts concise. Do not pass whole conversations, unrelated code, or full
    test logs. Before resuming a long session, consider a short handoff to a new
    session if cheaper, after confirming no Step is already running twice. Collect all
    findings from one full review round, then dispatch the fixes once with no human
