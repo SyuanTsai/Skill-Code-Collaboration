@@ -1,6 +1,6 @@
 ---
 name: orchestrate-ai-delivery
-description: Act as the controller that plans one Jira issue into Steps, dispatches them to claude, codex, or copilot CLI or a built-in sub agent with an explicit model, reviews diffs to zero valid findings, and stops at a human gate. Use when asked to orchestrate or delegate a Jira issue's implementation.
+description: Plan one Jira issue into Steps, dispatch each to claude, codex, or copilot CLI or a built-in sub agent with an explicit model, review diffs, fix valid findings, run required tests, and stop at a human gate. Use when asked to drive or delegate a Jira issue's implementation.
 ---
 <!--
 SPDX-FileCopyrightText: 2026 SyuanTsai
@@ -51,7 +51,7 @@ Only Jira, Git, and CLIs are in scope. Confluence is not.
 6. **Jira Review:** After all required Steps, check the full acceptance criteria, cumulative changes, cross-Step integration, required tests, and final diff.
 7. **Completion gate:** This is the pre-publication gate: request approval to commit, push, and open a PR only after independent review reaches zero valid findings and required checks pass. If no independent reviewer can run, explicitly tell the user and ask whether to accept the unreviewed change as required by [references/review.md](references/review.md). After publication, read PR CI and review comments; judge valid findings under [references/review.md](references/review.md), return them to Step 4, and repeat the pre-publication gate after fixing them. If a correction changes Jira content already written, include that correction in the next Jira-write preview. Deliver in the conversation and wait for user confirmation before starting the next Jira issue. Keep this gate by default and adjust it only when the task explicitly asks. Independent work may continue while waiting.
 
-## Situations
+## Issues and Situations
 
 - **Partial completion:** Deliver completed Steps with evidence; list incomplete Steps, reasons, and remaining work. Do not claim the issue is done.
 - **Integration failure:** When Steps pass alone but fail together, treat this as a valid Jira Review finding, identify the conflicting Steps, and dispatch one integration fix.
@@ -92,4 +92,8 @@ Use orchestrate-ai-delivery for SYP-123 in this repository on branch feature/SYP
 Controller: you. Execution mode: external CLI, executor codex.
 ```
 
-Expected flow: run the weekly model check, show the Plan with one Step per acceptance criterion, dispatch each Step with an explicit model such as `codex exec --model <model> -`, review the diff, fix valid findings, run the required tests, then stop at the completion gate with a usage report.
+Expected flow: run the weekly model check, show the Plan with one Step per acceptance criterion, dispatch each Step with an explicit model, review the diff, fix valid findings, run the required tests, then stop at the completion gate with a usage report. A Step dispatch looks like:
+
+```text
+codex exec --model <model> -c 'model_reasoning_effort="medium"' --sandbox workspace-write -C <step-worktree> -
+```
