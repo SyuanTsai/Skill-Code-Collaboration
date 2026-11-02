@@ -1,6 +1,6 @@
 ---
 name: orchestrate-ai-delivery
-description: Act as the controller for delivering one Jira issue by planning Steps from its description and acceptance criteria, dispatch them to an external CLI (claude, codex, or copilot) or a built-in sub agent with an explicit model, review diffs independently until zero valid findings, report usage, and stop at a human confirmation gate. Use when the user names a Jira issue plus a repository and branch and asks an AI to orchestrate, delegate, or drive its implementation.
+description: Act as the controller that plans one Jira issue into Steps, dispatches them to claude, codex, or copilot CLI or a built-in sub agent with an explicit model, reviews diffs to zero valid findings, and stops at a human gate. Use when asked to orchestrate or delegate a Jira issue's implementation.
 ---
 <!--
 SPDX-FileCopyrightText: 2026 SyuanTsai
@@ -9,11 +9,13 @@ SPDX-License-Identifier: Apache-2.0
 
 # Orchestrate AI Delivery
 
-## Inputs
+## Setup
+
+### Inputs
 
 Collect the controller AI, Jira issue key, repository and branch, and execution mode (`external CLI` or `built-in sub agent`). If execution mode is missing, ask; never assume it. Ask only for truly missing required information, and do not ask the user to reconfirm routine model choices.
 
-## Environment Boundary
+### Environment Boundary
 
 Determine the environment from the issue-key prefix using the user's local prefix-to-environment mapping. That mapping is user-local configuration and must not be stored in a repository.
 
@@ -23,7 +25,15 @@ Determine the environment from the issue-key prefix using the user's local prefi
 
 Only Jira, Git, and CLIs are in scope. Confluence is not.
 
-## Core Principles
+### Roles
+
+- **Controller:** read Jira, plan, select models, dispatch, review, judge findings, run required tests itself, and stage changes. Never commit or push without user consent.
+- **Executor:** use the selected external CLI or built-in sub agent to implement code and tests within the Step scope. Never commit or push.
+- **Review CLI:** run `claude` and `codex` CLI in fresh read-only sessions as described in [references/review.md](references/review.md).
+
+## Workflow
+
+### Core Principles
 
 - Base the Plan, Steps, and Review on the Jira description and acceptance criteria. Comments and handoffs are supplementary; a comment explicitly marked authoritative overrides the description.
 - Map every change to the objective or an acceptance criterion.
@@ -31,13 +41,7 @@ Only Jira, Git, and CLIs are in scope. Confluence is not.
 - Review and findings occur after implementation.
 - Define pre-publication required checks as Jira-named tests plus affected CI tests reproducible locally, such as licensing or inventory tests for new tracked files. The controller runs them, selects the repository-declared runner version, and confirms every execution ran more than zero tests; remote-only CI belongs to the post-publication loop.
 
-## Roles
-
-- **Controller:** read Jira, plan, select models, dispatch, review, judge findings, run required tests itself, and stage changes. Never commit or push without user consent.
-- **Executor:** use the selected external CLI or built-in sub agent to implement code and tests within the Step scope. Never commit or push.
-- **Review CLI:** run `claude` and `codex` CLI in fresh read-only sessions as described in [references/review.md](references/review.md).
-
-## Workflow
+### Steps
 
 1. **Plan:** Before planning, read repository instructions and CI workflows. Define the Objective, Acceptance Criteria, Scope, required Steps, and verification method; include their mandatory synchronization rules, affected locally reproducible CI checks, and remote workflows, and map every Jira acceptance criterion to a Step. Run independent Steps in parallel, each in its own Git worktree when it touches the repository.
 2. **Dispatch:** Produce every Step prompt with the `write-implementation-prompt` Skill, including objective, allowed files, scope, acceptance criteria, required tests, and completion report. Choose the executor and exact model using [references/models.md](references/models.md), then launch it using [references/dispatch.md](references/dispatch.md).
@@ -65,16 +69,27 @@ Report in the conversation:
 - Follow-up items, Git and stage state, and human review suggestions.
 - Controller, executor, and reviewer usage according to [references/usage-report.md](references/usage-report.md). Mark unavailable values as unavailable; never estimate them.
 
-## Guardrails
+### Guardrails
 
 - Do not use budget fields, spending caps, or budget-based confirmations. Minimize unnecessary consumption instead.
 - Use repository-relative paths only.
 - Never commit automatically.
 - Follow the repository's own instructions.
 
-## References
+### References
 
 - [references/dispatch.md](references/dispatch.md): execution modes, CLI invocation, parallelism, and context control.
 - [references/review.md](references/review.md): review composition, finding policy, and review prompt template.
 - [references/models.md](references/models.md) and [references/models.json](references/models.json): model selection and baseline list; perform the weekly availability check with `scripts/Update-ModelAvailability.ps1`.
 - [references/usage-report.md](references/usage-report.md): usage reporting.
+
+## Example
+
+Request:
+
+```text
+Use orchestrate-ai-delivery for SYP-123 in this repository on branch feature/SYP-123-slug.
+Controller: you. Execution mode: external CLI, executor codex.
+```
+
+Expected flow: run the weekly model check, show the Plan with one Step per acceptance criterion, dispatch each Step with an explicit model such as `codex exec --model <model> -`, review the diff, fix valid findings, run the required tests, then stop at the completion gate with a usage report.
