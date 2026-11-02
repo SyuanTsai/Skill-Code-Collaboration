@@ -10,10 +10,10 @@
   "profiles": [
     {
       "id": "copilot",
-      "description": "Implementation-prompt delegation workflow for any supported executor.",
+      "description": "GitHub Copilot implementation delegation workflow supported on Windows hosts.",
       "default": false,
       "includes": [
-        "write-implementation-prompt"
+        "write-copilot-implementation-prompt"
       ],
       "excludes": []
     },
@@ -56,6 +56,30 @@
       }
     },
     {
+      "id": "write-copilot-implementation-prompt",
+      "group": "code-collaboration",
+      "source": {
+        "sourceId": "code-collaboration",
+        "path": "skills/write-copilot-implementation-prompt"
+      },
+      "profiles": [
+        "copilot"
+      ],
+      "compatibility": {
+        "platforms": [
+          "windows"
+        ],
+        "shells": [],
+        "requiredCapabilities": [],
+        "anyOfCapabilities": []
+      },
+      "dependencies": [],
+      "lifecycle": {
+        "status": "active",
+        "aliases": []
+      }
+    },
+    {
       "id": "write-implementation-prompt",
       "group": "code-collaboration",
       "source": {
@@ -63,7 +87,6 @@
         "path": "skills/write-implementation-prompt"
       },
       "profiles": [
-        "copilot",
         "ai-delivery"
       ],
       "compatibility": {

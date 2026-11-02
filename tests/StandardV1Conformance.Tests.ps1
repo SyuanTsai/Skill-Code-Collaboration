@@ -39,7 +39,7 @@ Describe 'Code Collaboration Standard v1 conformance' {
         $source.sourceId | Should -Be 'code-collaboration'
         $source.repository | Should -Be 'https://github.com/SyuanTsai/Skill-Code-Collaboration.git'
         $source.skillsRoot | Should -Be 'skills'
-        @($source.skills) | Should -Be @('orchestrate-ai-delivery', 'write-implementation-prompt')
+        @($source.skills) | Should -Be @('orchestrate-ai-delivery', 'write-copilot-implementation-prompt', 'write-implementation-prompt')
     }
 
     # Scenario: The Code config is read from the extracted candidate.

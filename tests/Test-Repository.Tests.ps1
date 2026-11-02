@@ -16,7 +16,7 @@ Describe 'Code Collaboration Standard v1 repository contract' {
         & $script:GitPath -C $script:FixtureRoot init --quiet
         & $script:GitPath -C $script:FixtureRoot add -- catalog/source.json config skills
         if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the repository contract fixture.' }
-        $script:SkillId = 'write-implementation-prompt'
+        $script:SkillId = 'write-copilot-implementation-prompt'
         $script:SkillRoot = Join-Path $script:FixtureRoot "skills/$($script:SkillId)"
     }
 
@@ -178,7 +178,7 @@ Describe 'Code Collaboration Standard v1 repository contract' {
     It 'rejects malformed OpenAI metadata lexical style' {
         $metadataPath = Join-Path $script:SkillRoot 'agents/openai.yaml'
         $metadata = Get-Content -LiteralPath $metadataPath -Raw
-        $metadata = $metadata -replace 'display_name: "Write Implementation Prompt"', '"display_name": "Write Implementation Prompt"'
+        $metadata = $metadata -replace 'display_name: "Write Copilot Implementation Prompt"', '"display_name": "Write Copilot Implementation Prompt"'
         Set-Content -LiteralPath $metadataPath -Value $metadata -Encoding utf8NoBOM -NoNewline
         { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*quoted mapping key*'
     }
