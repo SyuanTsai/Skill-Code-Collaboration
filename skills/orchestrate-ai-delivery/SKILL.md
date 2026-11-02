@@ -29,6 +29,7 @@ Only Jira, Git, and CLIs are in scope. Confluence is not.
 - Map every change to the objective or an acceptance criterion.
 - Preserve progress: reviewer suggestions not required by the issue, including hardening, refactoring, style, and extra features, become follow-up items and do not stop delivery.
 - Review and findings occur after implementation.
+- Define pre-publication required checks as Jira-named tests plus affected CI tests reproducible locally, such as licensing or inventory tests for new tracked files. The controller runs them, selects the repository-declared runner version, and confirms every execution ran more than zero tests; remote-only CI belongs to the post-publication loop.
 
 ## Roles
 
@@ -38,13 +39,13 @@ Only Jira, Git, and CLIs are in scope. Confluence is not.
 
 ## Workflow
 
-1. **Plan:** Define the Objective, Acceptance Criteria, Scope, required Steps, and verification method. Run independent Steps in parallel, each in its own Git worktree when it touches the repository.
+1. **Plan:** Before planning, read repository instructions and CI workflows. Define the Objective, Acceptance Criteria, Scope, required Steps, and verification method; include their mandatory synchronization rules, affected locally reproducible CI checks, and remote workflows, and map every Jira acceptance criterion to a Step. Run independent Steps in parallel, each in its own Git worktree when it touches the repository.
 2. **Dispatch:** Produce every Step prompt with the `write-implementation-prompt` Skill, including objective, allowed files, scope, acceptance criteria, required tests, and completion report. Choose the executor and exact model using [references/models.md](references/models.md), then launch it using [references/dispatch.md](references/dispatch.md).
 3. **Step Review:** Have the controller and review CLI both review the implemented Step using [references/review.md](references/review.md).
-4. **Judge findings:** Verify that each finding exists and maps to an acceptance criterion before dispatching a fix. Use the smallest fix; record everything else as a follow-up item.
+4. **Judge findings:** Verify that each finding exists and satisfies a [Valid Findings](references/review.md#valid-findings) condition before dispatching a fix. Use the smallest fix; record everything else as a follow-up item.
 5. **Fix and re-review:** Re-review only the fixed part and related regressions.
 6. **Jira Review:** After all required Steps, check the full acceptance criteria, cumulative changes, cross-Step integration, required tests, and final diff.
-7. **Completion gate:** When valid findings are zero and required tests pass, deliver in the conversation and wait for user confirmation before starting the next Jira issue. Keep this gate by default and adjust it only when the task explicitly asks. Independent work may continue while waiting.
+7. **Completion gate:** This is the pre-publication gate: request approval to commit, push, and open a PR only after independent review reaches zero valid findings and required checks pass. If no independent reviewer can run, explicitly tell the user and ask whether to accept the unreviewed change as required by [references/review.md](references/review.md). After publication, read PR CI and review comments; judge valid findings under [references/review.md](references/review.md), return them to Step 4, and repeat the pre-publication gate after fixing them. If a correction changes Jira content already written, include that correction in the next Jira-write preview. Deliver in the conversation and wait for user confirmation before starting the next Jira issue. Keep this gate by default and adjust it only when the task explicitly asks. Independent work may continue while waiting.
 
 ## Situations
 

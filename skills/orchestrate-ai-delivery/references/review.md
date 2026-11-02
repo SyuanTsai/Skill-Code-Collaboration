@@ -13,7 +13,7 @@ Review every Step after implementation with:
 - The `claude` CLI in a fresh read-only session for an independent view.
 - The `codex` CLI in a fresh read-only session for an independent view.
 
-Use the launch flags documented in [dispatch.md](dispatch.md). A review CLI must not belong to the same model family as the executor's model; self-review is not allowed. Prefer an executor choice that allows the reviewers to cover at least two model families.
+Use the launch flags documented in [dispatch.md](dispatch.md). Before the completion gate, obtain review from at least one independent reviewer, not the controller. A cross-family review CLI must not belong to the executor's model family; self-review is not allowed. Prefer an executor choice that allows the reviewers to cover at least two model families.
 
 Determine family from the model actually used, with the baseline list in [models.json](models.json). Do not infer family solely from a CLI name when it can run models from different families.
 
@@ -31,11 +31,15 @@ If the other CLI is excluded by the family rule, cannot run, or the controller a
 
 The controller still performs its own review.
 
-### No Review CLI Remains
+### No Cross-Family Review CLI Remains
 
-If no review CLI remains, the controller reviews alone and the workflow continues; do not pause. State the actual reviewers and the reason in the delivery. For example: `claude` CLI not logged in; `codex` CLI excluded because the executor used an OpenAI model.
+If no cross-family review CLI remains, use a reviewer from the executor's family in a different fresh, read-only session. Use a review command or another model at C3 or higher; it must not be the executor session. Raise its model capability by one tier according to [models.md](models.md), where possible.
 
-The controller's family and executor's family still count toward family coverage. When the complete review set covers only one family, say so in the delivery; the user decides whether to accept that coverage.
+State the same-family review limitation, its reason, and the actual reviewers in the delivery. The controller still performs its own review.
+
+### No Independent Reviewer Remains
+
+Only when neither a cross-family nor same-family reviewer can run may the controller review alone. At the completion gate, explicitly tell the user that the change was not independently reviewed and let the user decide whether to accept it; do not claim that independent review confirmed zero valid findings. State the actual reviewer, the limitation, and its reason in the delivery.
 
 ## Finding Policy
 
@@ -49,18 +53,23 @@ Fix valid findings to zero. A finding is valid when it shows one of these condit
 - A required test is missing or failing.
 - Cross-Step integration is incorrect.
 - A requirement listed in the Jira description is violated.
+- A path added by the change can bypass, weaken, or forge an existing check, validation, or evidence binding.
+
+### Finding Sources
+
+Apply this policy to findings from review CLIs and, after publication, failed PR CI and automated or human review comments on the PR. Return valid findings to the fix loop and repeat the pre-publication gate after fixing them.
 
 ### Follow-up Items
 
-Record these without stopping progress unless they make an acceptance criterion fail:
+Record these without stopping progress when they do not satisfy a Valid Findings condition:
 
 - Naming or style suggestions.
 - Extra refactoring.
 - Optimization.
-- Hardening or checks not requested by the issue.
+- Hardening that only strengthens existing behavior; without it, the change is no weaker than before.
 - Pre-existing problems unrelated to the change.
 
-Use this tie-breaker: **Would this make an acceptance criterion fail?**
+Use this tie-breaker: **Does this satisfy a Valid Findings condition?**
 
 Collect all findings from one review round before dispatching fixes once. Merge small cleanups into a required fix only when that keeps the fix small and coherent.
 
@@ -73,7 +82,11 @@ At the cumulative Jira Review, verify:
 - Every acceptance criterion against the completed behavior.
 - The cumulative diff, not only each isolated Step diff.
 - Cross-Step integration and interactions.
-- All required tests, run by the controller.
+- All required locally executable checks, run by the controller; remote-only CI remains in the post-publication finding loop.
+- Each mandatory synchronization rule in repository instructions, such as `AGENTS.md`, `CONTRIBUTING`, and CI workflows.
+- Every Jira acceptance criterion maps to a completed change; do not record an acceptance requirement as a follow-up. Follow-ups are only suggestions outside acceptance criteria.
+- Every required test execution ran more than zero tests, and its passed plus skipped count equals its total.
+- Select the test runner and version declared by the repository CI workflow, configuration, or tests. When a failure indicates incompatible runner semantics, verify that version before judging a finding.
 - Scope: no out-of-scope files changed.
 - Git state: no unauthorized commit exists.
 
@@ -98,13 +111,17 @@ Diff or range to review:
 Required tests:
 <REQUIRED_TESTS>
 
-Limit the review to the Step objective and Jira acceptance criteria. Do not
-raise hardening, refactoring, style, optimization, or extra features that the
-issue did not request.
+Valid Findings conditions (replace this placeholder with the complete list from
+the `Valid Findings` section above):
+<VALID_FINDINGS>
 
-For every valid finding, cite the objective or acceptance criterion it breaks,
-the repository-relative file and line, and concrete evidence. If there are no
-valid findings, output exactly: No valid findings
+Limit the review to the Step objective, Jira acceptance criteria, and Valid
+Findings conditions. Do not raise hardening, refactoring, style, optimization,
+or extra features that do not satisfy a Valid Findings condition.
+
+For every valid finding, cite the applicable Valid Findings condition, the
+repository-relative file and line, and concrete evidence. If there are no valid
+findings, output exactly: No valid findings
 
 Do not include local absolute paths or credentials in the output.
 ```
@@ -113,3 +130,5 @@ Do not include local absolute paths or credentials in the output.
 
 In the delivery review summary, record each reviewer and model, every finding,
 the decision (`valid` or `follow-up`), and the reason for that decision.
+When a review CLI reports all-zero or missing usage, record usage as unavailable,
+not as zero.
