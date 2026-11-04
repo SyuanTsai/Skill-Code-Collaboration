@@ -120,9 +120,30 @@ not block other CLIs or dispatch through previously known available models. A ca
 with any stale CLI is retried on the next invocation even when it was written during
 the current Taipei week.
 
-## Maintenance
+## Baseline source and maintenance
 
-Change `models.json` only by pull request and include evidence for ratings, status,
-and aliases. Review cost and capability claims independently of local availability.
-The local cache records observations only; it never adds to, removes from, or
-changes the reviewed baseline.
+The `references/models.json` file on the repository's main branch is the single
+source. `Update-ModelAvailability.ps1` refreshes a local copy once per Taipei week
+from
+`https://raw.githubusercontent.com/SyuanTsai/Skill-Code-Collaboration/main/skills/orchestrate-ai-delivery/references/models.json`.
+It falls back first to the local copy and then to the bundled list, and reports
+which source it used.
+
+Model information comes only from the vendor CLIs on the user's machine because
+company policy can restrict which models are available. GitHub-hosted CI has no
+logged-in CLI, so CI does not discover models; it validates the baseline format
+through the Pester baseline-integrity test.
+
+To update the baseline, run `Update-ModelAvailability.ps1` for each environment,
+then run:
+
+```powershell
+pwsh -File <skill>/scripts/Update-ModelBaseline.ps1 -BaselinePath <repository>/skills/orchestrate-ai-delivery/references/models.json
+```
+
+New IDs are added as `unevaluated`; IDs that no CLI lists in either current
+environment (`personal` and `work`) become `unavailable`. Claude is skipped because
+its CLI does not list models. Rate new entries, include evidence for ratings, status, and aliases, and
+open a pull request. Review cost and capability claims independently of local
+availability. The local cache records observations only; it never adds to,
+removes from, or changes the reviewed baseline.
