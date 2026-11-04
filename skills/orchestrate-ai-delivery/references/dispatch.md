@@ -81,7 +81,8 @@ An implementation that may enter a findings-fix loop must not use
 `--ephemeral` at its initial launch, so its `thread.started` ID remains
 resumable. Reserve `--ephemeral` for confirmed one-shot work such as a
 read-only review. If an implementation was already started with `--ephemeral`,
-start a new session for the fix and provide a short handoff.
+start a new session for the fix and provide a short handoff. Whether to resume
+or start a new session follows the thread strategy in dispatch rule 8.
 
 Resume uses a thread ID from the `thread.started` event in the initial `--json`
 output. On `codex-cli 0.154.0`, `codex exec resume` accepts `-m`, `--json`,
@@ -274,17 +275,59 @@ the delivery; do not claim support.
    sandboxed executor may be unable to read the user-level inventory and the
    hook then fails closed. After it passes, state that result in the prompt and
    instruct the executor not to run the bootstrap again.
-6. Choose models according to `references/models.md`. For every Step state the
-   exact model identifier, effort, and reason. Escalate only for a concrete
-   difficulty; never carry a high-cost model into later Steps by default.
+6. Dispatch only specs, never planning or diagnosis. Before a new Step, the
+   controller writes a file- and function-level spec: what to change and where,
+   the intended behavior, the tests to add or update, and acceptance. Before a fix,
+   the controller reads the logs and code and locates the root cause itself; the
+   fix prompt names the file and the change, plus a regression test when one
+   applies or otherwise the validation command or inspection that proves the fix. A sub agent may
+   help search a large scope, but the controller makes the decision. Then classify
+   the work with the work-type tiers in `references/models.md` and state the exact
+   model identifier, effort, and reason. Classify every fix round again; never
+   carry a high-cost model into later Steps or rounds by default.
 7. If a model fails at launch because it is unavailable, removed, or rejected,
    immediately re-run `scripts/Update-ModelAvailability.ps1` with its force option,
    as specified by `references/models.md`. Select again from the refreshed list and
    report the change.
 8. Keep prompts concise. Do not pass whole conversations, unrelated code, or full
-   test logs. Before resuming a long session, consider a short handoff to a new
-   session if cheaper, after confirming no Step is already running twice. Collect all
-   findings from one full review round, then dispatch the fixes once with no human
-   gate between review and fix; the human gate is the completion gate. Merge small
-   cleanups into required fixes; the controller reads logs, collects usage, and views
-   diffs itself.
+   test logs. Thread strategy: every resume re-reads the whole session history, so
+   a cheaper model saves little on a long thread. Dispatch a located or mechanical
+   fix to a new session whose prompt carries the needed context. Do not resume a
+   session whose last cumulative input tokens exceed 5,000,000; hand off to a new
+   session instead. Confirm no Step is already running twice before either. Collect
+   all findings from one full review round, then dispatch the fixes once with no
+   human gate between review and fix; the human gate is the completion gate. Merge
+   small cleanups into required fixes; the controller reads logs, collects usage,
+   and views diffs itself.
+9. Record every dispatch, fix round, and review as one line in the controller's
+   status record, in the form
+   `<cli>-<model>-<task> | effort <effort> | <reason>`, for example
+   `codex-gpt-5.6-terra-S2-fix1 | effort medium | located root cause, one-line change`.
+   Use the same `<cli>-<model>-<task>` text as the name of any background task and
+   its output files, so the usage report can map each run back to its choice.
+
+## Example: diagnose, then dispatch a precise fix
+
+A Step's required tests pass on Windows PowerShell 5.1 but fail on PowerShell 7
+with a wrong segment count from a path-splitting helper.
+
+Not this: resume the implementation thread with the failure log and "find the root
+cause and fix it" on a C4 model.
+
+Instead, the controller reads the failing assertion and the helper, sees that the
+helper relies on the 5.1 behavior of `-split '/', -1`, which PowerShell 7 treats
+differently, and writes the fix spec:
+
+```text
+Objective: make <helper> return the same segments on PowerShell 5.1 and 7.
+Change: in <file>, replace the `-split '/', -1` call in <function> with
+  <exact replacement>; change nothing else.
+Test: add a case to <test-file> asserting the segments for 'a/b/' on both editions.
+Acceptance: <required test command> passes; no other file changes.
+```
+
+Classification: fix with a located root cause, so C2 or C3 `medium`; dispatch it to
+a new session (record line
+`codex-gpt-5.6-terra-S3-fix1 | effort medium | root cause located by controller`).
+If two consecutive fix rounds of this Step had used C4, the self-check in
+`references/models.md` would require re-examining the spec first.

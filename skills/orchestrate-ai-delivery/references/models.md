@@ -53,6 +53,34 @@ that value.
 Reviewers default to C3 or higher. In the limited situation where only one review
 CLI is available, raise that reviewer by one capability tier.
 
+## Work-type tiers
+
+Planning, design trade-offs, and root-cause diagnosis belong to the controller and
+are never dispatched. Before every dispatch, including each fix round, classify the
+work and select from this table; when rows overlap, selection rule 1 applies and the
+lowest capable row wins. The Codex column shows the current baseline IDs;
+for another CLI, pick the cheapest `active` model of the same capability.
+
+| Work type | Capability and effort | Codex example |
+| --- | --- | --- |
+| Implement a new Step from a precise controller spec, including normative changes | C3, `medium` | `gpt-5.6-sol` `medium` |
+| Precise spec, but the implementation itself is hard, such as native interop or race handling | C4, or C3 `high` | `gpt-6-astra`, or `gpt-5.6-sol` `high` |
+| Fix whose root cause the controller has located | C3 `medium`, or C2 | `gpt-5.6-sol` `medium`, or `gpt-5.6-terra` |
+| Mechanical work, either a new Step or a fix, such as a rename, formatting, small test addition, test-syntax fix, revert, or hash update | C2 or C1 | `gpt-5.6-terra` or `gpt-5.6-luna` |
+| Independent review | C3 `high`; C3 `medium` for a small diff | `gpt-5.6-sol` `high`, or `medium` |
+
+For implementation and fix dispatches, use C4 only when the work, including a fix
+round, matches the hard-implementation row. Required reviewer escalation in the
+limited situations of [review.md](review.md) is separate and may raise a reviewer
+to C4. An open-ended task such as "find the
+root cause and fix it" is a sign that the controller has not finished planning or
+diagnosis; complete that work instead of escalating the model.
+
+**Self-check:** when two consecutive fix rounds of the same Step used C4, stop and
+re-examine the spec. List every root cause the controller can locate from logs and
+code, turn the fix into a precise spec, and classify it again before the next
+dispatch.
+
 ## Weekly availability check
 
 Run `scripts/Update-ModelAvailability.ps1` when a cache is missing or before the

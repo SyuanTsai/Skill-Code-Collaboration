@@ -27,8 +27,8 @@ Only Jira, Git, and CLIs are in scope. Confluence is not.
 
 ### Roles
 
-- **Controller:** read Jira, plan, select models, dispatch, review, judge findings, run required tests itself, and stage changes. Never commit or push without user consent.
-- **Executor:** use the selected external CLI or built-in sub agent to implement code and tests within the Step scope. Never commit or push.
+- **Controller:** read Jira, plan, make design trade-offs, write Step specs, diagnose failures and findings, select models, dispatch, review, judge findings, run required tests itself, and stage changes. Never commit or push without user consent.
+- **Executor:** use the selected external CLI or built-in sub agent to implement code and tests from the controller's spec within the Step scope. Never use an executor for planning or root-cause diagnosis. Never commit or push.
 - **Review CLI:** run `claude` and `codex` CLI in fresh read-only sessions as described in [references/review.md](references/review.md).
 
 ## Workflow
@@ -43,11 +43,11 @@ Only Jira, Git, and CLIs are in scope. Confluence is not.
 
 ### Steps
 
-1. **Plan:** Before planning, read repository instructions and CI workflows. Define the Objective, Acceptance Criteria, Scope, required Steps, and verification method; include their mandatory synchronization rules, affected locally reproducible CI checks, and remote workflows, and map every Jira acceptance criterion to a Step. Choose each Step's executor and the review CLIs, each with an exact model and effort, using [references/models.md](references/models.md) and show them in the Plan. Run independent Steps in parallel, each in its own Git worktree when it touches the repository.
-2. **Dispatch:** Produce every Step prompt with the `write-implementation-prompt` Skill, including objective, allowed files, scope, acceptance criteria, required tests, and completion report. Launch it with the executor and model chosen in the Plan using [references/dispatch.md](references/dispatch.md).
+1. **Plan:** Before planning, read repository instructions and CI workflows. Define the Objective, Acceptance Criteria, Scope, required Steps, and verification method; include their mandatory synchronization rules, affected locally reproducible CI checks, and remote workflows, and map every Jira acceptance criterion to a Step. Write each Step as a file- and function-level spec: change locations, behavior, test list, and acceptance. Classify each Step with the work-type tiers in [references/models.md](references/models.md), then choose its executor and the review CLIs, each with an exact model, effort, and reason, and show them in the Plan. Run independent Steps in parallel, each in its own Git worktree when it touches the repository.
+2. **Dispatch:** Produce every Step prompt with the `write-implementation-prompt` Skill, passing it the executor, model, effort, and reason fixed in the Plan, including objective, allowed files, scope, acceptance criteria, required tests, and completion report. Launch it with the executor and model chosen in the Plan using [references/dispatch.md](references/dispatch.md), and record the dispatch line it specifies.
 3. **Step Review:** Have the controller and review CLI both review the implemented Step using [references/review.md](references/review.md).
-4. **Judge findings:** Verify that each finding exists and satisfies a [Valid Findings](references/review.md#valid-findings) condition before dispatching a fix. Use the smallest fix; record everything else as a follow-up item.
-5. **Fix and re-review:** Re-review only the fixed part and related regressions.
+4. **Judge and diagnose findings:** Verify that each finding exists and satisfies a [Valid Findings](references/review.md#valid-findings) condition. For each valid finding or test failure, locate the root cause yourself from logs and code and write the smallest exact fix; record everything else as a follow-up item.
+5. **Fix and re-review:** Classify the fix again with the work-type tiers, dispatch it to a new session under the thread strategy in [references/dispatch.md](references/dispatch.md), then re-review only the fixed part and related regressions.
 6. **Jira Review:** After all required Steps, check the full acceptance criteria, cumulative changes, cross-Step integration, required tests, and final diff.
 7. **Completion gate:** This is the pre-publication gate: request approval to commit, push, and open a PR only after independent review reaches zero valid findings and required checks pass. If no independent reviewer can run, explicitly tell the user and ask whether to accept the unreviewed change as required by [references/review.md](references/review.md). After publication, read PR CI and review comments; judge valid findings under [references/review.md](references/review.md), return them to Step 4, and repeat the pre-publication gate after fixing them. If a correction changes Jira content already written, include that correction in the next Jira-write preview. Deliver in the conversation and wait for user confirmation before starting the next Jira issue. Keep this gate by default and adjust it only when the task explicitly asks. Independent work may continue while waiting.
 
@@ -78,9 +78,9 @@ Report in the conversation:
 
 ### References
 
-- [references/dispatch.md](references/dispatch.md): execution modes, CLI invocation, parallelism, and context control.
+- [references/dispatch.md](references/dispatch.md): execution modes, CLI invocation, spec-only dispatch, parallelism, thread strategy, and the dispatch record.
 - [references/review.md](references/review.md): review composition, finding policy, and review prompt template.
-- [references/models.md](references/models.md) and [references/models.json](references/models.json): model selection and baseline list; perform the weekly availability check with `scripts/Update-ModelAvailability.ps1`.
+- [references/models.md](references/models.md) and [references/models.json](references/models.json): model selection, work-type tiers, and baseline list; perform the weekly availability check with `scripts/Update-ModelAvailability.ps1`.
 - [references/usage-report.md](references/usage-report.md): usage reporting.
 
 ## Example

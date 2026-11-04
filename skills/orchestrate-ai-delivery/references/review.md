@@ -73,6 +73,8 @@ Use this tie-breaker: **Does this satisfy a Valid Findings condition?**
 
 Collect all findings from one review round before dispatching fixes once. Merge small cleanups into a required fix only when that keeps the fix small and coherent.
 
+Before dispatching a fix, the controller confirms each valid finding against the code, locates its root cause, and writes the exact change into the fix prompt, with a regression test when one applies or otherwise the validation command or inspection that proves the fix. Never forward a finding or failure log to an executor with an open-ended request to diagnose it. Select the fix model with the work-type tiers in [models.md](models.md).
+
 Re-review the fixed part and related regressions. Treat new suggestions about unchanged code as follow-up items when they do not affect acceptance criteria.
 
 ## Jira Review Checklist
