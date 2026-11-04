@@ -5,7 +5,6 @@
   "skillsRoot": "skills",
   "skills": [
     "orchestrate-ai-delivery",
-    "write-copilot-implementation-prompt",
     "write-implementation-prompt"
   ]
 }

@@ -18,7 +18,6 @@ For source maintenance and review, follow the [central Skill maintenance guideli
 | Skill | Profile | Purpose | Capability gate |
 | --- | --- | --- | --- |
 | `orchestrate-ai-delivery` | `ai-delivery` | Plan, dispatch, review, and gate delivery of one Jira issue through an AI controller and executor. | External CLI mode needs at least one of the claude, codex, or copilot CLIs installed and logged in |
-| `write-copilot-implementation-prompt` | `copilot` | Compatibility name kept while the protected catalog validator still requires it. New work should use `write-implementation-prompt`. | None |
 | `write-implementation-prompt` | `ai-delivery` | Build self-contained implementation prompts for a delegated executor and select an exact available model. | None |
 
 Bitbucket pull-request review belongs to the separately versioned `Skill-Atlassian-Ecosystem` source so Atlassian credentials and product workflows have one ownership boundary.
@@ -47,9 +46,6 @@ skills/
       usage-report.md
     scripts/Update-ModelAvailability.ps1
     scripts/Update-ModelBaseline.ps1
-  write-copilot-implementation-prompt/
-    SKILL.md
-    agents/openai.yaml
   write-implementation-prompt/
     SKILL.md
     agents/openai.yaml
@@ -70,11 +66,10 @@ VERSION
 
 ## Discovery and selection
 
-Consumers discover this source through the canonical `catalog/source.json` inventory. The domain-specific `catalog/profiles.json` retains the opt-in `copilot` profile and selection metadata.
+Consumers discover this source through the canonical `catalog/source.json` inventory. The domain-specific `catalog/profiles.json` holds the opt-in `ai-delivery` profile and selection metadata. The former `write-copilot-implementation-prompt` Skill and its `copilot` profile were removed; select `write-implementation-prompt` through `ai-delivery` instead.
 
 Direct paths are stable within a pinned version:
 
-- `skills/write-copilot-implementation-prompt`
 - `skills/write-implementation-prompt`
 - `skills/orchestrate-ai-delivery`
 
