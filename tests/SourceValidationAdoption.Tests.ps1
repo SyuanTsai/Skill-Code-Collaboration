@@ -2458,6 +2458,35 @@ function Assert-AuthorityConfig { param([Parameter(Mandatory)] $Config) }
         }
     }
 
+    # Scenario: a candidate updates the catalog validator together with a catalog change.
+    # Purpose: admit the changed candidate bytes while still binding execution to the protected base copy.
+    It 'UnitT48b_admits_a_changed_catalog_validator_but_executes_the_base_copy' {
+        Import-Module -Name $script:DriverPath -Force
+        $fixture = New-GeneralWrapperFixture -Root (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))
+        $manifest = Get-Content -LiteralPath $fixture.manifestPath -Raw | ConvertFrom-Json -Depth 40
+        $target = 'tests/validate-catalog.ps1'
+        $basePath = Join-Path $script:RepositoryRoot ($target -replace '/', [IO.Path]::DirectorySeparatorChar)
+        $baseHash = Get-SourceBindingFixtureHash -Path $basePath
+        $candidatePath = Join-Path $fixture.candidateRoot ($target -replace '/', [IO.Path]::DirectorySeparatorChar)
+        [IO.File]::AppendAllText($candidatePath, "`n# candidate catalog validator change`n", [Text.UTF8Encoding]::new($false))
+        $candidateHash = Get-SourceBindingFixtureHash -Path $candidatePath
+        $candidateHash | Should -Not -Be $baseHash
+        $updatedEntries = @($manifest.entries | ForEach-Object {
+            if ([string]$_.path -ceq $target) { [pscustomobject]@{ path = $_.path; mode = $_.mode; sha256 = $candidateHash } }
+            else { $_ }
+        })
+
+        $accepted = @(Assert-CodeSourceProtectedDispatchFiles -ProtectedBaseRoot $script:RepositoryRoot `
+            -CandidateRoot $fixture.candidateRoot -ManifestEntries $updatedEntries)
+        $accepted.Count | Should -Be 5
+        $binding = @($accepted | Where-Object { [string]$_.path -ceq $target })[0]
+        $binding.sha256 | Should -BeExactly $baseHash
+        $binding.protectedPath | Should -BeExactly ([IO.Path]::GetFullPath($basePath))
+
+        { Assert-CodeSourceProtectedDispatchFiles -ProtectedBaseRoot $script:RepositoryRoot `
+            -CandidateRoot $fixture.candidateRoot -ManifestEntries $manifest.entries } | Should -Throw '*does not match its manifest entry*'
+    }
+
     # Given: original setup stage maps and one frozen source input, with acquisition already complete.
     # When: the extracted production setup receipt span runs through its real create-only JSON writer.
     # Then: the completion receipt has independent late timings while the early receipt bytes and frozen hash remain unchanged.

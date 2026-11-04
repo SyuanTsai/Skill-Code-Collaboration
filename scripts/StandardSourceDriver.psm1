@@ -269,6 +269,11 @@ function Assert-CodeSourceProtectedDispatchFiles {
         'scripts/Test-Repository.ps1',
         'tests/validate-catalog.ps1'
     )
+    # The catalog validator encodes repository data (Skill and profile IDs), so a catalog
+    # change must be able to update it. Its candidate bytes may differ from the base, but
+    # every run still executes the protected base copy; a change therefore takes effect
+    # only after it is merged, and a pull request cannot weaken the check applied to itself.
+    $candidateMayDifferPaths = @('tests/validate-catalog.ps1')
     $entries = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
     foreach ($entry in $ManifestEntries) {
         $relative = [string]$entry.path
@@ -294,7 +299,12 @@ function Assert-CodeSourceProtectedDispatchFiles {
         }
         $baseHash = (Get-FileHash -LiteralPath $basePath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
         $candidateHash = (Get-FileHash -LiteralPath $candidatePath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
-        if ($baseHash -cne $candidateHash -or [string]$entries[$relative].sha256 -cne $baseHash -or [string]$entries[$relative].mode -cne '100644') {
+        if ($candidateMayDifferPaths -ccontains $relative) {
+            if ([string]$entries[$relative].sha256 -cne $candidateHash -or [string]$entries[$relative].mode -cne '100644') {
+                throw "Candidate protected dispatch file does not match its manifest entry: $relative"
+            }
+        }
+        elseif ($baseHash -cne $candidateHash -or [string]$entries[$relative].sha256 -cne $baseHash -or [string]$entries[$relative].mode -cne '100644') {
             throw "Candidate protected dispatch file differs from the trusted driver bytes: $relative"
         }
         $result.Add([pscustomobject]@{ path = $relative; sha256 = $baseHash; protectedPath = [IO.Path]::GetFullPath($basePath) })
