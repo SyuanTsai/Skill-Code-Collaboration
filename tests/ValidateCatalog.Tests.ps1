@@ -4,7 +4,7 @@ Describe 'Code Collaboration profile catalog contract' {
     BeforeAll {
         $script:RepositoryRoot = Split-Path -Parent $PSScriptRoot
         $script:CatalogValidatorPath = Join-Path $script:RepositoryRoot 'tests/validate-catalog.ps1'
-        $script:SourceSkillId = 'write-copilot-implementation-prompt'
+        $script:SourceSkillId = 'write-implementation-prompt'
         $script:AddSafeCatalogSkillFixture = {
         param([Parameter(Mandatory = $true)][string] $Root)
 
@@ -95,7 +95,7 @@ Describe 'Code Collaboration profile catalog contract' {
         # Purpose: keep stable Skill ID, source path, and filesystem identity exact.
         $catalogPath = Join-Path $script:FixtureRoot 'catalog/profiles.json'
         $catalog = Get-Content -LiteralPath $catalogPath -Raw | ConvertFrom-Json
-        $catalog.skills[0].source.path = 'skills/Write-Copilot-Implementation-Prompt'
+        $catalog.skills[0].source.path = 'skills/Orchestrate-AI-Delivery'
         $catalog | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $catalogPath -Encoding utf8NoBOM
         { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot -OutputPath (Join-Path $script:FixtureRoot ("artifacts/{0}.json" -f [guid]::NewGuid().ToString('N'))) } | Should -Throw '*source path*'
     }

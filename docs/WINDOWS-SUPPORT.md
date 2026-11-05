@@ -10,6 +10,8 @@ All four GitHub Actions jobs run on windows-latest. The canonical Standard v1 va
 
 ## Per-Skill support matrix
 
+This section and the inventory audit below are a historical record of the former `write-copilot-implementation-prompt` Skill. It was later generalized as `write-implementation-prompt`, and the old name, its `copilot` profile, and its folder were removed (SYP-241).
+
 The original values below were audited at the public pre-change foundation commit 53e5d340ba26ba4e5f0195a6466597d1560f0429 (tree b8f8abd838ba47e096f2a8c0689ff976596b9436).
 
 | Skill | Original platform and content | Final host scope | Change and preservation reason | Evidence |
