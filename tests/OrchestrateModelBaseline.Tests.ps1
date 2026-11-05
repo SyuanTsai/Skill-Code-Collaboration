@@ -71,8 +71,33 @@ Context 'Input safety' {
 
     # Scenario: the target is the installed Skill baseline. Purpose: prohibit runtime mutation of managed Skill files.
     It 'UnitT20_rejects a baseline inside the Skill directory' {
+        Mock Test-ModelBaselineRepositoryCheckout { $false }
         { Invoke-ModelBaselineUpdate -BaselinePath $script:RealBaselinePath -CacheDirectory $TestDrive -DryRun } |
             Should -Throw 'The baseline must be edited in a repository working copy, not in the installed Skill directory.'
+    }
+
+    # Scenario: a maintainer runs the script from a repository checkout against that checkout's baseline.
+    # Purpose: allow the documented maintenance flow; the guard only blocks installed Skill directories.
+    It 'UnitT21_allows the baseline of the repository checkout that contains the script' {
+        # The canonical test run uses a snapshot without .git, so the checkout shape is built in TestDrive.
+        $checkoutSkill = Join-Path $TestDrive 'checkout/skills/orchestrate-ai-delivery'
+        $null = New-Item -ItemType Directory -Path $checkoutSkill -Force
+        $null = New-Item -ItemType Directory -Path (Join-Path $TestDrive 'checkout/catalog') -Force
+        Set-Content -LiteralPath (Join-Path $TestDrive 'checkout/catalog/source.json') -Value '{}'
+        Set-Content -LiteralPath (Join-Path $TestDrive 'checkout/.git') -Value 'gitdir: elsewhere'
+        Test-ModelBaselineRepositoryCheckout -SkillDirectory $checkoutSkill | Should -BeTrue
+
+        Mock Test-ModelBaselineRepositoryCheckout { $true }
+        { Invoke-ModelBaselineUpdate -BaselinePath $script:RealBaselinePath -CacheDirectory (Join-Path $TestDrive 'empty-repo') -DryRun } |
+            Should -Throw 'No availability cache found; run Update-ModelAvailability.ps1 first.'
+    }
+
+    # Scenario: an installed Skill directory has no repository catalog or Git metadata around it.
+    # Purpose: keep rejecting installed copies.
+    It 'UnitT22_does not treat an installed Skill directory as a repository checkout' {
+        $installed = Join-Path $TestDrive 'home/.agents/skills/orchestrate-ai-delivery'
+        $null = New-Item -ItemType Directory -Path $installed -Force
+        Test-ModelBaselineRepositoryCheckout -SkillDirectory $installed | Should -BeFalse
     }
 }
 

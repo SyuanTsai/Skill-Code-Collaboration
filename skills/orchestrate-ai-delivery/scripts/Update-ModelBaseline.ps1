@@ -71,6 +71,24 @@ function Write-ModelBaselineFile {
     }
 }
 
+function Test-ModelBaselineRepositoryCheckout {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$SkillDirectory
+    )
+
+    # A repository checkout keeps the Skill at <root>/skills/<id> next to catalog/source.json and Git metadata;
+    # an installed Skill directory has neither.
+    $skillsDirectory = Split-Path -Parent $SkillDirectory
+    if ((Split-Path -Leaf $skillsDirectory) -cne 'skills') { return $false }
+    $repositoryRoot = Split-Path -Parent $skillsDirectory
+    return (
+        (Test-Path -LiteralPath (Join-Path $repositoryRoot '.git')) -and
+        (Test-Path -LiteralPath (Join-Path $repositoryRoot 'catalog/source.json') -PathType Leaf)
+    )
+}
+
 function Invoke-ModelBaselineUpdate {
     [CmdletBinding()]
     param(
@@ -92,7 +110,8 @@ function Invoke-ModelBaselineUpdate {
     )
     $comparison = if ($IsWindows) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
     $skillPrefix = $resolvedSkill + [System.IO.Path]::DirectorySeparatorChar
-    if ($resolvedBaselinePath.Equals($resolvedSkill, $comparison) -or $resolvedBaselinePath.StartsWith($skillPrefix, $comparison)) {
+    $targetsSkill = $resolvedBaselinePath.Equals($resolvedSkill, $comparison) -or $resolvedBaselinePath.StartsWith($skillPrefix, $comparison)
+    if ($targetsSkill -and -not (Test-ModelBaselineRepositoryCheckout -SkillDirectory $resolvedSkill)) {
         throw 'The baseline must be edited in a repository working copy, not in the installed Skill directory.'
     }
 
