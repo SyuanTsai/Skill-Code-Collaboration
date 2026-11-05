@@ -22,6 +22,25 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Test-TextContainsAny {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$Text,
+
+        [Parameter(Mandatory)]
+        [string[]]$Fragments
+    )
+
+    # Case-insensitive substring checks; plain fragments keep the static analyzer from parsing regex alternations.
+    if ([string]::IsNullOrEmpty($Text)) { return $false }
+    foreach ($fragment in $Fragments) {
+        if ($Text.IndexOf($fragment, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+    }
+    return $false
+}
+
 function Get-CodexAvailableModels {
     [CmdletBinding()]
     param()
@@ -112,7 +131,7 @@ function Test-CopilotCandidate {
                     $stdoutClosed = $true
                 }
                 else {
-                    if ($line -match 'user\.message|assistant\.turn_start') {
+                    if (Test-TextContainsAny -Text $line -Fragments @('user.message', 'assistant.turn_start')) {
                         Stop-CopilotProbeProcess -Process $process
                         return $true
                     }
@@ -381,13 +400,13 @@ function Get-SafeProbeFailureReason {
     )
 
     $message = $ErrorRecord.Exception.Message
-    if ($message -match 'timed out|timeout') {
+    if (Test-TextContainsAny -Text $message -Fragments @('timed out', 'timeout')) {
         return 'timeout'
     }
-    if ($message -match 'network|offline|connect|name resolution|temporarily unavailable') {
+    if (Test-TextContainsAny -Text $message -Fragments @('network', 'offline', 'connect', 'name resolution', 'temporarily unavailable')) {
         return 'network error'
     }
-    if ($message -match 'unexpected output|parse|JSON') {
+    if (Test-TextContainsAny -Text $message -Fragments @('unexpected output', 'parse', 'JSON')) {
         return 'unexpected output'
     }
     return 'probe failed'
