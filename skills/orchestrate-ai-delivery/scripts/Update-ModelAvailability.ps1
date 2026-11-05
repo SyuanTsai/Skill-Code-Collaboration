@@ -22,6 +22,25 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Test-TextContainsAny {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$Text,
+
+        [Parameter(Mandatory)]
+        [string[]]$Fragments
+    )
+
+    # Case-insensitive substring checks; plain fragments keep the static analyzer from parsing regex alternations.
+    if ([string]::IsNullOrEmpty($Text)) { return $false }
+    foreach ($fragment in $Fragments) {
+        if ($Text.IndexOf($fragment, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+    }
+    return $false
+}
+
 function Get-CodexAvailableModels {
     [CmdletBinding()]
     param()
@@ -112,7 +131,7 @@ function Test-CopilotCandidate {
                     $stdoutClosed = $true
                 }
                 else {
-                    if ($line -match 'user\.message|assistant\.turn_start') {
+                    if (Test-TextContainsAny -Text $line -Fragments @('user.message', 'assistant.turn_start')) {
                         Stop-CopilotProbeProcess -Process $process
                         return $true
                     }
@@ -353,6 +372,26 @@ function Get-TaipeiWeekStartUtc {
     return $monday.ToUniversalTime()
 }
 
+function ConvertTo-ModelDateTimeOffset {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object]$Value
+    )
+
+    if ($Value -is [DateTimeOffset]) {
+        return $Value
+    }
+    if ($Value -is [DateTime]) {
+        return [DateTimeOffset]::new($Value)
+    }
+    return [DateTimeOffset]::Parse(
+        [string]$Value,
+        [System.Globalization.CultureInfo]::InvariantCulture,
+        [System.Globalization.DateTimeStyles]::RoundtripKind
+    )
+}
+
 function Get-SafeProbeFailureReason {
     [CmdletBinding()]
     param(
@@ -361,13 +400,13 @@ function Get-SafeProbeFailureReason {
     )
 
     $message = $ErrorRecord.Exception.Message
-    if ($message -match 'timed out|timeout') {
+    if (Test-TextContainsAny -Text $message -Fragments @('timed out', 'timeout')) {
         return 'timeout'
     }
-    if ($message -match 'network|offline|connect|name resolution|temporarily unavailable') {
+    if (Test-TextContainsAny -Text $message -Fragments @('network', 'offline', 'connect', 'name resolution', 'temporarily unavailable')) {
         return 'network error'
     }
-    if ($message -match 'unexpected output|parse|JSON') {
+    if (Test-TextContainsAny -Text $message -Fragments @('unexpected output', 'parse', 'JSON')) {
         return 'unexpected output'
     }
     return 'probe failed'
@@ -431,6 +470,211 @@ function Write-ModelAvailabilityCache {
     }
 }
 
+function Test-ModelBaselinePayload {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowNull()]
+        [object]$Value
+    )
+
+    $integerTypes = @([byte], [sbyte], [int16], [uint16], [int32], [uint32], [int64], [uint64])
+    if ($null -eq $Value) {
+        return $false
+    }
+    $schemaVersionProperty = $Value.PSObject.Properties['schemaVersion']
+    if (
+        $null -eq $schemaVersionProperty -or
+        $null -eq $schemaVersionProperty.Value -or
+        $schemaVersionProperty.Value.GetType() -notin $integerTypes -or
+        $schemaVersionProperty.Value -ne 1
+    ) {
+        return $false
+    }
+    if ($null -eq $Value.PSObject.Properties['models'] -or $Value.models -isnot [array] -or $Value.models.Count -eq 0) {
+        return $false
+    }
+
+    $allowedClis = @('claude', 'codex', 'copilot')
+    $allowedStatuses = @('active', 'unevaluated', 'excluded', 'unavailable')
+    $allowedEvidence = @('official', 'measured', 'inferred')
+    $modelKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+
+    foreach ($entry in $Value.models) {
+        foreach ($field in @('cli', 'id', 'family')) {
+            $property = $entry.PSObject.Properties[$field]
+            if ($null -eq $property -or $property.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($property.Value)) {
+                return $false
+            }
+        }
+        $notesProperty = $entry.PSObject.Properties['notes']
+        if ($null -eq $notesProperty -or $notesProperty.Value -isnot [string]) {
+            return $false
+        }
+        foreach ($field in @('status', 'evidence')) {
+            $property = $entry.PSObject.Properties[$field]
+            if ($null -eq $property -or $property.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($property.Value)) {
+                return $false
+            }
+        }
+        if ($entry.cli -cnotin $allowedClis -or $entry.status -cnotin $allowedStatuses -or $entry.evidence -cnotin $allowedEvidence) {
+            return $false
+        }
+
+        $capabilityProperty = $entry.PSObject.Properties['capability']
+        $costProperty = $entry.PSObject.Properties['cost']
+        if ($null -eq $capabilityProperty -or $null -eq $costProperty) {
+            return $false
+        }
+        $capability = $capabilityProperty.Value
+        $cost = $costProperty.Value
+        $capabilityIsRating = $null -ne $capability -and $capability.GetType() -in $integerTypes -and $capability -ge 1 -and $capability -le 4
+        $costIsRating = $null -ne $cost -and $cost.GetType() -in $integerTypes -and $cost -ge 1 -and $cost -le 4
+        if ($entry.status -eq 'active' -and (-not $capabilityIsRating -or -not $costIsRating)) {
+            return $false
+        }
+        if ($entry.status -in @('unevaluated', 'excluded') -and ($null -ne $capability -or $null -ne $cost)) {
+            return $false
+        }
+        if ($entry.status -eq 'unavailable' -and (
+                ($null -ne $capability -and -not $capabilityIsRating) -or
+                ($null -ne $cost -and -not $costIsRating)
+            )) {
+            return $false
+        }
+
+        if (-not $modelKeys.Add(('{0}`0{1}' -f $entry.cli, $entry.id))) {
+            return $false
+        }
+    }
+
+    $effortsProperty = $Value.PSObject.Properties['efforts']
+    if ($null -eq $effortsProperty -or $null -eq $effortsProperty.Value) {
+        return $false
+    }
+    foreach ($cliName in $allowedClis) {
+        $effortProperty = $Value.efforts.PSObject.Properties[$cliName]
+        if ($null -eq $effortProperty -or $effortProperty.Value -isnot [array] -or $effortProperty.Value.Count -eq 0) {
+            return $false
+        }
+        foreach ($effort in $effortProperty.Value) {
+            if ($effort -isnot [string] -or [string]::IsNullOrWhiteSpace($effort)) {
+                return $false
+            }
+        }
+    }
+    return $true
+}
+
+function Get-ModelBaselineIdentity {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$Baseline
+    )
+
+    $json = $Baseline | ConvertTo-Json -Depth 6 -Compress
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+    $hash = [System.Security.Cryptography.SHA256]::HashData($bytes)
+    return [System.Convert]::ToHexString($hash).ToLowerInvariant()
+}
+
+function Invoke-ModelBaselineDownload {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Uri
+    )
+
+    return Invoke-RestMethod -Uri $Uri -TimeoutSec 30
+}
+
+function Resolve-ModelBaseline {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$CacheDirectory,
+
+        [DateTimeOffset]$Now = [DateTimeOffset]::Now,
+
+        [string]$BundledPath = (Join-Path $PSScriptRoot '../references/models.json')
+    )
+
+    $copyPath = Join-Path $CacheDirectory 'models-baseline.json'
+    $copy = $null
+    $copyReadable = $false
+    if (Test-Path -LiteralPath $copyPath -PathType Leaf) {
+        try {
+            $candidate = Get-Content -LiteralPath $copyPath -Raw | ConvertFrom-Json
+            if (
+                $null -ne $candidate.PSObject.Properties['fetchedUtc'] -and
+                $null -ne $candidate.PSObject.Properties['baseline'] -and
+                (Test-ModelBaselinePayload -Value $candidate.baseline)
+            ) {
+                $null = ConvertTo-ModelDateTimeOffset -Value $candidate.fetchedUtc
+                $copy = $candidate
+                $copyReadable = $true
+            }
+        }
+        catch {
+            $copyReadable = $false
+        }
+    }
+
+    $weekStartUtc = Get-TaipeiWeekStartUtc -Instant $Now
+    if ($copyReadable) {
+        $fetchedUtc = ConvertTo-ModelDateTimeOffset -Value $copy.fetchedUtc
+        if ($fetchedUtc -ge $weekStartUtc) {
+            return [pscustomobject]@{
+                baseline = $copy.baseline
+                source   = 'local-copy'
+                warnings = @()
+            }
+        }
+    }
+
+    $uri = 'https://raw.githubusercontent.com/SyuanTsai/Skill-Code-Collaboration/main/skills/orchestrate-ai-delivery/references/models.json'
+    try {
+        $downloaded = Invoke-ModelBaselineDownload -Uri $uri
+        if (-not (Test-ModelBaselinePayload -Value $downloaded)) {
+            throw 'Downloaded model baseline was rejected.'
+        }
+        $wrapper = [pscustomobject][ordered]@{
+            fetchedUtc = $Now.UtcDateTime.ToString(
+                "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'",
+                [System.Globalization.CultureInfo]::InvariantCulture
+            )
+            baseline = $downloaded
+        }
+        Write-ModelAvailabilityCache -Value $wrapper -Path $copyPath
+        return [pscustomobject]@{
+            baseline = $downloaded
+            source   = 'downloaded'
+            warnings = @()
+        }
+    }
+    catch {
+        if ($copyReadable) {
+            $copyFetchedUtc = (ConvertTo-ModelDateTimeOffset -Value $copy.fetchedUtc).ToUniversalTime().ToString(
+                "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'",
+                [System.Globalization.CultureInfo]::InvariantCulture
+            )
+            return [pscustomobject]@{
+                baseline = $copy.baseline
+                source   = 'local-copy'
+                warnings = @("baseline: using local copy from $copyFetchedUtc; refresh failed")
+            }
+        }
+
+        $bundled = Get-Content -LiteralPath ([System.IO.Path]::GetFullPath($BundledPath)) -Raw | ConvertFrom-Json
+        return [pscustomobject]@{
+            baseline = $bundled
+            source   = 'bundled'
+            warnings = @('baseline: using the bundled list; it may be out of date')
+        }
+    }
+}
+
 function Invoke-ModelAvailabilityUpdate {
     [CmdletBinding()]
     param(
@@ -459,11 +703,19 @@ function Invoke-ModelAvailabilityUpdate {
     $cachePath = Join-Path $resolvedCacheDirectory "model-availability.$Environment.json"
 
     if ([string]::IsNullOrWhiteSpace($BaselinePath)) {
-        $BaselinePath = Join-Path $PSScriptRoot '../references/models.json'
+        $baselineResolution = Resolve-ModelBaseline -CacheDirectory $resolvedCacheDirectory -Now $Now
+        $baseline = $baselineResolution.baseline
+        $baselineSource = [string]$baselineResolution.source
+        $baselineWarnings = @($baselineResolution.warnings)
     }
-    $resolvedBaselinePath = [System.IO.Path]::GetFullPath($BaselinePath)
-    $baseline = Get-Content -LiteralPath $resolvedBaselinePath -Raw | ConvertFrom-Json
+    else {
+        $resolvedBaselinePath = [System.IO.Path]::GetFullPath($BaselinePath)
+        $baseline = Get-Content -LiteralPath $resolvedBaselinePath -Raw | ConvertFrom-Json
+        $baselineSource = 'explicit'
+        $baselineWarnings = @()
+    }
     $baselineModels = @($baseline.models)
+    $baselineSha256 = Get-ModelBaselineIdentity -Baseline $baseline
 
     $previous = $null
     if (Test-Path -LiteralPath $cachePath -PathType Leaf) {
@@ -472,7 +724,11 @@ function Invoke-ModelAvailabilityUpdate {
 
     $weekStartUtc = Get-TaipeiWeekStartUtc -Instant $Now
     if ($null -ne $previous -and -not $Force) {
-        $allCliStatesFresh = $null -ne $previous.PSObject.Properties['clis']
+        $allCliStatesFresh = (
+            $null -ne $previous.PSObject.Properties['clis'] -and
+            $null -ne $previous.PSObject.Properties['baselineSha256'] -and
+            [string]$previous.baselineSha256 -eq $baselineSha256
+        )
         foreach ($requiredCli in @('claude', 'codex', 'copilot')) {
             if (-not $allCliStatesFresh) {
                 break
@@ -522,9 +778,15 @@ function Invoke-ModelAvailabilityUpdate {
 
         if ($allCliStatesFresh) {
             $previous | Add-Member -NotePropertyName status -NotePropertyValue 'fresh' -Force
-            if ($null -eq $previous.PSObject.Properties['warnings']) {
-                $previous | Add-Member -NotePropertyName warnings -NotePropertyValue @()
+            $previous | Add-Member -NotePropertyName baselineSource -NotePropertyValue $baselineSource -Force
+            $previous | Add-Member -NotePropertyName baselineSha256 -NotePropertyValue $baselineSha256 -Force
+            $priorWarnings = if ($null -ne $previous.PSObject.Properties['warnings']) {
+                @($previous.warnings | Where-Object { [string]$_ -notlike 'baseline: *' })
             }
+            else {
+                @()
+            }
+            $previous | Add-Member -NotePropertyName warnings -NotePropertyValue @($priorWarnings + $baselineWarnings | Select-Object -Unique) -Force
             return $previous
         }
     }
@@ -537,6 +799,14 @@ function Invoke-ModelAvailabilityUpdate {
     }
 
     $selectedClis = @($Cli | Select-Object -Unique)
+    if (
+        $null -ne $previous -and (
+            $null -eq $previous.PSObject.Properties['baselineSha256'] -or
+            [string]$previous.baselineSha256 -ne $baselineSha256
+        )
+    ) {
+        $selectedClis = @('claude', 'codex', 'copilot')
+    }
     $models = [System.Collections.Generic.List[object]]::new()
     foreach ($previousModel in $previousModels) {
         if ([string]$previousModel.cli -notin $selectedClis) {
@@ -554,6 +824,9 @@ function Invoke-ModelAvailabilityUpdate {
     }
 
     $warnings = [System.Collections.Generic.List[string]]::new()
+    foreach ($baselineWarning in $baselineWarnings) {
+        $warnings.Add([string]$baselineWarning)
+    }
     $failureCount = 0
     $checkedUtc = $Now.UtcDateTime.ToString(
         "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'",
@@ -698,6 +971,8 @@ function Invoke-ModelAvailabilityUpdate {
         schemaVersion  = 1
         status         = $overallStatus
         environment    = $Environment
+        baselineSource = $baselineSource
+        baselineSha256 = $baselineSha256
         lastCheckedUtc = $Now.UtcDateTime.ToString(
             "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'",
             [System.Globalization.CultureInfo]::InvariantCulture

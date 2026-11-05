@@ -15,6 +15,7 @@ BeforeAll {
     $script:RealGetCopilotAvailableModels = ${function:Get-CopilotAvailableModels}
 
     $script:Baseline = Get-Content -LiteralPath $script:BaselinePath -Raw | ConvertFrom-Json
+    $script:BaselineIdentity = Get-ModelBaselineIdentity -Baseline $script:Baseline
     $script:ClaudeIds = @($script:Baseline.models | Where-Object cli -eq 'claude' | ForEach-Object id)
     $script:CodexIds = @($script:Baseline.models | Where-Object cli -eq 'codex' | ForEach-Object id)
     $script:CopilotIds = @($script:Baseline.models | Where-Object cli -eq 'copilot' | ForEach-Object id)
@@ -33,7 +34,12 @@ BeforeAll {
 
             [object[]]$Models = @(),
 
-            [psobject]$Clis = ([pscustomobject]@{})
+            [psobject]$Clis = ([pscustomobject]@{}),
+
+            [AllowNull()]
+            [string]$BaselineSha256 = $script:BaselineIdentity,
+
+            [switch]$OmitBaselineSha256
         )
 
         $null = New-Item -ItemType Directory -Path $Directory -Force
@@ -41,11 +47,15 @@ BeforeAll {
             schemaVersion  = 1
             status         = 'updated'
             environment    = $Environment
+            baselineSource = 'explicit'
             lastCheckedUtc = $LastCheckedUtc
             warnings       = @()
             suggestions    = @()
             clis           = $Clis
             models         = @($Models)
+        }
+        if (-not $OmitBaselineSha256) {
+            $cache | Add-Member -NotePropertyName baselineSha256 -NotePropertyValue $BaselineSha256
         }
         $path = Join-Path $Directory "model-availability.$Environment.json"
         Set-Content -LiteralPath $path -Value ($cache | ConvertTo-Json -Depth 6) -Encoding utf8
@@ -72,6 +82,7 @@ BeforeAll {
 }
 
 BeforeEach {
+    Mock Invoke-ModelBaselineDownload { $script:Baseline }
     Mock Get-Command {
         [pscustomobject]@{ Name = $Name }
     } -ParameterFilter { $Name -in @('claude', 'codex', 'copilot') }
@@ -198,6 +209,77 @@ Context 'Weekly availability trigger' {
         Should -Invoke Get-ClaudeLoginState -Times 0 -Exactly
         Should -Invoke Get-CodexAvailableModels -Times 0 -Exactly
         Should -Invoke Get-CopilotAvailableModels -Times 0 -Exactly
+    }
+
+    # Scenario: all CLI states and the baseline identity are current. Purpose: reuse a cache only for the baseline it describes.
+    It 'UnitT70_returns fresh without probing when the baseline identity matches' {
+        $cacheDirectory = Join-Path $TestDrive 'matching-baseline'
+        $thisWeek = '2026-11-01T16:30:00.0000000Z'
+        $null = Write-TestAvailabilityCache -Directory $cacheDirectory -Environment personal `
+            -LastCheckedUtc $thisWeek -Clis (New-TestCliStates -CheckedUtc $thisWeek)
+
+        $result = Invoke-ModelAvailabilityUpdate -Environment personal -CacheDirectory $cacheDirectory `
+            -BaselinePath $script:BaselinePath -Now ([DateTimeOffset]'2026-11-02T01:00:00+08:00')
+
+        $result.status | Should -Be 'fresh'
+        $result.baselineSha256 | Should -Be $script:BaselineIdentity
+        Should -Invoke Get-ClaudeLoginState -Times 0 -Exactly
+        Should -Invoke Get-CodexAvailableModels -Times 0 -Exactly
+        Should -Invoke Get-CopilotAvailableModels -Times 0 -Exactly
+    }
+
+    # Scenario: a forced single-CLI refresh has the current baseline identity. Purpose: retain the caller's narrow probe scope.
+    It 'UnitT75_probes only the selected CLI when the baseline identity matches' {
+        $cacheDirectory = Join-Path $TestDrive 'matching-baseline-forced-cli'
+        $thisWeek = '2026-11-01T16:30:00.0000000Z'
+        $null = Write-TestAvailabilityCache -Directory $cacheDirectory -Environment personal `
+            -LastCheckedUtc $thisWeek -Clis (New-TestCliStates -CheckedUtc $thisWeek)
+
+        $result = Invoke-ModelAvailabilityUpdate -Environment personal -CacheDirectory $cacheDirectory `
+            -BaselinePath $script:BaselinePath -Cli codex -Force -Now ([DateTimeOffset]'2026-11-02T01:00:00+08:00')
+
+        $result.baselineSha256 | Should -Be $script:BaselineIdentity
+        Should -Invoke Get-ClaudeLoginState -Times 0 -Exactly
+        Should -Invoke Get-CodexAvailableModels -Times 1 -Exactly
+        Should -Invoke Get-CopilotAvailableModels -Times 0 -Exactly
+    }
+
+    # Scenario: the cache belongs to a different baseline. Purpose: re-probe and stamp the newly resolved identity.
+    It 'UnitT80_reprobes every CLI when a forced partial refresh has a different baseline identity' {
+        $cacheDirectory = Join-Path $TestDrive 'different-baseline'
+        $thisWeek = '2026-11-01T16:30:00.0000000Z'
+        $oldModels = @(
+            [pscustomobject]@{ cli = 'claude'; id = 'old-claude'; family = 'anthropic'; status = 'unavailable'; selectable = $false; reason = 'old-baseline' }
+            [pscustomobject]@{ cli = 'codex'; id = 'old-codex'; family = 'openai'; status = 'unavailable'; selectable = $false; reason = 'old-baseline' }
+            [pscustomobject]@{ cli = 'copilot'; id = 'old-copilot'; family = 'openai'; status = 'unavailable'; selectable = $false; reason = 'old-baseline' }
+        )
+        $null = Write-TestAvailabilityCache -Directory $cacheDirectory -Environment personal `
+            -LastCheckedUtc $thisWeek -Models $oldModels -Clis (New-TestCliStates -CheckedUtc $thisWeek) -BaselineSha256 ('0' * 64)
+
+        $result = Invoke-ModelAvailabilityUpdate -Environment personal -CacheDirectory $cacheDirectory `
+            -BaselinePath $script:BaselinePath -Cli codex -Force -Now ([DateTimeOffset]'2026-11-02T01:00:00+08:00')
+
+        $result.status | Should -Be 'updated'
+        $result.baselineSha256 | Should -Be $script:BaselineIdentity
+        @($result.models | Where-Object reason -eq 'old-baseline').Count | Should -Be 0
+        Should -Invoke Get-ClaudeLoginState -Times 1 -Exactly
+        Should -Invoke Get-CodexAvailableModels -Times 1 -Exactly
+        Should -Invoke Get-CopilotAvailableModels -Times 1 -Exactly
+    }
+
+    # Scenario: a legacy cache has no baseline identity. Purpose: re-probe rather than trusting an unbound cache.
+    It 'UnitT90_reprobes a fresh cache with no baseline identity' {
+        $cacheDirectory = Join-Path $TestDrive 'missing-baseline-identity'
+        $thisWeek = '2026-11-01T16:30:00.0000000Z'
+        $null = Write-TestAvailabilityCache -Directory $cacheDirectory -Environment personal `
+            -LastCheckedUtc $thisWeek -Clis (New-TestCliStates -CheckedUtc $thisWeek) -OmitBaselineSha256
+
+        $result = Invoke-ModelAvailabilityUpdate -Environment personal -CacheDirectory $cacheDirectory `
+            -BaselinePath $script:BaselinePath -Cli codex -Now ([DateTimeOffset]'2026-11-02T01:00:00+08:00')
+
+        $result.status | Should -Be 'updated'
+        $result.baselineSha256 | Should -Be $script:BaselineIdentity
+        Should -Invoke Get-CodexAvailableModels -Times 1 -Exactly
     }
 }
 
@@ -400,6 +482,115 @@ Context 'Cache isolation and safety' {
     }
 }
 
+Context 'Resolve-ModelBaseline' {
+    # Scenario: no local copy exists. Purpose: download and persist the reviewed main-branch baseline.
+    It 'UnitT10_downloads and writes a missing copy' {
+        $cacheDirectory = Join-Path $TestDrive 'baseline-missing'
+        $result = Resolve-ModelBaseline -CacheDirectory $cacheDirectory -Now ([DateTimeOffset]'2026-11-02T01:00:00+08:00')
+        $result.source | Should -Be 'downloaded'
+        (Test-Path -LiteralPath (Join-Path $cacheDirectory 'models-baseline.json')) | Should -BeTrue
+        Should -Invoke Invoke-ModelBaselineDownload -Times 1 -Exactly
+    }
+
+    # Scenario: the saved copy was fetched during the current Taipei week. Purpose: avoid unnecessary network access.
+    It 'UnitT20_uses a fresh copy without downloading' {
+        $cacheDirectory = Join-Path $TestDrive 'baseline-fresh'
+        $copy = [pscustomobject][ordered]@{ fetchedUtc = '2026-11-01T16:00:00Z'; baseline = $script:Baseline }
+        Write-ModelAvailabilityCache -Value $copy -Path (Join-Path $cacheDirectory 'models-baseline.json')
+        $result = Resolve-ModelBaseline -CacheDirectory $cacheDirectory -Now ([DateTimeOffset]'2026-11-02T01:00:00+08:00')
+        $result.source | Should -Be 'local-copy'
+        Should -Invoke Invoke-ModelBaselineDownload -Times 0 -Exactly
+    }
+
+    # Scenario: the saved copy predates the current week. Purpose: replace it with a current download.
+    It 'UnitT30_redownloads an old copy' {
+        $cacheDirectory = Join-Path $TestDrive 'baseline-old'
+        $copy = [pscustomobject][ordered]@{ fetchedUtc = '2026-10-25T16:00:00Z'; baseline = $script:Baseline }
+        Write-ModelAvailabilityCache -Value $copy -Path (Join-Path $cacheDirectory 'models-baseline.json')
+        $result = Resolve-ModelBaseline -CacheDirectory $cacheDirectory -Now ([DateTimeOffset]'2026-11-02T01:00:00+08:00')
+        $result.source | Should -Be 'downloaded'
+        Should -Invoke Invoke-ModelBaselineDownload -Times 1 -Exactly
+    }
+
+    # Scenario: refresh fails while an old readable copy exists. Purpose: retain known baseline data and warn.
+    It 'UnitT40_falls back to an old local copy after download failure' {
+        $cacheDirectory = Join-Path $TestDrive 'baseline-fallback-copy'
+        $copy = [pscustomobject][ordered]@{ fetchedUtc = '2026-10-25T16:00:00Z'; baseline = $script:Baseline }
+        Write-ModelAvailabilityCache -Value $copy -Path (Join-Path $cacheDirectory 'models-baseline.json')
+        Mock Invoke-ModelBaselineDownload { throw 'offline' }
+        $result = Resolve-ModelBaseline -CacheDirectory $cacheDirectory -Now ([DateTimeOffset]'2026-11-02T01:00:00+08:00')
+        $result.source | Should -Be 'local-copy'
+        $result.warnings | Should -Contain 'baseline: using local copy from 2026-10-25T16:00:00.0000000Z; refresh failed'
+    }
+
+    # Scenario: refresh fails and no copy exists. Purpose: remain operational with the bundled baseline and warn.
+    It 'UnitT50_falls back to bundled after failure without a copy' {
+        Mock Invoke-ModelBaselineDownload { throw 'offline' }
+        $result = Resolve-ModelBaseline -CacheDirectory (Join-Path $TestDrive 'baseline-fallback-bundled') `
+            -Now ([DateTimeOffset]'2026-11-02T01:00:00+08:00')
+        $result.source | Should -Be 'bundled'
+        $result.warnings | Should -Contain 'baseline: using the bundled list; it may be out of date'
+    }
+
+    # Scenario: a download has an unsupported schema. Purpose: reject malformed or incompatible remote data.
+    It 'UnitT60_rejects an unsupported downloaded schema' {
+        Mock Invoke-ModelBaselineDownload { [pscustomobject]@{ schemaVersion = 2; models = @() } }
+        $result = Resolve-ModelBaseline -CacheDirectory (Join-Path $TestDrive 'baseline-rejected') `
+            -Now ([DateTimeOffset]'2026-11-02T01:00:00+08:00')
+        $result.source | Should -Be 'bundled'
+        $result.warnings | Should -Contain 'baseline: using the bundled list; it may be out of date'
+    }
+
+    # Scenario: the caller supplies a baseline path. Purpose: preserve explicit-path behavior without remote access.
+    It 'UnitT70_never downloads for an explicit baseline path' {
+        $result = Invoke-ModelAvailabilityUpdate -Environment personal -CacheDirectory (Join-Path $TestDrive 'baseline-explicit') `
+            -BaselinePath $script:BaselinePath -Cli codex -Force -Now ([DateTimeOffset]'2026-11-02T01:00:00+08:00')
+        $result.baselineSource | Should -Be 'explicit'
+        Should -Invoke Invoke-ModelBaselineDownload -Times 0 -Exactly
+    }
+
+    # Scenario: remote payloads violate one required contract rule. Purpose: reject every incomplete or ambiguous baseline shape.
+    It 'UnitT80_rejects a downloaded payload with <Defect>' -TestCases @(
+        @{ Defect = 'missing family'; Mutate = { param($value) $value.models[0].PSObject.Properties.Remove('family') } }
+        @{ Defect = 'invalid status'; Mutate = { param($value) $value.models[0].status = 'retired' } }
+        @{ Defect = 'active without capability'; Mutate = { param($value) $value.models[0].capability = $null } }
+        @{ Defect = 'duplicate id'; Mutate = { param($value) $value.models = @($value.models) + @($value.models[0]) } }
+        @{ Defect = 'missing efforts'; Mutate = { param($value) $value.PSObject.Properties.Remove('efforts') } }
+    ) {
+        param($Defect, $Mutate)
+        $invalid = ($script:Baseline | ConvertTo-Json -Depth 6 | ConvertFrom-Json)
+        & $Mutate $invalid
+        Mock Invoke-ModelBaselineDownload { $invalid }
+
+        $result = Resolve-ModelBaseline -CacheDirectory (Join-Path $TestDrive "baseline-contract-$Defect") `
+            -Now ([DateTimeOffset]'2026-11-02T01:00:00+08:00')
+
+        $result.source | Should -Be 'bundled'
+        $result.warnings | Should -Contain 'baseline: using the bundled list; it may be out of date'
+    }
+
+    # Scenario: an invalid download arrives while a valid old copy exists. Purpose: reject remote corruption and retain the local baseline with its warning.
+    It 'UnitT85_falls back to a valid local copy after rejecting a download' {
+        $cacheDirectory = Join-Path $TestDrive 'baseline-invalid-download-local-copy'
+        $copy = [pscustomobject][ordered]@{ fetchedUtc = '2026-10-25T16:00:00Z'; baseline = $script:Baseline }
+        Write-ModelAvailabilityCache -Value $copy -Path (Join-Path $cacheDirectory 'models-baseline.json')
+        $invalid = ($script:Baseline | ConvertTo-Json -Depth 6 | ConvertFrom-Json)
+        $invalid.models[0].PSObject.Properties.Remove('family')
+        Mock Invoke-ModelBaselineDownload { $invalid }
+
+        $result = Resolve-ModelBaseline -CacheDirectory $cacheDirectory `
+            -Now ([DateTimeOffset]'2026-11-02T01:00:00+08:00')
+
+        $result.source | Should -Be 'local-copy'
+        $result.warnings | Should -Contain 'baseline: using local copy from 2026-10-25T16:00:00.0000000Z; refresh failed'
+    }
+
+    # Scenario: the repository baseline is passed to the payload validator. Purpose: keep the committed contract accepted.
+    It 'UnitT90_accepts the committed models json' {
+        (Test-ModelBaselinePayload -Value $script:Baseline) | Should -BeTrue
+    }
+}
+
 Context 'Baseline integrity' {
     It 'has valid unique model entries and rating rules' {
         { Get-Content -LiteralPath $script:BaselinePath -Raw | ConvertFrom-Json } | Should -Not -Throw
@@ -410,16 +601,20 @@ Context 'Baseline integrity' {
             foreach ($field in @('cli', 'id', 'family', 'capability', 'cost', 'status', 'evidence', 'notes')) {
                 @($entry.PSObject.Properties.Name) -contains $field | Should -Be $true
             }
-            $entry.status | Should -BeIn @('active', 'unevaluated', 'excluded')
+            $entry.status | Should -BeIn @('active', 'unevaluated', 'excluded', 'unavailable')
             $entry.evidence | Should -BeIn @('official', 'measured', 'inferred')
 
             if ($entry.status -eq 'active') {
                 $entry.capability | Should -BeIn @(1, 2, 3, 4)
                 $entry.cost | Should -BeIn @(1, 2, 3, 4)
             }
-            else {
+            elseif ($entry.status -in @('unevaluated', 'excluded')) {
                 $entry.capability | Should -BeNullOrEmpty
                 $entry.cost | Should -BeNullOrEmpty
+            }
+            else {
+                if ($null -ne $entry.capability) { $entry.capability | Should -BeIn @(1, 2, 3, 4) }
+                if ($null -ne $entry.cost) { $entry.cost | Should -BeIn @(1, 2, 3, 4) }
             }
         }
 

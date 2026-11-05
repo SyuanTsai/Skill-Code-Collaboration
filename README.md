@@ -46,6 +46,7 @@ skills/
       review.md
       usage-report.md
     scripts/Update-ModelAvailability.ps1
+    scripts/Update-ModelBaseline.ps1
   write-copilot-implementation-prompt/
     SKILL.md
     agents/openai.yaml
