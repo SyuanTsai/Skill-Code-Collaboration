@@ -67,17 +67,17 @@ __TERMINAL_EXIT__
             'scripts/Validate-UpstreamAdapter.ps1' = '3b6e6474690b1ae9f9486544b68f50ca29b96f5dbe6aa8d6c6cd8570afad500b'
         }
         Import-Module -Name (Join-Path $script:RepositoryRoot 'scripts/StandardSourceDriver.psm1') -Force
-        $script:ExpectedAuthorityCommit = '8e627baf54bd6e47862e6291b25e71cc45a2f2b7'
+        $script:ExpectedAuthorityCommit = 'ead467c3488c103546f316d137196b447a1ff58a'
         $script:ExpectedAuthorityPin = Get-PreparedSourceAuthorityPin -AuthorityRevision $script:ExpectedAuthorityCommit
-        $script:ExpectedAuthorityArchiveSha256 = '9aa4a7fc8fc7c7f0ff9e774c79c77a64077b4003212a523dda519d034ff99989'
+        $script:ExpectedAuthorityArchiveSha256 = 'ab304bc6caabe4bb9b605f403c852650e19e25f72999010db61bbad695e1c60b'
         $script:ExpectedAuthorityFiles = $script:ExpectedAuthorityPin.files
     }
 
-    # Scenario: The active Code adapter and protected source driver explicitly select the reviewed 32-file 8e authority inventory.
+    # Scenario: The active Code adapter and protected source driver explicitly select the reviewed 51-file ead authority inventory.
     # Purpose: Reject mismatched commit, archive, order, or required-file hashes while preserving the reader's ff85 default.
     It 'UnitT10_pins_exact_authority_without_local_deviation_policy' {
         # Scenario: a consumer repository changes the active authority pin or silently adds a local policy.
-        # Purpose: require the complete active 8e closure and keep policy ownership in the central authority.
+        # Purpose: require the complete active ead closure and keep policy ownership in the central authority.
         @($script:Adapter.PSObject.Properties.Name) | Should -Be @('schemaVersion', 'standardVersion', 'authority')
         $script:ExpectedAuthorityPin.commit | Should -Be $script:ExpectedAuthorityCommit
         $script:ExpectedAuthorityPin.archiveSha256 | Should -Be $script:ExpectedAuthorityArchiveSha256
