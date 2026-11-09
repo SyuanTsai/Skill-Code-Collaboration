@@ -4772,6 +4772,7 @@ exit 0
         $sourceValidation = [regex]::Match($workflow, '(?ms)- name: Run full source validation(?<body>.*?)(?=^      - name: Upload source validation evidence)')
         $sourceToolsSetup.Success | Should -BeTrue
         $sourceValidation.Success | Should -BeTrue
+        $sourceValidation.Groups['body'].Value | Should -Match "(?m)^          PYTHONDONTWRITEBYTECODE: '1'`r?$"
         foreach ($step in @($sourceToolsSetup.Groups['body'].Value, $sourceValidation.Groups['body'].Value)) {
             $step | Should -Match '\$protectedDriver'
             $step | Should -Match '\$candidateRoot'

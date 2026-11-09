@@ -621,6 +621,10 @@ jobs:
         shell: pwsh
         env:
           SYP154_CANDIDATE_AUTHORITY_ROOT: ${{ github.workspace }}/authority-ead467c
+          # SkillSpector is installed with pip --no-compile; prevent its first run from writing
+          # __pycache__ into the frozen venv, which would change the verified installed closure.
+          # Mirrors the KC/General child runners; the CC protected-driver change is tracked separately.
+          PYTHONDONTWRITEBYTECODE: '1'
         run: |
           $ErrorActionPreference = 'Stop'
           $baseRoot = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
