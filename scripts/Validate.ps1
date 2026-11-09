@@ -401,7 +401,7 @@ function Assert-AuthorityConfig {
 function Assert-ProtectedDriverAuthorityConfig {
     param([Parameter(Mandatory = $true)] $Config)
 
-    # The protected event-base driver may itself be at either reviewed point
+    # The protected event-base driver may itself be at any reviewed point
     # in the two-phase rollout. Candidate legacy execution below remains bound
     # to the current 8a tuple; SourceValidation selects one exact reviewed pin.
     $commit = [string]$Config.authority.commit
@@ -409,12 +409,12 @@ function Assert-ProtectedDriverAuthorityConfig {
         Assert-AuthorityConfig -Config $Config
         return
     }
-    if (@('ff85d5f80fe795b96354e753074b5ce59ad04ecd', '8e627baf54bd6e47862e6291b25e71cc45a2f2b7') -ccontains $commit) {
+    if (@('ff85d5f80fe795b96354e753074b5ce59ad04ecd', '8e627baf54bd6e47862e6291b25e71cc45a2f2b7', 'ead467c3488c103546f316d137196b447a1ff58a') -ccontains $commit) {
         Import-Module -Name (Join-Path $PSScriptRoot 'StandardSourceDriver.psm1') -Force -ErrorAction Stop
         [void](Assert-CodeSourceAuthorityConfig -Config $Config)
         return
     }
-    throw 'Protected driver config must match one exact reviewed 8a, ff85, or 8e authority tuple.'
+    throw 'Protected driver config must match one exact reviewed 8a, ff85, 8e, or ead authority tuple.'
 }
 
 function Get-ActiveSkillIds {
@@ -1643,8 +1643,12 @@ function Invoke-CodeSourceToolSetup {
             throw "Source tool setup '$toolName' failed with status '$($processResult.status)', exit $($processResult.exitCode), cleanup=$($processResult.cleanedUp)."
         }
         $receipt = Read-JsonFile -Path $receiptPath -Context "$toolName source resolver receipt"
+        $expectedChannel = if ($toolName -ceq 'skillspector' -and [string]$pin.commit -ceq 'ead467c3488c103546f316d137196b447a1ff58a') {
+            'approved-source-registry'
+        }
+        else { 'latest-stable' }
         if ([string]$receipt.toolName -cne $toolName -or [string]$receipt.resolutionRunId -cne $runId -or
-            [string]$receipt.channel -cne 'latest-stable' -or $receipt.frozenForRun -isnot [bool] -or -not $receipt.frozenForRun -or
+            [string]$receipt.channel -cne $expectedChannel -or $receipt.frozenForRun -isnot [bool] -or -not $receipt.frozenForRun -or
             [string]::IsNullOrWhiteSpace([string]$receipt.resolvedVersion) -or [string]::IsNullOrWhiteSpace([string]$receipt.resolvedIdentity)) {
             throw "Source resolver receipt '$toolName' is not bound to this exact setup run."
         }
@@ -2193,10 +2197,27 @@ function Invoke-CodeSourceValidation {
                     -RunnerSha256 ([string]$pin.files['scripts/Invoke-StandardValidation.ps1']) -RunnerArguments $reportRunnerContext `
                     -SourceValidation
                 $report = Read-JsonFile -Path $paths.outputPath -Context 'Standard Core SourceValidation report'
+                $reportArguments = [ordered]@{
+                    Report = $report
+                    ExpectedSourceRevision = $CandidateRevision
+                    ExpectedBaseRevision = $BaseRevision
+                    ExpectedAuthorityRevision = [string]$pin.commit
+                    ExpectedEventName = $EventName
+                    ArtifactsRoot = $paths.artifactsRoot
+                    OutputPath = $paths.outputPath
+                    ProcessExitCode = $processExitCode
+                }
+                if ([string]$pin.commit -ceq 'ead467c3488c103546f316d137196b447a1ff58a') {
+                    $securityPolicyPath = Join-Path $authoritySnapshot.root 'docs/standards/validation-security-gate.json'
+                    $securityPolicy = Read-JsonFile -Path $securityPolicyPath -Context 'ead source validation security policy'
+                    $skillSpectorStages = @($securityPolicy.stages | Where-Object { [string]$_.id -ceq 'skillspector-static' })
+                    if ($skillSpectorStages.Count -ne 1 -or $null -eq $skillSpectorStages[0].platformUnavailableException) {
+                        throw 'The ead source validation security policy does not expose one SkillSpector platform exception contract.'
+                    }
+                    $reportArguments.ValidationSecurityPolicy = $skillSpectorStages[0].platformUnavailableException
+                }
                 [void](Invoke-CodeSourceStandardValidationModule -Module $reportRunnerModule -FunctionName 'Assert-StandardCoreSourceCheckReport' `
-                    -Arguments @{ Report = $report; ExpectedSourceRevision = $CandidateRevision; ExpectedBaseRevision = $BaseRevision; `
-                        ExpectedAuthorityRevision = [string]$pin.commit; ExpectedEventName = $EventName; ArtifactsRoot = $paths.artifactsRoot; `
-                        OutputPath = $paths.outputPath; ProcessExitCode = $processExitCode })
+                    -Arguments $reportArguments)
             }
             finally {
                 $protectedReportReaderTimer.Stop()
