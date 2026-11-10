@@ -687,14 +687,14 @@ $root = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_RUN_OWNED_ROO
     }
 
     # Scenario: changed Skill content requires central semantic review after the Static pass.
-    # Purpose: prove the real child emits its typed trigger after one no-LLM scan and leaves consent handling to Stage 6.
+    # Purpose: prove the real child disables Python bytecode writes, emits its typed trigger after one no-LLM scan, and leaves consent handling to Stage 6.
     It 'InterT60_keeps_the_real_static_child_no_llm_and_returns_the_central_semantic_trigger' {
         $spyPath = Join-Path $script:testRoot 'skillspector-static-spy-calls.jsonl'
         $spyToolPath = Join-Path $script:testRoot 'skillspector-static-spy.ps1'
         $staticToolchainPath = Join-Path $script:testRoot 'static-toolchain.json'
         $spySource = @'
 $callArguments = @($args | ForEach-Object { [string]$_ })
-$line = ConvertTo-Json -InputObject ([pscustomobject]@{ arguments = $callArguments }) -Compress -Depth 5
+$line = ConvertTo-Json -InputObject ([pscustomobject]@{ arguments = $callArguments; pythonDontWriteBytecode = [string]$env:PYTHONDONTWRITEBYTECODE }) -Compress -Depth 5
 [IO.File]::AppendAllText($env:SYP154_TEST_STATIC_SPY, $line + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 if ($callArguments -notcontains '--no-llm') {
     [Console]::Error.WriteLine('TEST_SPY_REJECTED_SEMANTIC_INVOCATION')
@@ -762,6 +762,7 @@ $global:LASTEXITCODE = 0
             $stderrFiles = @($newRaw | Where-Object { $_.Name -match '\.stderr\.txt$' })
             $child.exitCode | Should -Be 0 -Because ($child.output -join "`n")
             $calls.Count | Should -Be 1
+            $calls[0].pythonDontWriteBytecode | Should -BeExactly '1'
             @($calls[0].arguments | Where-Object { $_ -ceq '--no-llm' }).Count | Should -Be 1
             $calls[0].arguments | Should -Not -Contain '--output'
             $envelope = ($child.output -join "`n") | ConvertFrom-Json -Depth 20
