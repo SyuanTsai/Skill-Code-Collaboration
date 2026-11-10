@@ -599,19 +599,12 @@ $root = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_RUN_OWNED_ROO
             $legacyArguments.Arguments = [string[]]@('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $probePath, $legacyMarkerPath)
             $legacyArguments.Environment = @{ RUN_OWNED_ROOT = $ownedRoot }
             $legacyException = $null
-            $legacyResult = $null
             try {
-                $legacyResult = Invoke-CodeSourceStandardValidationModule -Module $module `
+                $null = Invoke-CodeSourceStandardValidationModule -Module $module `
                     -FunctionName 'Invoke-StandardValidationProcess' -Arguments $legacyArguments
             }
             catch { $legacyException = [string]$_.Exception.Message }
-            $legacyFailure = if ($null -ne $legacyException) { $legacyException } else { $legacyResult | ConvertTo-Json -Depth 20 -Compress }
-            if ($null -ne $legacyResult) {
-                $legacyResult.status | Should -Be 'startup-failed'
-                $legacyResult.exitCode | Should -Not -Be 0
-                $legacyResult.cleanedUp | Should -BeTrue
-            }
-            $legacyFailure | Should -Match "Validation child environment key 'RUN_OWNED_ROOT' is outside the runner namespace"
+            $legacyException | Should -Match "Validation child environment key 'RUN_OWNED_ROOT' is outside the runner namespace"
             Test-Path -LiteralPath $legacyMarkerPath -PathType Leaf | Should -BeFalse
         }
         finally {
