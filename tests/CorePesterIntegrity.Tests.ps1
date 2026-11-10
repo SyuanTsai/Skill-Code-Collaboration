@@ -185,6 +185,74 @@ Describe 'Pester setup owned-root environment compatibility' {
 }
 
 Describe 'Consumed Core process bootstrap signal' {
+    BeforeAll {
+        $wrapperPath = Join-Path $script:repositoryRoot 'scripts/Invoke-CorePester.ps1'
+        $wrapper = Get-Content -LiteralPath $wrapperPath -Raw
+        $tokens = $null
+        $parseErrors = $null
+        $wrapperAst = [Management.Automation.Language.Parser]::ParseFile($wrapperPath, [ref]$tokens, [ref]$parseErrors)
+        if (@($parseErrors).Count -ne 0) { throw 'Core Pester wrapper could not be parsed for bootstrap gate tests.' }
+        $bootstrapStart = $wrapperAst.Find({
+            param($node)
+            $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+                $node.Left.Extent.Text -ceq '$bootstrapReleasePath'
+        }, $true)
+        $snapshotStart = $wrapperAst.Find({
+            param($node)
+            $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+                $node.Left.Extent.Text -ceq '$candidateSnapshotBefore'
+        }, $true)
+        if ($null -eq $bootstrapStart -or $null -eq $snapshotStart -or
+            $snapshotStart.Extent.StartOffset -le $bootstrapStart.Extent.StartOffset) {
+            throw 'Core Pester bootstrap gate could not be isolated before the first candidate snapshot.'
+        }
+        $bootstrapGateText = $wrapper.Substring(
+            $bootstrapStart.Extent.StartOffset,
+            $snapshotStart.Extent.StartOffset - $bootstrapStart.Extent.StartOffset)
+        $script:corePesterBootstrapGate = [scriptblock]::Create($bootstrapGateText)
+
+        function Invoke-CorePesterBootstrapGateFixture {
+            param(
+                [AllowNull()][string] $ReleasePath,
+                [AllowNull()][string] $BootstrapCommand
+            )
+
+            $releaseName = 'STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH'
+            $commandName = 'STANDARD_VALIDATION_BOOTSTRAP_COMMAND'
+            $previousReleasePath = [Environment]::GetEnvironmentVariable($releaseName, 'Process')
+            $previousBootstrapCommand = [Environment]::GetEnvironmentVariable($commandName, 'Process')
+            try {
+                [Environment]::SetEnvironmentVariable($releaseName, $ReleasePath, 'Process')
+                [Environment]::SetEnvironmentVariable($commandName, $BootstrapCommand, 'Process')
+                $calls = [Collections.Generic.List[object]]::new()
+                function Remove-CorePesterConsumedBootstrapSignal {
+                    param(
+                        [Parameter(Mandatory)][string] $CandidateRoot,
+                        [Parameter(Mandatory)][string] $ReleasePath,
+                        [Parameter(Mandatory)][string] $BootstrapCommand,
+                        [Parameter(Mandatory)][string] $VerifiedPowerShellExecutable
+                    )
+
+                    [void]$calls.Add([pscustomobject]@{
+                        CandidateRoot = $CandidateRoot
+                        ReleasePath = $ReleasePath
+                        BootstrapCommand = $BootstrapCommand
+                        VerifiedPowerShellExecutable = $VerifiedPowerShellExecutable
+                    })
+                }
+
+                $candidateSnapshotRoot = [IO.Path]::GetFullPath((Join-Path $TestDrive 'candidate'))
+                $verifiedPowerShellExecutable = [IO.Path]::GetFullPath((Join-Path $TestDrive 'verified/pwsh.exe'))
+                & $script:corePesterBootstrapGate
+                return @($calls)
+            }
+            finally {
+                [Environment]::SetEnvironmentVariable($releaseName, $previousReleasePath, 'Process')
+                [Environment]::SetEnvironmentVariable($commandName, $previousBootstrapCommand, 'Process')
+            }
+        }
+    }
+
     # Scenario: The owned bootstrap has released the child before its snapshot is bound.
     # Purpose: Remove only the exact consumed transport file while hashing every source byte.
     It 'UnitT10_restores_the_full_source_snapshot_and_preserves_other_signal_like_files' {
@@ -253,6 +321,36 @@ Describe 'Consumed Core process bootstrap signal' {
         $cleanup = $wrapper.IndexOf('Remove-CorePesterConsumedBootstrapSignal -CandidateRoot', [StringComparison]::Ordinal)
         $snapshot = $wrapper.IndexOf('$candidateSnapshotBefore = Get-CorePesterTreeSnapshot', [StringComparison]::Ordinal)
         ($authority -ge 0 -and $cleanup -gt $authority -and $snapshot -gt $cleanup) | Should -BeTrue
+    }
+
+    # Scenario: The authority runner omits both legacy bootstrap environment values.
+    # Purpose: Continue without calling cleanup or binding an empty mandatory release path.
+    It 'UnitT50_skips_cleanup_when_legacy_bootstrap_environment_is_absent' {
+        $calls = @(Invoke-CorePesterBootstrapGateFixture -ReleasePath $null -BootstrapCommand $null)
+        $calls.Count | Should -Be 0
+    }
+
+    # Scenario: The authority runner supplies only one legacy bootstrap environment value.
+    # Purpose: Fail closed rather than accepting a partial trusted-supervisor signal.
+    It 'UnitT60_rejects_partial_legacy_bootstrap_environment_<PresentValue>' -ForEach @(
+        @{ PresentValue = 'release-path'; ReleasePath = 'release.sig'; BootstrapCommand = $null },
+        @{ PresentValue = 'command'; ReleasePath = $null; BootstrapCommand = 'pwsh.exe' }
+    ) {
+        { Invoke-CorePesterBootstrapGateFixture -ReleasePath $ReleasePath -BootstrapCommand $BootstrapCommand } |
+            Should -Throw -ExpectedMessage 'Core Pester bootstrap signal requires both trusted supervisor release path and command.'
+    }
+
+    # Scenario: An older authority runner supplies both legacy bootstrap environment values.
+    # Purpose: Preserve the exact cleanup call and parameter bindings for the compatibility path.
+    It 'UnitT70_cleans_consumed_signal_when_legacy_bootstrap_environment_is_complete' {
+        $releasePath = [IO.Path]::GetFullPath((Join-Path $TestDrive 'candidate/b-22222222222222222222222222222222.sig'))
+        $bootstrapCommand = [IO.Path]::GetFullPath((Join-Path $TestDrive 'verified/pwsh.exe'))
+        $calls = @(Invoke-CorePesterBootstrapGateFixture -ReleasePath $releasePath -BootstrapCommand $bootstrapCommand)
+        $calls.Count | Should -Be 1
+        $calls[0].CandidateRoot | Should -BeExactly ([IO.Path]::GetFullPath((Join-Path $TestDrive 'candidate')))
+        $calls[0].ReleasePath | Should -BeExactly $releasePath
+        $calls[0].BootstrapCommand | Should -BeExactly $bootstrapCommand
+        $calls[0].VerifiedPowerShellExecutable | Should -BeExactly $bootstrapCommand
     }
 }
 
