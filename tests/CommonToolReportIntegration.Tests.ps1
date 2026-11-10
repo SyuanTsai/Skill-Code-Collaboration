@@ -125,18 +125,18 @@ Describe 'Code child uses central package tool report rules' {
         $activeConfig = Get-Content -LiteralPath (Join-Path $repositoryRoot 'config/standard-v1.json') -Raw | ConvertFrom-Json -Depth 20
         $authority = $activeConfig.authority
         $expectedRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-        $expectedCommit = '8e627baf54bd6e47862e6291b25e71cc45a2f2b7'
-        $expectedArchiveSha256 = '9aa4a7fc8fc7c7f0ff9e774c79c77a64077b4003212a523dda519d034ff99989'
+        $expectedCommit = 'ead467c3488c103546f316d137196b447a1ff58a'
+        $expectedArchiveSha256 = 'ab304bc6caabe4bb9b605f403c852650e19e25f72999010db61bbad695e1c60b'
         Import-Module -Name (Join-Path $repositoryRoot 'scripts/StandardSourceDriver.psm1') -Force
         $activePin = Get-PreparedSourceAuthorityPin -AuthorityRevision $expectedCommit
         $activePaths = @($authority.files | ForEach-Object { [string]$_.path })
         $pinnedPaths = @($activePin.files.Keys | ForEach-Object { [string]$_ })
         if ($authority.repository -cne $expectedRepository -or $authority.commit -cne $expectedCommit -or
             $authority.archiveUrl -cne "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/$expectedCommit" -or
-            $authority.archiveSha256 -cne $expectedArchiveSha256 -or @($authority.files).Count -ne 32 -or
+            $authority.archiveSha256 -cne $expectedArchiveSha256 -or @($authority.files).Count -ne 51 -or
             $activePin.commit -cne $expectedCommit -or $activePin.archiveSha256 -cne $expectedArchiveSha256 -or
             [string]::Join('|', $activePaths) -cne [string]::Join('|', $pinnedPaths)) {
-            throw 'The Pester child fixture requires the exact active formal 8e authority tuple and ordered 32-file closure.'
+            throw 'The Pester child fixture requires the exact active ead authority tuple and ordered 51-file closure.'
         }
         foreach ($entry in @($authority.files)) {
             if ([string]$entry.sha256 -cne [string]$activePin.files[[string]$entry.path]) {
@@ -177,10 +177,10 @@ Describe 'Code child uses central package tool report rules' {
         }
 
         if ([string]::IsNullOrWhiteSpace($env:SYP154_CANDIDATE_AUTHORITY_ROOT)) {
-            throw 'The common tool report integration requires the active 8e authority checkout supplied by SourceValidation.'
+            throw 'The common tool report integration requires the active ead authority checkout supplied by SourceValidation.'
         }
         if (-not [string]::IsNullOrWhiteSpace($env:SYP154_CANDIDATE_AUTHORITY_ROOT)) {
-            # Admit the active 8e checkout used by SourceValidation, then use
+            # Admit the active ead checkout used by SourceValidation, then use
             # its complete Git history to build the distinct historical 8a fixture.
             $script:authorityFixtureMode = 'verified-git-checkout'
             $moduleRoot = [IO.Path]::GetFullPath([string]$env:SYP154_CANDIDATE_AUTHORITY_ROOT)
@@ -372,8 +372,8 @@ Describe 'Code child uses central package tool report rules' {
         $BaseRevision = 'e' * 40
         $activeAuthority = (Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'config/standard-v1.json') -Raw | ConvertFrom-Json -Depth 20).authority
         $AuthorityRevision = [string]$activeAuthority.commit
-        $expectedSourceValidation = $AuthorityRevision -cin @('ff85d5f80fe795b96354e753074b5ce59ad04ecd', '8e627baf54bd6e47862e6291b25e71cc45a2f2b7')
-        $AuthorityRevision | Should -BeIn @('8aabd22694a05771f98639f6d726cc9a620eb94b', 'ff85d5f80fe795b96354e753074b5ce59ad04ecd', '8e627baf54bd6e47862e6291b25e71cc45a2f2b7')
+        $expectedSourceValidation = $AuthorityRevision -cin @('ff85d5f80fe795b96354e753074b5ce59ad04ecd', '8e627baf54bd6e47862e6291b25e71cc45a2f2b7', 'ead467c3488c103546f316d137196b447a1ff58a')
+        $AuthorityRevision | Should -BeIn @('8aabd22694a05771f98639f6d726cc9a620eb94b', 'ff85d5f80fe795b96354e753074b5ce59ad04ecd', '8e627baf54bd6e47862e6291b25e71cc45a2f2b7', 'ead467c3488c103546f316d137196b447a1ff58a')
         $SourceRepository = 'https://github.com/SyuanTsai/Skill-Code-Collaboration.git'
         $expectedCallerBindings = [ordered]@{
             runId = $runId
@@ -599,12 +599,19 @@ $root = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_RUN_OWNED_ROO
             $legacyArguments.Arguments = [string[]]@('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $probePath, $legacyMarkerPath)
             $legacyArguments.Environment = @{ RUN_OWNED_ROOT = $ownedRoot }
             $legacyException = $null
+            $legacyResult = $null
             try {
-                $null = Invoke-CodeSourceStandardValidationModule -Module $module `
+                $legacyResult = Invoke-CodeSourceStandardValidationModule -Module $module `
                     -FunctionName 'Invoke-StandardValidationProcess' -Arguments $legacyArguments
             }
             catch { $legacyException = [string]$_.Exception.Message }
-            $legacyException | Should -Match "Validation child environment key 'RUN_OWNED_ROOT' is outside the runner namespace"
+            $legacyFailure = if ($null -ne $legacyException) { $legacyException } else { $legacyResult | ConvertTo-Json -Depth 20 -Compress }
+            if ($null -ne $legacyResult) {
+                $legacyResult.status | Should -Be 'startup-failed'
+                $legacyResult.exitCode | Should -Not -Be 0
+                $legacyResult.cleanedUp | Should -BeTrue
+            }
+            $legacyFailure | Should -Match "Validation child environment key 'RUN_OWNED_ROOT' is outside the runner namespace"
             Test-Path -LiteralPath $legacyMarkerPath -PathType Leaf | Should -BeFalse
         }
         finally {

@@ -43,13 +43,13 @@ Describe 'Code Collaboration Standard v1 conformance' {
     }
 
     # Scenario: The Code config is read from the extracted candidate.
-    # Purpose: Keep the reviewed active 8e authority bundle complete without adding local security policy.
+    # Purpose: Keep the reviewed active ead authority bundle complete without adding local security policy.
     It 'UnitT10_pins_exact_authority_without_local_security_policy' {
         # Scenario: a consumer pins an earlier, partial, or reordered Standard v1 snapshot.
-        # Purpose: require the exact protected active 8e tuple without changing the v1 adapter schema.
+        # Purpose: require the exact protected active ead tuple without changing the v1 adapter schema.
         $adapter = Get-Content -LiteralPath $script:AdapterPath -Raw | ConvertFrom-Json -Depth 20
         Import-Module -Name $script:DriverPath -Force
-        $expectedCommit = '8e627baf54bd6e47862e6291b25e71cc45a2f2b7'
+        $expectedCommit = 'ead467c3488c103546f316d137196b447a1ff58a'
         $pin = Get-PreparedSourceAuthorityPin -AuthorityRevision $expectedCommit
         @($adapter.PSObject.Properties.Name) | Should -Be @('schemaVersion', 'standardVersion', 'authority')
         $adapter.schemaVersion | Should -Be 1
@@ -57,8 +57,8 @@ Describe 'Code Collaboration Standard v1 conformance' {
         $adapter.authority.repository | Should -Be 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
         $adapter.authority.commit | Should -Be $expectedCommit
         $adapter.authority.archiveUrl | Should -Be "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/$expectedCommit"
-        $adapter.authority.archiveSha256 | Should -Be '9aa4a7fc8fc7c7f0ff9e774c79c77a64077b4003212a523dda519d034ff99989'
-        @($adapter.authority.files).Count | Should -Be 32
+        $adapter.authority.archiveSha256 | Should -Be 'ab304bc6caabe4bb9b605f403c852650e19e25f72999010db61bbad695e1c60b'
+        @($adapter.authority.files).Count | Should -Be 51
         @($adapter.authority.files.path) | Should -Be @($pin.files.Keys)
         foreach ($entry in @($adapter.authority.files)) { $entry.sha256 | Should -Be $pin.files[$entry.path] }
         @($adapter.PSObject.Properties.Name) | Should -Not -Contain 'security'
