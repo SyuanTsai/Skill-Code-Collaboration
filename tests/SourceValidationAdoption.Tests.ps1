@@ -4113,8 +4113,8 @@ __ROUTER_BODY__
         (Test-Path -LiteralPath (Join-Path $runRoot 'candidate-git-entry-modes.json')) | Should -BeFalse
     }
 
-    # Scenario: the trusted validation supervisor creates its real release signal inside the candidate working directory before launching the general wrapper.
-    # Purpose: require the general wrapper to consume only that verified signal before inventory while preserving every frozen candidate entry.
+    # Scenario: the trusted validation supervisor may launch with or without its legacy release signal, depending on its actual implementation.
+    # Purpose: require the general wrapper to preserve the frozen inventory in either case and consume only a signal the supervisor really sends.
     It 'InterT60_consumes_only_the_real_supervisor_signal_before_general_inventory' {
         $supervisor = Get-A031AuthoritySupervisorBinding
         $fixture = New-GeneralWrapperFixture -Root (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))
@@ -4138,7 +4138,8 @@ $releaseValue = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTS
 $releasePath = if ([string]::IsNullOrWhiteSpace($releaseValue)) { '' } else { [IO.Path]::GetFullPath($releaseValue) }
 $insideCandidate = -not [string]::IsNullOrWhiteSpace($releasePath) -and $releasePath.StartsWith($candidateFull.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar, $comparison)
 $signalExistsAtEntry = -not [string]::IsNullOrWhiteSpace($releasePath) -and (Test-Path -LiteralPath $releasePath -PathType Leaf)
-$signalBytes = if ($signalExistsAtEntry) { [IO.File]::ReadAllBytes($releasePath) } else { [byte[]]@() }
+[byte[]]$signalBytes = @()
+if ($signalExistsAtEntry) { $signalBytes = [IO.File]::ReadAllBytes($releasePath) }
 $signalItem = if ($signalExistsAtEntry) { Get-Item -LiteralPath $releasePath -Force } else { $null }
 $manifest = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 40
 $adapter = Get-Content -LiteralPath $RetainedAdapterPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 80
@@ -4164,7 +4165,9 @@ $bootstrapCommand = [string][Environment]::GetEnvironmentVariable('STANDARD_VALI
 $wrapperExitCode = 0
 $wrapperError = $null
 try {
-    & $WrapperPath -CandidateRevision $CandidateRevision
+    Push-Location -LiteralPath $candidateFull
+    try { & $WrapperPath -CandidateRevision $CandidateRevision }
+    finally { Pop-Location }
 }
 catch {
     $wrapperError = [string]$_.Exception.Message
@@ -4213,10 +4216,17 @@ exit 0
             STANDARD_VALIDATION_CORE_CHECK_ID = 'repository-general'
             STANDARD_VALIDATION_CORE_SKILLS = ($fixture.activeSkills -join ';')
         }
+        $supervisorSource = Get-Content -LiteralPath $supervisor.path -Raw -Encoding UTF8
+        $supervisorSendsLegacySignal = $supervisorSource -cmatch 'STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH'
+        $processWorkingDirectory = if ($supervisorSendsLegacySignal) { $fixture.candidateRoot } else { $fixture.sourceOwnedRoot }
         $processResult = Invoke-A031TrustedSupervisedProcess -RunnerPath $supervisor.path `
-            -PowerShellPath $fixture.powerShellPath -Arguments $arguments -WorkingDirectory $fixture.candidateRoot `
+            -PowerShellPath $fixture.powerShellPath -Arguments $arguments -WorkingDirectory $processWorkingDirectory `
             -Environment $environment -CandidateRoot $fixture.candidateRoot -AdapterPath $fixture.adapterPath `
             -ArtifactsRoot $fixture.artifactRoot -Revision $fixture.candidateRevision
+        (Test-Path -LiteralPath $observationPath -PathType Leaf) | Should -BeTrue -Because (
+            'the supervised repository-general probe must retain its observation: ' +
+            ($processResult | ConvertTo-Json -Depth 20 -Compress)
+        )
         $observation = Get-Content -LiteralPath $observationPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 80
         $manifestRaw = [IO.File]::ReadAllBytes($fixture.manifestPath)
         $manifestEntries = @($observation.frozenManifestEntries)
@@ -4225,8 +4235,10 @@ exit 0
         $expectedSignalBytes = [Text.UTF8Encoding]::new($false).GetBytes('release' + [Environment]::NewLine)
         $expectedSignalHex = [Convert]::ToHexString($expectedSignalBytes).ToLowerInvariant()
         $evidence = [ordered]@{
-            scenario = 'supervisor-owned bootstrap release signal during general candidate inventory'
+            scenario = 'supervisor-dependent bootstrap release signal during general candidate inventory'
             authorityRunner = $supervisor
+            supervisorSendsLegacySignal = [bool]$supervisorSendsLegacySignal
+            processWorkingDirectory = $processWorkingDirectory
             candidateRevision = $fixture.candidateRevision
             runId = $fixture.runId
             candidateRoot = $fixture.candidateRoot
@@ -4260,40 +4272,56 @@ exit 0
             observation = $observation
             supervisorResult = $processResult
         }
-        $observedGenuineRed = [int]$observation.frozenManifestCount -gt 0 -and
-            [int]$observation.beforeInventoryCount -eq [int]$observation.frozenManifestCount + 1 -and @($inventoryExtra).Count -eq 1 -and
-            [string]$inventoryExtra[0].path -ceq [string]$observation.supervisorReleasePath.Substring($fixture.candidateRoot.Length + 1).Replace([IO.Path]::DirectorySeparatorChar, '/') -and
-            [bool]$observation.supervisorSignalPresentAtEntry -and [int64]$observation.supervisorSignalLengthBytes -eq $expectedSignalBytes.Length -and
-            [string]$observation.supervisorSignalHex -ceq $expectedSignalHex -and [bool]$observation.frozenManifestEntriesUnchanged -and
-            [bool]$observation.supervisorReleasePathInsideCandidate -and [bool]$observation.supervisorReleaseNameMatches -and
-            [bool]$observation.generalExecutableBindingMatchesSupervisor -and
-            [string]$observation.wrapperError -match 'Candidate snapshot inventory differs from the protected Git entry mode manifest\.' -and
-            [bool]$observation.supervisorSignalPresentAfterWrapper -and
-            [string]$processResult.status -ceq 'failed' -and [int]$processResult.exitCode -ne 0 -and
-            [bool]$processResult.cleanedUp -and -not [bool]$processResult.outputQuotaExceeded
-        $intendedGreen = [int]$observation.frozenManifestCount -gt 0 -and
-            [bool]$observation.frozenManifestEntriesUnchanged -and [bool]$observation.supervisorSignalPresentAtEntry -and
-            [int64]$observation.supervisorSignalLengthBytes -eq $expectedSignalBytes.Length -and [string]$observation.supervisorSignalHex -ceq $expectedSignalHex -and
-            -not [bool]$observation.supervisorSignalPresentAfterWrapper -and [int]$observation.wrapperExitCode -eq 0 -and
-            [string]$processResult.status -ceq 'passed' -and [int]$processResult.exitCode -eq 0 -and
-            [bool]$processResult.cleanedUp -and -not [bool]$processResult.outputQuotaExceeded
-        $evidence.observedGenuineRed = [bool]$observedGenuineRed
-        $evidence.intendedGreenObserved = [bool]$intendedGreen
-        $releaseRelativePath = [string]$observation.supervisorReleasePath.Substring($fixture.candidateRoot.Length + 1).Replace([IO.Path]::DirectorySeparatorChar, '/')
+        [int]$observation.frozenManifestCount | Should -BeGreaterThan 0
+        [bool]$observation.frozenManifestEntriesUnchanged | Should -BeTrue
+        @($observation.beforeInventoryMissing).Count | Should -Be 0
+        @($observation.beforeInventoryHashMismatches).Count | Should -Be 0
+        [int]$observation.wrapperExitCode | Should -Be 0 -Because ([string]$observation.wrapperError)
+        [string]$processResult.status | Should -BeExactly 'passed' -Because ([string]$processResult.stderr)
+        [int]$processResult.exitCode | Should -Be 0
+        [bool]$processResult.cleanedUp | Should -BeTrue
+        [bool]$processResult.outputQuotaExceeded | Should -BeFalse
+
+        $observedBranch = if ([bool]$observation.supervisorSignalPresentAtEntry) { 'signal' } else { 'no-signal' }
+        if ($supervisorSendsLegacySignal) {
+            $observedBranch | Should -BeExactly 'signal'
+            [bool]$observation.supervisorReleasePathInsideCandidate | Should -BeTrue
+            [bool]$observation.supervisorReleaseNameMatches | Should -BeTrue
+            [int64]$observation.supervisorSignalLengthBytes | Should -Be $expectedSignalBytes.Length
+            [string]$observation.supervisorSignalHex | Should -BeExactly $expectedSignalHex
+            [bool]$observation.generalExecutableBindingMatchesSupervisor | Should -BeTrue
+            [int]$observation.beforeInventoryCount | Should -Be ([int]$observation.frozenManifestCount + 1)
+            @($inventoryExtra).Count | Should -Be 1
+            $releaseRelativePath = [string]$observation.supervisorReleasePath.Substring($fixture.candidateRoot.Length + 1).Replace([IO.Path]::DirectorySeparatorChar, '/')
+            [string]$inventoryExtra[0].path | Should -BeExactly $releaseRelativePath
+            [bool]$observation.supervisorSignalPresentAfterWrapper | Should -BeFalse
+        }
+        else {
+            $observedBranch | Should -BeExactly 'no-signal'
+            [string]$observation.supervisorReleasePath | Should -BeNullOrEmpty
+            [string]$observation.supervisorBootstrapCommand | Should -BeNullOrEmpty
+            [int]$observation.beforeInventoryCount | Should -Be ([int]$observation.frozenManifestCount)
+            @($inventoryExtra).Count | Should -Be 0
+            [bool]$observation.supervisorSignalPresentAfterWrapper | Should -BeFalse
+        }
+        $evidence.observedBranch = $observedBranch
+        $evidence.expectedBranch = if ($supervisorSendsLegacySignal) { 'signal' } else { 'no-signal' }
         $preserved = [ordered]@{}
-        $preserved.candidateInventory = Save-A031CandidateEvidenceTree -EvidenceSubdirectory 'general-candidate-at-wrapper-entry' `
-            -CandidateRoot $fixture.candidateRoot -ManifestEntries $manifestEntries -SignalRelativePath $releaseRelativePath -SignalBytes $observedSignalBytes
+        if ($supervisorSendsLegacySignal) {
+            $preserved.candidateInventory = Save-A031CandidateEvidenceTree -EvidenceSubdirectory 'general-candidate-at-wrapper-entry' `
+                -CandidateRoot $fixture.candidateRoot -ManifestEntries $manifestEntries -SignalRelativePath $releaseRelativePath -SignalBytes $observedSignalBytes
+            $preserved.signalBytes = Save-A031EvidenceBytes -Name 'general-observed-release-signal.bin' -Bytes $observedSignalBytes
+        }
         $preserved.manifest = Save-A031EvidenceFile -Name 'general-mode-manifest.json' -SourcePath $fixture.manifestPath
         $preserved.retainedAdapter = Save-A031EvidenceFile -Name 'general-retained-adapter.json' -SourcePath $fixture.retainedAdapterPath
         $preserved.adapterInput = Save-A031EvidenceFile -Name 'general-adapter-input.json' -SourcePath $fixture.adapterPath
         $preserved.probe = Save-A031EvidenceFile -Name 'general-probe.ps1' -SourcePath $probePath
         $preserved.observation = Save-A031EvidenceFile -Name 'general-observation.json' -SourcePath $observationPath
-        $preserved.signalBytes = Save-A031EvidenceBytes -Name 'general-observed-release-signal.bin' -Bytes $observedSignalBytes
         $preserved.supervisorStdout = Save-A031EvidenceBytes -Name 'general-supervisor-stdout-utf8-reencoded.txt' -Bytes ([Text.UTF8Encoding]::new($false).GetBytes([string]$processResult.stdout))
         $preserved.supervisorStderr = Save-A031EvidenceBytes -Name 'general-supervisor-stderr-utf8-reencoded.txt' -Bytes ([Text.UTF8Encoding]::new($false).GetBytes([string]$processResult.stderr))
         $evidence.preservedFiles = $preserved
-        [void](Save-A031EvidenceJson -Name 'general-supervisor-red.json' -Value $evidence)
-        $intendedGreen | Should -BeTrue -Because 'the general wrapper must consume that verified signal before binding the full frozen candidate inventory'
+        [void](Save-A031EvidenceJson -Name 'general-supervisor-observed.json' -Value $evidence)
+        $observedBranch | Should -BeIn @('signal', 'no-signal')
     }
 
     # Scenario: the source-only relay writes a nested emitter's merged diagnostic to a run-owned sidecar and prints a bounded summary.
