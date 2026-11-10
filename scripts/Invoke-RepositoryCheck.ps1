@@ -191,32 +191,10 @@ $integrityModuleBindings = @($sourceSpec.frozenFiles | Where-Object {
 if ($integrityModuleBindings.Count -ne 1 -or -not (Test-Path -LiteralPath $integrityModulePath -PathType Leaf) -or
     [string]$integrityModuleBindings[0].sha256 -cnotmatch '^[0-9a-f]{64}$' -or
     (Get-FileSha256 -Path $integrityModulePath) -cne [string]$integrityModuleBindings[0].sha256) {
-    throw 'Repository general bootstrap cleanup helper differs from its exact retained frozen module binding.'
+    throw 'Repository general integrity helper differs from its exact retained frozen module binding.'
 }
-Import-Module -Name $integrityModulePath -Function Remove-CorePesterConsumedBootstrapSignal -Force -ErrorAction Stop
-
-$bootstrapReleasePath = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', 'Process')
-$bootstrapCommand = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', 'Process')
-$hasBootstrapReleasePath = -not [string]::IsNullOrWhiteSpace($bootstrapReleasePath)
-$hasBootstrapCommand = -not [string]::IsNullOrWhiteSpace($bootstrapCommand)
-if ($hasBootstrapReleasePath -xor $hasBootstrapCommand) {
-    throw 'Repository general bootstrap signal requires both trusted supervisor release path and command.'
-}
-if ($hasBootstrapReleasePath) {
-    if (-not [IO.Path]::IsPathFullyQualified($bootstrapReleasePath) -or
-        -not [IO.Path]::IsPathFullyQualified($bootstrapCommand) -or
-        -not [IO.Path]::GetFullPath($bootstrapCommand).Equals($generalExecutablePath, $pathComparison)) {
-        throw 'Repository general bootstrap command differs from the retained general PowerShell executable.'
-    }
-    $bootstrapSignalPath = [IO.Path]::GetFullPath($bootstrapReleasePath)
-    $bootstrapSignalRelativePath = [IO.Path]::GetRelativePath($candidateRoot, $bootstrapSignalPath).
-        Replace([IO.Path]::DirectorySeparatorChar, '/').Replace([IO.Path]::AltDirectorySeparatorChar, '/')
-    if ($manifestEntries.ContainsKey($bootstrapSignalRelativePath)) {
-        throw 'Tracked candidate file cannot be consumed as a repository general bootstrap signal.'
-    }
-    Remove-CorePesterConsumedBootstrapSignal -CandidateRoot $candidateRoot -ReleasePath $bootstrapReleasePath `
-        -BootstrapCommand $bootstrapCommand -VerifiedPowerShellExecutable $generalExecutablePath
-}
+Import-Module -Name $integrityModulePath -Function Assert-NoLegacyCorePesterBootstrapEnvironment -Force -ErrorAction Stop
+Assert-NoLegacyCorePesterBootstrapEnvironment
 
 $candidateInventory = [Collections.Generic.SortedDictionary[string, object]]::new([StringComparer]::Ordinal)
 foreach ($file in @(Get-ChildItem -LiteralPath $candidateRoot -Recurse -File -Force -ErrorAction Stop)) {

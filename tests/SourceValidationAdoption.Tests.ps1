@@ -964,6 +964,7 @@ Describe 'Protected Standard Core SourceValidation preparation' {
                 [void](New-Item -ItemType Directory -Path (Split-Path -Parent $securityPolicyPath) -Force)
                 $gitStartInfo = [Diagnostics.ProcessStartInfo]::new()
                 $gitStartInfo.FileName = $GitPath
+                $gitStartInfo.WorkingDirectory = $OwnedRoot
                 $gitStartInfo.UseShellExecute = $false
                 $gitStartInfo.RedirectStandardOutput = $true
                 $gitStartInfo.RedirectStandardError = $true
@@ -4041,47 +4042,37 @@ __ROUTER_BODY__
         $previousBootstrapReleasePath = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', 'Process')
         $previousBootstrapCommand = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', 'Process')
         $pwsh = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
-        $foreignBootstrapReleasePath = Join-Path $fixture.sourceOwnedRoot 'a031-foreign-bootstrap-release.sig'
-        $foreignBootstrapCommand = $pwsh
-        $bootstrapEnvironmentRestored = $false
+        $legacyBootstrapEnvironmentAbsent = $false
         try {
             [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_CORE_RUN_ID', $fixture.runId, 'Process')
             [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_CORE_CHECK_ID', 'repository-general', 'Process')
             [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_CORE_SKILLS', ($fixture.activeSkills -join ';'), 'Process')
-            # Simulate the outer protected runner's foreign bootstrap context. This direct wrapper
-            # invocation is intentionally unsupervised, so clear exactly those two values temporarily.
-            [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', $foreignBootstrapReleasePath, 'Process')
-            [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', $foreignBootstrapCommand, 'Process')
-            [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', 'Process') | Should -Be $foreignBootstrapReleasePath
-            [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', 'Process') | Should -Be $foreignBootstrapCommand
-            [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', $null, 'Process')
-            [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', $null, 'Process')
+            Remove-Item -LiteralPath 'Env:STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH' -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath 'Env:STANDARD_VALIDATION_BOOTSTRAP_COMMAND' -ErrorAction SilentlyContinue
+            [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', 'Process') | Should -BeNullOrEmpty
+            [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', 'Process') | Should -BeNullOrEmpty
+            $legacyBootstrapEnvironmentAbsent = $true
             Push-Location -LiteralPath $fixture.candidateRoot
             try {
                 & $pwsh -NoLogo -NoProfile -NonInteractive -File $fixture.wrapperPath `
                     -CandidateRevision $fixture.candidateRevision 1> $stdoutPath 2> $stderrPath
                 $exitCode = $LASTEXITCODE
             }
-            finally {
-                Pop-Location
-                [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', $foreignBootstrapReleasePath, 'Process')
-                [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', $foreignBootstrapCommand, 'Process')
-            }
-            [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', 'Process') | Should -Be $foreignBootstrapReleasePath
-            [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', 'Process') | Should -Be $foreignBootstrapCommand
-            $bootstrapEnvironmentRestored = $true
+            finally { Pop-Location }
         }
         finally {
             [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_CORE_RUN_ID', $previousRunId, 'Process')
             [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_CORE_CHECK_ID', $previousCheckId, 'Process')
             [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_CORE_SKILLS', $previousSkills, 'Process')
-            [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', $previousBootstrapReleasePath, 'Process')
-            [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', $previousBootstrapCommand, 'Process')
+            if ($null -eq $previousBootstrapReleasePath) { Remove-Item -LiteralPath 'Env:STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH' -ErrorAction SilentlyContinue }
+            else { [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', $previousBootstrapReleasePath, 'Process') }
+            if ($null -eq $previousBootstrapCommand) { Remove-Item -LiteralPath 'Env:STANDARD_VALIDATION_BOOTSTRAP_COMMAND' -ErrorAction SilentlyContinue }
+            else { [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', $previousBootstrapCommand, 'Process') }
         }
 
         $stderr = Get-Content -LiteralPath $stderrPath -Raw -Encoding UTF8
         $stdout = Get-Content -LiteralPath $stdoutPath -Raw -Encoding UTF8
-        $bootstrapEnvironmentRestored | Should -BeTrue
+        $legacyBootstrapEnvironmentAbsent | Should -BeTrue
         if ($exitCode -ne 0) { throw "General wrapper failed with exit $exitCode. stderr=$stderr stdout=$stdout" }
         $exitCode | Should -Be 0
         $stderr | Should -BeNullOrEmpty
@@ -4113,9 +4104,9 @@ __ROUTER_BODY__
         (Test-Path -LiteralPath (Join-Path $runRoot 'candidate-git-entry-modes.json')) | Should -BeFalse
     }
 
-    # Scenario: the trusted validation supervisor creates its real release signal inside the candidate working directory before launching the general wrapper.
-    # Purpose: require the general wrapper to consume only that verified signal before inventory while preserving every frozen candidate entry.
-    It 'InterT60_consumes_only_the_real_supervisor_signal_before_general_inventory' {
+    # Scenario: the current trusted validation supervisor launches the general wrapper without the removed legacy bootstrap transport.
+    # Purpose: prove the wrapper sees the exact frozen inventory, runs outside a candidate child cwd, and passes without deleting any signal file.
+    It 'InterT60_runs_the_real_supervisor_without_legacy_bootstrap_transport' {
         $supervisor = Get-A031AuthoritySupervisorBinding
         $fixture = New-GeneralWrapperFixture -Root (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))
         $probePath = Join-Path $fixture.sourceOwnedRoot 'a031-general-inventory-probe.ps1'
@@ -4138,7 +4129,8 @@ $releaseValue = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTS
 $releasePath = if ([string]::IsNullOrWhiteSpace($releaseValue)) { '' } else { [IO.Path]::GetFullPath($releaseValue) }
 $insideCandidate = -not [string]::IsNullOrWhiteSpace($releasePath) -and $releasePath.StartsWith($candidateFull.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar, $comparison)
 $signalExistsAtEntry = -not [string]::IsNullOrWhiteSpace($releasePath) -and (Test-Path -LiteralPath $releasePath -PathType Leaf)
-$signalBytes = if ($signalExistsAtEntry) { [IO.File]::ReadAllBytes($releasePath) } else { [byte[]]@() }
+[byte[]]$signalBytes = @()
+if ($signalExistsAtEntry) { $signalBytes = [IO.File]::ReadAllBytes($releasePath) }
 $signalItem = if ($signalExistsAtEntry) { Get-Item -LiteralPath $releasePath -Force } else { $null }
 $manifest = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 40
 $adapter = Get-Content -LiteralPath $RetainedAdapterPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 80
@@ -4164,7 +4156,9 @@ $bootstrapCommand = [string][Environment]::GetEnvironmentVariable('STANDARD_VALI
 $wrapperExitCode = 0
 $wrapperError = $null
 try {
-    & $WrapperPath -CandidateRevision $CandidateRevision
+    Push-Location -LiteralPath $candidateFull
+    try { & $WrapperPath -CandidateRevision $CandidateRevision }
+    finally { Pop-Location }
 }
 catch {
     $wrapperError = [string]$_.Exception.Message
@@ -4214,18 +4208,19 @@ exit 0
             STANDARD_VALIDATION_CORE_SKILLS = ($fixture.activeSkills -join ';')
         }
         $processResult = Invoke-A031TrustedSupervisedProcess -RunnerPath $supervisor.path `
-            -PowerShellPath $fixture.powerShellPath -Arguments $arguments -WorkingDirectory $fixture.candidateRoot `
+            -PowerShellPath $fixture.powerShellPath -Arguments $arguments -WorkingDirectory $fixture.sourceOwnedRoot `
             -Environment $environment -CandidateRoot $fixture.candidateRoot -AdapterPath $fixture.adapterPath `
             -ArtifactsRoot $fixture.artifactRoot -Revision $fixture.candidateRevision
+        (Test-Path -LiteralPath $observationPath -PathType Leaf) | Should -BeTrue -Because (
+            'the supervised repository-general probe must retain its observation: ' +
+            ($processResult | ConvertTo-Json -Depth 20 -Compress)
+        )
         $observation = Get-Content -LiteralPath $observationPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 80
         $manifestRaw = [IO.File]::ReadAllBytes($fixture.manifestPath)
         $manifestEntries = @($observation.frozenManifestEntries)
         $inventoryExtra = @($observation.beforeInventoryOnly)
-        $observedSignalBytes = [Convert]::FromBase64String([string]$observation.supervisorSignalBase64)
-        $expectedSignalBytes = [Text.UTF8Encoding]::new($false).GetBytes('release' + [Environment]::NewLine)
-        $expectedSignalHex = [Convert]::ToHexString($expectedSignalBytes).ToLowerInvariant()
         $evidence = [ordered]@{
-            scenario = 'supervisor-owned bootstrap release signal during general candidate inventory'
+            scenario = 'supervisor launches repository-general without legacy bootstrap transport'
             authorityRunner = $supervisor
             candidateRevision = $fixture.candidateRevision
             runId = $fixture.runId
@@ -4248,10 +4243,6 @@ exit 0
             beforeInventoryMissing = @($observation.beforeInventoryMissing)
             beforeInventoryHashMismatches = @($observation.beforeInventoryHashMismatches)
             frozenManifestEntriesUnchanged = [bool]$observation.frozenManifestEntriesUnchanged
-            expectedSupervisorSignalHex = $expectedSignalHex
-            observedSupervisorSignalLengthBytes = $observedSignalBytes.Length
-            observedSupervisorSignalSha256 = ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($observedSignalBytes))).ToLowerInvariant()
-            observedSupervisorSignalEqualsExpected = [Convert]::ToHexString($observedSignalBytes) -ceq [Convert]::ToHexString($expectedSignalBytes)
             supervisorStreamsEvidenceEncoding = 'UTF-8 no-BOM re-encoding of the trusted supervisor returned stdout/stderr text; these are not original child byte streams.'
             supervisorApiCall = $script:A031LastProcessInvocation
             probePath = $probePath
@@ -4260,40 +4251,28 @@ exit 0
             observation = $observation
             supervisorResult = $processResult
         }
-        $observedGenuineRed = [int]$observation.frozenManifestCount -gt 0 -and
-            [int]$observation.beforeInventoryCount -eq [int]$observation.frozenManifestCount + 1 -and @($inventoryExtra).Count -eq 1 -and
-            [string]$inventoryExtra[0].path -ceq [string]$observation.supervisorReleasePath.Substring($fixture.candidateRoot.Length + 1).Replace([IO.Path]::DirectorySeparatorChar, '/') -and
-            [bool]$observation.supervisorSignalPresentAtEntry -and [int64]$observation.supervisorSignalLengthBytes -eq $expectedSignalBytes.Length -and
-            [string]$observation.supervisorSignalHex -ceq $expectedSignalHex -and [bool]$observation.frozenManifestEntriesUnchanged -and
-            [bool]$observation.supervisorReleasePathInsideCandidate -and [bool]$observation.supervisorReleaseNameMatches -and
-            [bool]$observation.generalExecutableBindingMatchesSupervisor -and
-            [string]$observation.wrapperError -match 'Candidate snapshot inventory differs from the protected Git entry mode manifest\.' -and
-            [bool]$observation.supervisorSignalPresentAfterWrapper -and
-            [string]$processResult.status -ceq 'failed' -and [int]$processResult.exitCode -ne 0 -and
-            [bool]$processResult.cleanedUp -and -not [bool]$processResult.outputQuotaExceeded
-        $intendedGreen = [int]$observation.frozenManifestCount -gt 0 -and
-            [bool]$observation.frozenManifestEntriesUnchanged -and [bool]$observation.supervisorSignalPresentAtEntry -and
-            [int64]$observation.supervisorSignalLengthBytes -eq $expectedSignalBytes.Length -and [string]$observation.supervisorSignalHex -ceq $expectedSignalHex -and
+        $currentContractPassed = [int]$observation.frozenManifestCount -gt 0 -and
+            [int]$observation.beforeInventoryCount -eq [int]$observation.frozenManifestCount -and
+            @($inventoryExtra).Count -eq 0 -and @($observation.beforeInventoryMissing).Count -eq 0 -and
+            @($observation.beforeInventoryHashMismatches).Count -eq 0 -and [bool]$observation.frozenManifestEntriesUnchanged -and
+            [string]::IsNullOrWhiteSpace([string]$observation.supervisorReleasePath) -and
+            [string]::IsNullOrWhiteSpace([string]$observation.supervisorBootstrapCommand) -and
+            -not [bool]$observation.supervisorSignalPresentAtEntry -and
             -not [bool]$observation.supervisorSignalPresentAfterWrapper -and [int]$observation.wrapperExitCode -eq 0 -and
             [string]$processResult.status -ceq 'passed' -and [int]$processResult.exitCode -eq 0 -and
             [bool]$processResult.cleanedUp -and -not [bool]$processResult.outputQuotaExceeded
-        $evidence.observedGenuineRed = [bool]$observedGenuineRed
-        $evidence.intendedGreenObserved = [bool]$intendedGreen
-        $releaseRelativePath = [string]$observation.supervisorReleasePath.Substring($fixture.candidateRoot.Length + 1).Replace([IO.Path]::DirectorySeparatorChar, '/')
+        $evidence.currentContractPassed = [bool]$currentContractPassed
         $preserved = [ordered]@{}
-        $preserved.candidateInventory = Save-A031CandidateEvidenceTree -EvidenceSubdirectory 'general-candidate-at-wrapper-entry' `
-            -CandidateRoot $fixture.candidateRoot -ManifestEntries $manifestEntries -SignalRelativePath $releaseRelativePath -SignalBytes $observedSignalBytes
         $preserved.manifest = Save-A031EvidenceFile -Name 'general-mode-manifest.json' -SourcePath $fixture.manifestPath
         $preserved.retainedAdapter = Save-A031EvidenceFile -Name 'general-retained-adapter.json' -SourcePath $fixture.retainedAdapterPath
         $preserved.adapterInput = Save-A031EvidenceFile -Name 'general-adapter-input.json' -SourcePath $fixture.adapterPath
         $preserved.probe = Save-A031EvidenceFile -Name 'general-probe.ps1' -SourcePath $probePath
         $preserved.observation = Save-A031EvidenceFile -Name 'general-observation.json' -SourcePath $observationPath
-        $preserved.signalBytes = Save-A031EvidenceBytes -Name 'general-observed-release-signal.bin' -Bytes $observedSignalBytes
         $preserved.supervisorStdout = Save-A031EvidenceBytes -Name 'general-supervisor-stdout-utf8-reencoded.txt' -Bytes ([Text.UTF8Encoding]::new($false).GetBytes([string]$processResult.stdout))
         $preserved.supervisorStderr = Save-A031EvidenceBytes -Name 'general-supervisor-stderr-utf8-reencoded.txt' -Bytes ([Text.UTF8Encoding]::new($false).GetBytes([string]$processResult.stderr))
         $evidence.preservedFiles = $preserved
-        [void](Save-A031EvidenceJson -Name 'general-supervisor-red.json' -Value $evidence)
-        $intendedGreen | Should -BeTrue -Because 'the general wrapper must consume that verified signal before binding the full frozen candidate inventory'
+        [void](Save-A031EvidenceJson -Name 'general-supervisor-current-contract.json' -Value $evidence)
+        $currentContractPassed | Should -BeTrue -Because 'the ead supervisor must launch repository-general without the removed legacy bootstrap transport'
     }
 
     # Scenario: the source-only relay writes a nested emitter's merged diagnostic to a run-owned sidecar and prints a bounded summary.
@@ -4589,9 +4568,9 @@ exit 0
         (Test-Path -LiteralPath $junctionTarget) | Should -BeFalse
     }
 
-    # Scenario: the general wrapper receives an invalid frozen cleanup binding or a path already committed in the candidate manifest.
-    # Purpose: keep cleanup fail-closed for module path/hash, general executable hash, and tracked-file identity.
-    It 'InterT65_general_cleanup_bindings_and_tracked_path_fail_closed' {
+    # Scenario: the general wrapper receives an invalid frozen integrity binding or an obsolete bootstrap transport variable.
+    # Purpose: keep module path/hash, general executable hash, and legacy-environment handling fail closed.
+    It 'InterT65_general_integrity_bindings_and_legacy_environment_fail_closed' {
         function Write-A031GeneralAdapterCopies {
             param([Parameter(Mandatory)] $Fixture, [Parameter(Mandatory)] $Adapter)
             $text = ($Adapter | ConvertTo-Json -Depth 80 -Compress) + [Environment]::NewLine
@@ -4616,8 +4595,10 @@ exit 0
                 [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_CORE_RUN_ID', $Fixture.runId, 'Process')
                 [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_CORE_CHECK_ID', 'repository-general', 'Process')
                 [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_CORE_SKILLS', ($Fixture.activeSkills -join ';'), 'Process')
-                [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', $ReleasePath, 'Process')
-                [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', $BootstrapCommand, 'Process')
+                if ($null -eq $ReleasePath) { Remove-Item -LiteralPath 'Env:STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH' -ErrorAction SilentlyContinue }
+                else { [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', $ReleasePath, 'Process') }
+                if ($null -eq $BootstrapCommand) { Remove-Item -LiteralPath 'Env:STANDARD_VALIDATION_BOOTSTRAP_COMMAND' -ErrorAction SilentlyContinue }
+                else { [Environment]::SetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', $BootstrapCommand, 'Process') }
                 Push-Location -LiteralPath $Fixture.candidateRoot
                 try {
                     & $Fixture.powerShellPath -NoLogo -NoProfile -NonInteractive -File $Fixture.wrapperPath `
@@ -4627,7 +4608,10 @@ exit 0
                 finally { Pop-Location }
             }
             finally {
-                foreach ($name in $environmentNames) { [Environment]::SetEnvironmentVariable($name, $previousEnvironment[$name], 'Process') }
+                foreach ($name in $environmentNames) {
+                    if ($null -eq $previousEnvironment[$name]) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
+                    else { [Environment]::SetEnvironmentVariable($name, $previousEnvironment[$name], 'Process') }
+                }
             }
             $stdout = if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw -Encoding UTF8 } else { '' }
             $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw -Encoding UTF8 } else { '' }
@@ -4638,7 +4622,7 @@ exit 0
         $mutations = @(
             [pscustomobject]@{
                 name = 'frozen protected module SHA mismatch'
-                expectedError = 'Repository general bootstrap cleanup helper differs from its exact retained frozen module binding.'
+                expectedError = 'Repository general integrity helper differs from its exact retained frozen module binding.'
                 mutate = {
                     param($adapter, $fixture)
                     $modulePath = Join-Path $fixture.sourceOwnedRoot 'runtime/ProtectedSourceChecks/scripts/CorePesterIntegrity.psm1'
@@ -4649,7 +4633,7 @@ exit 0
             }
             [pscustomobject]@{
                 name = 'frozen protected module path mismatch'
-                expectedError = 'Repository general bootstrap cleanup helper differs from its exact retained frozen module binding.'
+                expectedError = 'Repository general integrity helper differs from its exact retained frozen module binding.'
                 mutate = {
                     param($adapter, $fixture)
                     $modulePath = Join-Path $fixture.sourceOwnedRoot 'runtime/ProtectedSourceChecks/scripts/CorePesterIntegrity.psm1'
@@ -4722,15 +4706,15 @@ exit 0
         $trackedAssertionText = [regex]::Replace($trackedCombined, '\r?\n\s*\|\s*', ' ')
         $trackedAssertionText = [regex]::Replace($trackedAssertionText, '\s+', ' ').Trim()
         $trackedResult.exitCode | Should -Not -Be 0
-        $trackedAssertionText | Should -Match 'Tracked candidate file cannot be consumed as a repository general bootstrap signal\.'
+        $trackedAssertionText | Should -Match "unexpected legacy bootstrap transport variable 'STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH'"
         (Get-SourceBindingFixtureHash -Path $trackedSignalPath) | Should -Be $trackedBeforeHash
         $results.Add([pscustomobject]@{
-            name = 'tracked supervisor-shaped signal path'; expectedError = 'Tracked candidate file cannot be consumed as a repository general bootstrap signal.'
+            name = 'legacy bootstrap transport with tracked candidate path'; expectedError = "unexpected legacy bootstrap transport variable 'STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH'"
             exitCode = $trackedResult.exitCode; stdout = $trackedResult.stdout; stderr = $trackedResult.stderr
             signalPath = $trackedSignalPath; signalSha256 = $trackedSignalSha256; signalPreserved = ((Get-SourceBindingFixtureHash -Path $trackedSignalPath) -ceq $trackedBeforeHash)
             manifestSha256 = $manifestSha256; retainedAdapterSha256 = Get-SourceBindingFixtureHash -Path $trackedFixture.retainedAdapterPath
         })
-        [void](Save-A031EvidenceJson -Name 'general-cleanup-guard-cases.json' -Value ([ordered]@{ cases = @($results.ToArray()) }))
+        [void](Save-A031EvidenceJson -Name 'general-integrity-guard-cases.json' -Value ([ordered]@{ cases = @($results.ToArray()) }))
     }
 
     # Scenario: canonical CI validates the immutable candidate through the protected event-base source gate.
