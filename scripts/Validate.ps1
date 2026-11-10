@@ -1098,6 +1098,8 @@ try {
         }
         'static' {
             Assert-FileIdentity -Path ([string]$toolchain.skillSpectorPath) -Sha256 ([string]$toolchain.skillSpectorSha256) -Context 'SkillSpector executable'
+            # Keep Python import caches outside the frozen installed tool closure.
+            $env:PYTHONDONTWRITEBYTECODE = '1'
             $skillspectorArrayPropertyPaths = @(
                 'components',
                 'issues',
