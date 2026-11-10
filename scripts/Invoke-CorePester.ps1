@@ -368,10 +368,18 @@ if (-not (Test-Path -LiteralPath $testRoot -PathType Container)) {
     throw "Canonical Pester test root is missing: $testRoot"
 }
 $candidateSnapshotRoot = [IO.Path]::GetFullPath((Get-Location).Path)
-Remove-CorePesterConsumedBootstrapSignal -CandidateRoot $candidateSnapshotRoot `
-    -ReleasePath ([Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', 'Process')) `
-    -BootstrapCommand ([Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', 'Process')) `
-    -VerifiedPowerShellExecutable $verifiedPowerShellExecutable
+$bootstrapReleasePath = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_RELEASE_PATH', 'Process')
+$bootstrapCommand = [Environment]::GetEnvironmentVariable('STANDARD_VALIDATION_BOOTSTRAP_COMMAND', 'Process')
+$hasBootstrapReleasePath = -not [string]::IsNullOrWhiteSpace($bootstrapReleasePath)
+$hasBootstrapCommand = -not [string]::IsNullOrWhiteSpace($bootstrapCommand)
+if ($hasBootstrapReleasePath -xor $hasBootstrapCommand) {
+    throw 'Core Pester bootstrap signal requires both trusted supervisor release path and command.'
+}
+if ($hasBootstrapReleasePath) {
+    Remove-CorePesterConsumedBootstrapSignal -CandidateRoot $candidateSnapshotRoot `
+        -ReleasePath $bootstrapReleasePath -BootstrapCommand $bootstrapCommand `
+        -VerifiedPowerShellExecutable $verifiedPowerShellExecutable
+}
 $candidateSnapshotBefore = Get-CorePesterTreeSnapshot -Root $candidateSnapshotRoot
 if (-not $candidateSnapshotBefore.IsValid) { throw ('Core Pester candidate snapshot could not be bound: ' + (@($candidateSnapshotBefore.Errors) -join '; ')) }
 $previousErrorActionPreference = $ErrorActionPreference
