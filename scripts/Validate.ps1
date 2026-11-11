@@ -409,12 +409,12 @@ function Assert-ProtectedDriverAuthorityConfig {
         Assert-AuthorityConfig -Config $Config
         return
     }
-    if (@('ff85d5f80fe795b96354e753074b5ce59ad04ecd', '8e627baf54bd6e47862e6291b25e71cc45a2f2b7', 'ead467c3488c103546f316d137196b447a1ff58a') -ccontains $commit) {
+    if (@('ff85d5f80fe795b96354e753074b5ce59ad04ecd', '8e627baf54bd6e47862e6291b25e71cc45a2f2b7', 'ead467c3488c103546f316d137196b447a1ff58a', '472cbd6f533d3f6d0a5381862128ebcc87618a7c') -ccontains $commit) {
         Import-Module -Name (Join-Path $PSScriptRoot 'StandardSourceDriver.psm1') -Force -ErrorAction Stop
         [void](Assert-CodeSourceAuthorityConfig -Config $Config)
         return
     }
-    throw 'Protected driver config must match one exact reviewed 8a, ff85, 8e, or ead authority tuple.'
+    throw 'Protected driver config must match one exact reviewed 8a, ff85, 8e, ead, or 472cbd6 authority tuple.'
 }
 
 function Get-ActiveSkillIds {
@@ -1645,7 +1645,7 @@ function Invoke-CodeSourceToolSetup {
             throw "Source tool setup '$toolName' failed with status '$($processResult.status)', exit $($processResult.exitCode), cleanup=$($processResult.cleanedUp)."
         }
         $receipt = Read-JsonFile -Path $receiptPath -Context "$toolName source resolver receipt"
-        $expectedChannel = if ($toolName -ceq 'skillspector' -and [string]$pin.commit -ceq 'ead467c3488c103546f316d137196b447a1ff58a') {
+        $expectedChannel = if ($toolName -ceq 'skillspector' -and @('ead467c3488c103546f316d137196b447a1ff58a', '472cbd6f533d3f6d0a5381862128ebcc87618a7c') -ccontains [string]$pin.commit) {
             'approved-source-registry'
         }
         else { 'latest-stable' }
@@ -2209,12 +2209,12 @@ function Invoke-CodeSourceValidation {
                     OutputPath = $paths.outputPath
                     ProcessExitCode = $processExitCode
                 }
-                if ([string]$pin.commit -ceq 'ead467c3488c103546f316d137196b447a1ff58a') {
+                if (@('ead467c3488c103546f316d137196b447a1ff58a', '472cbd6f533d3f6d0a5381862128ebcc87618a7c') -ccontains [string]$pin.commit) {
                     $securityPolicyPath = Join-Path $authoritySnapshot.root 'docs/standards/validation-security-gate.json'
-                    $securityPolicy = Read-JsonFile -Path $securityPolicyPath -Context 'ead source validation security policy'
+                    $securityPolicy = Read-JsonFile -Path $securityPolicyPath -Context 'ead/472cbd6 source validation security policy'
                     $skillSpectorStages = @($securityPolicy.stages | Where-Object { [string]$_.id -ceq 'skillspector-static' })
                     if ($skillSpectorStages.Count -ne 1 -or $null -eq $skillSpectorStages[0].platformUnavailableException) {
-                        throw 'The ead source validation security policy does not expose one SkillSpector platform exception contract.'
+                        throw 'The ead/472cbd6 source validation security policy does not expose one SkillSpector platform exception contract.'
                     }
                     $reportArguments.ValidationSecurityPolicy = $skillSpectorStages[0].platformUnavailableException
                 }

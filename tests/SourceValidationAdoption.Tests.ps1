@@ -169,6 +169,37 @@ Describe 'Protected Standard Core SourceValidation preparation' {
             }
         }
 
+        function New-NextSourceAuthorityPinFixture {
+            # Derive the next expectation from the independently checked ead fixture,
+            # then apply the reviewed three changed identities; the path list is unchanged.
+            $approvedPin = New-ApprovedSourceAuthorityPinFixture
+            $changedHashes = [ordered]@{
+                'docs/standards/skill-repository-standard.md' = 'a831a4151f8ea31e90709487af7823256ca4b119784823216a89ee8fcc85da35'
+                'scripts/Resolve-PythonWheelClosure.py' = '45bd49b13acaee461ac38cbdd303016d74f516ae494d77cbd127366603c90681'
+                'scripts/Invoke-StandardValidation.ps1' = '242b9e856d11dffffc512d03b60a7bd1f8ebad101d99cd97556488201b504350'
+            }
+            if ($changedHashes.Count -ne 3 -or $approvedPin.files.Count -ne 51) {
+                throw 'The independent 472cbd6 authority fixture delta has an unexpected shape.'
+            }
+            $files = [ordered]@{}
+            foreach ($path in $approvedPin.files.Keys) {
+                $files[[string]$path] = if ($changedHashes.Contains([string]$path)) {
+                    [string]$changedHashes[[string]$path]
+                }
+                else { [string]$approvedPin.files[[string]$path] }
+            }
+            if ($files.Count -ne 51) { throw 'The independent 472cbd6 authority fixture is not the complete 51-file closure.' }
+
+            $commit = '472cbd6f533d3f6d0a5381862128ebcc87618a7c'
+            return [pscustomobject]@{
+                repository = $approvedPin.repository
+                commit = $commit
+                archiveUrl = "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/$commit"
+                archiveSha256 = '357def24360566e9351af5c7b3bb8b8a7989f9ccb1eaf6f2401fa33e4069d8bf'
+                files = $files
+            }
+        }
+
         function New-SourceBindingFixture {
             param(
                 [Parameter(Mandatory)][string] $Root,
@@ -2341,6 +2372,55 @@ namespace Syp326.Testing
         { Assert-CodeSourceAuthorityConfig -Config $mixed } | Should -Throw
     }
 
+    # Scenario: the protected reader prepares 472cbd6 without changing the checked-in active config.
+    # Purpose: bind the three changed runner dependency hashes while rejecting tuple tampering and keeping ead working.
+    It 'UnitT17_selects_exact_472cbd6_authority_and_rejects_tampered_closures' {
+        Import-Module -Name $script:DriverPath -Force
+        $nextRevision = '472cbd6f533d3f6d0a5381862128ebcc87618a7c'
+        $expectedPin = New-NextSourceAuthorityPinFixture
+        $actualPin = Get-PreparedSourceAuthorityPin -AuthorityRevision $nextRevision
+
+        $actualPin.repository | Should -Be $expectedPin.repository
+        $actualPin.commit | Should -Be $nextRevision
+        $actualPin.archiveUrl | Should -Be $expectedPin.archiveUrl
+        $actualPin.archiveSha256 | Should -Be $expectedPin.archiveSha256
+        $actualPin.files.Count | Should -Be 51
+        @($actualPin.files.Keys) | Should -Be @($expectedPin.files.Keys)
+        foreach ($path in $expectedPin.files.Keys) {
+            $actualPin.files[[string]$path] | Should -Be $expectedPin.files[[string]$path]
+        }
+        (Get-PreparedSourceAuthorityPin -AuthorityRevision 'ead467c3488c103546f316d137196b447a1ff58a').files.Count | Should -Be 51
+
+        $valid = New-SourceAuthorityConfigFixture -Pin $expectedPin
+        { Assert-CodeSourceAuthorityConfig -Config $valid } | Should -Not -Throw
+        Assert-CodeSourceRunRequest -ExecutionMode Run -PrepareSourceTools -SourceToolsPath 'C:\temp\source.json' `
+            -AdapterVersion 2 -AuthorityCommit $nextRevision | Should -Be 'PrepareSourceTools'
+
+        $missing = ConvertFrom-Json -InputObject ($valid | ConvertTo-Json -Depth 20 -Compress) -Depth 20
+        $missing.authority.files = @($missing.authority.files | Select-Object -SkipLast 1)
+        { Assert-CodeSourceAuthorityConfig -Config $missing } | Should -Throw
+
+        $reordered = ConvertFrom-Json -InputObject ($valid | ConvertTo-Json -Depth 20 -Compress) -Depth 20
+        $reordered.authority.files = @($reordered.authority.files[1], $reordered.authority.files[0]) + @($reordered.authority.files | Select-Object -Skip 2)
+        { Assert-CodeSourceAuthorityConfig -Config $reordered } | Should -Throw
+
+        foreach ($changedPath in @('docs/standards/skill-repository-standard.md', 'scripts/Resolve-PythonWheelClosure.py', 'scripts/Invoke-StandardValidation.ps1')) {
+            $wrongHash = ConvertFrom-Json -InputObject ($valid | ConvertTo-Json -Depth 20 -Compress) -Depth 20
+            ($wrongHash.authority.files | Where-Object { [string]$_.path -ceq $changedPath }).sha256 = '0' * 64
+            { Assert-CodeSourceAuthorityConfig -Config $wrongHash } | Should -Throw
+        }
+
+        $mixed = ConvertFrom-Json -InputObject ($valid | ConvertTo-Json -Depth 20 -Compress) -Depth 20
+        $mixed.authority.commit = 'ead467c3488c103546f316d137196b447a1ff58a'
+        $mixed.authority.archiveUrl = 'https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/ead467c3488c103546f316d137196b447a1ff58a'
+        $mixed.authority.archiveSha256 = 'ab304bc6caabe4bb9b605f403c852650e19e25f72999010db61bbad695e1c60b'
+        { Assert-CodeSourceAuthorityConfig -Config $mixed } | Should -Throw
+
+        $oldFilesNewIdentity = ConvertFrom-Json -InputObject ($valid | ConvertTo-Json -Depth 20 -Compress) -Depth 20
+        $oldFilesNewIdentity.authority.archiveSha256 = 'ab304bc6caabe4bb9b605f403c852650e19e25f72999010db61bbad695e1c60b'
+        { Assert-CodeSourceAuthorityConfig -Config $oldFilesNewIdentity } | Should -Throw
+    }
+
     # Scenario: the protected Validate reader sees prepared ead and formal 8e alongside its retained 8a and ff85 fixtures.
     # Purpose: ensure protected-driver validation admits only complete reviewed source tuples and preserves all earlier paths.
     It 'UnitT18_protected_driver_accepts_ead_source_authority_and_retains_previous_authorities' {
@@ -2409,10 +2489,93 @@ function Assert-AuthorityConfig { param([Parameter(Mandatory)] $Config) }
         }, $true)
         $setupFunction | Should -Not -BeNullOrEmpty
         $validationFunction | Should -Not -BeNullOrEmpty
-        $setupFunction.Extent.Text | Should -Match ([regex]::Escape("`$toolName -ceq 'skillspector' -and [string]`$pin.commit -ceq 'ead467c3488c103546f316d137196b447a1ff58a'"))
+        $setupFunction.Extent.Text | Should -Match ([regex]::Escape("`$toolName -ceq 'skillspector' -and @('ead467c3488c103546f316d137196b447a1ff58a', '472cbd6f533d3f6d0a5381862128ebcc87618a7c') -ccontains [string]`$pin.commit"))
         $setupFunction.Extent.Text | Should -Match "'approved-source-registry'"
         $setupFunction.Extent.Text | Should -Match "else \{ 'latest-stable' \}"
-        $validationFunction.Extent.Text | Should -Match ([regex]::Escape("[string]`$pin.commit -ceq 'ead467c3488c103546f316d137196b447a1ff58a'"))
+        $validationFunction.Extent.Text | Should -Match ([regex]::Escape("@('ead467c3488c103546f316d137196b447a1ff58a', '472cbd6f533d3f6d0a5381862128ebcc87618a7c') -ccontains [string]`$pin.commit"))
+        $validationFunction.Extent.Text | Should -Match 'docs/standards/validation-security-gate\.json'
+        $validationFunction.Extent.Text | Should -Match "'skillspector-static'"
+        $validationFunction.Extent.Text | Should -Match '\$reportArguments\.ValidationSecurityPolicy'
+    }
+
+    # Scenario: the protected Validate reader sees the prepared 472cbd6 tuple alongside every earlier reviewed tuple.
+    # Purpose: admit 472cbd6 only as a complete reviewed tuple and reject unreviewed or tampered configs.
+    It 'UnitT18_protected_driver_accepts_472cbd6_source_authority_and_retains_previous_authorities' {
+        Import-Module -Name $script:DriverPath -Force
+        $validatePath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $validateAst = [System.Management.Automation.Language.Parser]::ParseFile($validatePath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $functionAst = $validateAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Assert-ProtectedDriverAuthorityConfig'
+        }, $true)
+        $functionAst | Should -Not -BeNullOrEmpty
+        $functionAst.Extent.Text | Should -Match 'ead, or 472cbd6 authority tuple'
+
+        $shimRoot = Join-Path $TestDrive "protected-driver-next-$([guid]::NewGuid().ToString('N'))"
+        [void](New-Item -ItemType Directory -Path $shimRoot -Force)
+        Copy-Item -LiteralPath $script:DriverPath -Destination (Join-Path $shimRoot 'StandardSourceDriver.psm1')
+        $shimPath = Join-Path $shimRoot 'ProtectedDriverReader.ps1'
+        $shimContent = @'
+$script:AuthorityCommit = '8aabd22694a05771f98639f6d726cc9a620eb94b'
+function Assert-AuthorityConfig { param([Parameter(Mandatory)] $Config) }
+'@ + "`n" + $functionAst.Extent.Text + "`n"
+        [IO.File]::WriteAllText($shimPath, $shimContent, [Text.UTF8Encoding]::new($false))
+        $testModule = New-Module -Name "ProtectedDriverReaderNext_$([guid]::NewGuid().ToString('N'))" -ArgumentList $shimPath -ScriptBlock {
+            param($readerPath)
+            . $readerPath
+        }
+        try {
+            $nextConfig = New-SourceAuthorityConfigFixture -Pin (New-NextSourceAuthorityPinFixture)
+            { & $testModule { param($Config) Assert-ProtectedDriverAuthorityConfig -Config $Config } $nextConfig } | Should -Not -Throw
+
+            foreach ($earlierPin in @((Get-PreparedSourceAuthorityPin), (New-FormalSourceAuthorityPinFixture), (New-ApprovedSourceAuthorityPinFixture))) {
+                $earlierConfig = New-SourceAuthorityConfigFixture -Pin $earlierPin
+                { & $testModule { param($Config) Assert-ProtectedDriverAuthorityConfig -Config $Config } $earlierConfig } | Should -Not -Throw
+            }
+
+            $tampered = ConvertFrom-Json -InputObject ($nextConfig | ConvertTo-Json -Depth 20 -Compress) -Depth 20
+            $tampered.authority.files = @($tampered.authority.files | Select-Object -SkipLast 1)
+            { & $testModule { param($Config) Assert-ProtectedDriverAuthorityConfig -Config $Config } $tampered } | Should -Throw
+
+            $unreviewed = ConvertFrom-Json -InputObject ($nextConfig | ConvertTo-Json -Depth 20 -Compress) -Depth 20
+            $unreviewed.authority.commit = '0' * 40
+            { & $testModule { param($Config) Assert-ProtectedDriverAuthorityConfig -Config $Config } $unreviewed } | Should -Throw
+        }
+        finally {
+            Remove-Module -ModuleInfo $testModule -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    # Scenario: 472cbd6 shares the ead SkillSpector channel and report-reader policy adaptations.
+    # Purpose: keep the adaptations a single revision-scoped membership check so older revisions retain their contracts.
+    It 'UnitT19_scopes_472cbd6_runner_interface_adaptations_to_the_new_revisions' {
+        $validatePath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $validateAst = [System.Management.Automation.Language.Parser]::ParseFile($validatePath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $setupFunction = $validateAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-CodeSourceToolSetup'
+        }, $true)
+        $validationFunction = $validateAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-CodeSourceValidation'
+        }, $true)
+        $setupFunction | Should -Not -BeNullOrEmpty
+        $validationFunction | Should -Not -BeNullOrEmpty
+        $membership = [regex]::Escape("@('ead467c3488c103546f316d137196b447a1ff58a', '472cbd6f533d3f6d0a5381862128ebcc87618a7c') -ccontains [string]`$pin.commit")
+        $setupFunction.Extent.Text | Should -Match $membership
+        ([regex]::Matches($setupFunction.Extent.Text, [regex]::Escape('472cbd6f533d3f6d0a5381862128ebcc87618a7c'))).Count | Should -Be 1
+        $setupFunction.Extent.Text | Should -Match "'approved-source-registry'"
+        $setupFunction.Extent.Text | Should -Match "else \{ 'latest-stable' \}"
+        $validationFunction.Extent.Text | Should -Match $membership
+        ([regex]::Matches($validationFunction.Extent.Text, [regex]::Escape('472cbd6f533d3f6d0a5381862128ebcc87618a7c'))).Count | Should -Be 1
+        $validationFunction.Extent.Text | Should -Match 'ead/472cbd6 source validation security policy'
         $validationFunction.Extent.Text | Should -Match 'docs/standards/validation-security-gate\.json'
         $validationFunction.Extent.Text | Should -Match "'skillspector-static'"
         $validationFunction.Extent.Text | Should -Match '\$reportArguments\.ValidationSecurityPolicy'
