@@ -49,12 +49,12 @@ Describe 'Protected Standard Core SourceValidation preparation' {
         }
 
         function New-FormalSourceAuthorityPinFixture {
-            # Start from the checked-in active ead config fixture, never the production getter,
+            # Start from the checked-in active 472cbd6 config fixture, never the production getter,
             # and reverse the reviewed delta to independently reconstruct the historical 8e tuple.
             $baseConfig = Get-Content -LiteralPath $script:ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
             $basePin = $baseConfig.authority
-            $approvedCommit = 'ead467c3488c103546f316d137196b447a1ff58a'
-            $approvedArchiveSha256 = 'ab304bc6caabe4bb9b605f403c852650e19e25f72999010db61bbad695e1c60b'
+            $approvedCommit = '472cbd6f533d3f6d0a5381862128ebcc87618a7c'
+            $approvedArchiveSha256 = '357def24360566e9351af5c7b3bb8b8a7989f9ccb1eaf6f2401fa33e4069d8bf'
             $formalCommit = '8e627baf54bd6e47862e6291b25e71cc45a2f2b7'
             $formalArchiveSha256 = '9aa4a7fc8fc7c7f0ff9e774c79c77a64077b4003212a523dda519d034ff99989'
             $formalHashes = [ordered]@{
@@ -80,7 +80,7 @@ Describe 'Protected Standard Core SourceValidation preparation' {
             if ([string]$basePin.repository -cne 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git' -or
                 [string]$basePin.commit -cne $approvedCommit -or [string]$basePin.archiveUrl -cne $approvedUrl -or
                 [string]$basePin.archiveSha256 -cne $approvedArchiveSha256 -or @($basePin.files).Count -ne 51) {
-                throw 'The checked-in active config fixture does not match the reviewed ead identity and 51-file authority shape.'
+                throw 'The checked-in active config fixture does not match the reviewed 472cbd6 identity and 51-file authority shape.'
             }
             $files = [ordered]@{}
             foreach ($entry in @($basePin.files)[0..31]) {
@@ -89,7 +89,7 @@ Describe 'Protected Standard Core SourceValidation preparation' {
                 $files[$path] = [string]$entry.sha256
             }
             foreach ($path in $formalHashes.Keys) {
-                if (-not $files.Contains([string]$path)) { throw "The active ead fixture omits a formal authority path: $path" }
+                if (-not $files.Contains([string]$path)) { throw "The active 472cbd6 fixture omits a formal authority path: $path" }
                 $files[[string]$path] = [string]$formalHashes[$path]
             }
 
@@ -1008,11 +1008,11 @@ Describe 'Protected Standard Core SourceValidation preparation' {
                     finally { $policyStream.Dispose() }
                     $gitError = $gitProcess.StandardError.ReadToEnd()
                     $gitProcess.WaitForExit()
-                    if ($gitProcess.ExitCode -ne 0) { throw "Could not materialize the ead security policy fixture: $gitError" }
+                    if ($gitProcess.ExitCode -ne 0) { throw "Could not materialize the 472cbd6 security policy fixture: $gitError" }
                 }
                 finally { $gitProcess.Dispose() }
                 if ((Get-FileSha256 -Path $securityPolicyPath) -cne [string]$AuthorityPin.files[$securityPolicyRelativePath]) {
-                    throw 'The ead security policy fixture differs from its configured authority tuple.'
+                    throw 'The 472cbd6 security policy fixture differs from its configured authority tuple.'
                 }
                 # This fragment substitutes only the expensive external Core runner payload; it does not assert the formal runner hash, prepared-runtime admission, or full-gate outcome.
                 $runnerText = @'
@@ -1411,7 +1411,7 @@ exit $code
                 trustedToolRoot = [IO.Path]::GetFullPath($trustedToolRoot)
                 prepared = [pscustomobject]@{ runId = $RunId; sourceRevision = $CandidateRevision }
                 baseRevision = $BaseRevision
-            }) -AuthorityRevision 'ead467c3488c103546f316d137196b447a1ff58a'
+            }) -AuthorityRevision '472cbd6f533d3f6d0a5381862128ebcc87618a7c'
             $authority = [pscustomobject]@{
                 root = [string]$authorityFixture.authority.root
                 revision = [string]$authorityFixture.authorityPin.commit
@@ -1453,14 +1453,14 @@ exit $code
             $activeAuthorityBinding = Get-A031AuthoritySupervisorBinding
             $activeConfigPath = Join-Path $script:RepositoryRoot 'config/standard-v1.json'
             $activeConfig = Get-Content -LiteralPath $activeConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 40 -ErrorAction Stop
-            if ([string]$activeConfig.authority.commit -cne 'ead467c3488c103546f316d137196b447a1ff58a' -or
+            if ([string]$activeConfig.authority.commit -cne '472cbd6f533d3f6d0a5381862128ebcc87618a7c' -or
                 @($activeConfig.authority.files).Count -ne 51) {
-                throw 'Resident authority fixture requires the exact configured ead 51-file source pin.'
+                throw 'Resident authority fixture requires the exact configured 472cbd6 51-file source pin.'
             }
             $activeAuthorityPin = Get-PreparedSourceAuthorityPin -AuthorityRevision ([string]$activeConfig.authority.commit)
             if ([string]$activeAuthorityBinding.revision -cne [string]$activeAuthorityPin.commit -or
                 [string]$activeAuthorityBinding.sha256 -cne [string]$activeAuthorityPin.files['scripts/Invoke-StandardValidation.ps1']) {
-                throw 'The configured resident authority checkout does not match its exact active ead pin.'
+                throw 'The configured resident authority checkout does not match its exact active 472cbd6 pin.'
             }
             $activeAuthority = Assert-CodeSourceAuthorityCheckout -GitPath $gitPath `
                 -AuthorityRoot ([string]$activeAuthorityBinding.root) -AuthorityPin $activeAuthorityPin
@@ -2250,7 +2250,7 @@ namespace Syp326.Testing
 
 
     # Scenario: a no-argument reader caller coexists with the newly active approved config.
-    # Purpose: preserve the ff85 reader default while requiring the active config to select the complete ead tuple.
+    # Purpose: preserve the ff85 reader default while requiring the active config to select the complete 472cbd6 tuple.
     It 'UnitT10_preserves_ff85_default_and_selects_the_approved_active_authority' {
         Test-Path -LiteralPath $script:DriverPath -PathType Leaf | Should -BeTrue
         Import-Module -Name $script:DriverPath -Force
@@ -2262,9 +2262,9 @@ namespace Syp326.Testing
         $pin.files.Count | Should -Be 32
 
         $active = Get-Content -LiteralPath $script:ConfigPath -Raw | ConvertFrom-Json -Depth 20
-        $active.authority.commit | Should -Be 'ead467c3488c103546f316d137196b447a1ff58a'
-        $active.authority.archiveUrl | Should -Be 'https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/ead467c3488c103546f316d137196b447a1ff58a'
-        $active.authority.archiveSha256 | Should -Be 'ab304bc6caabe4bb9b605f403c852650e19e25f72999010db61bbad695e1c60b'
+        $active.authority.commit | Should -Be '472cbd6f533d3f6d0a5381862128ebcc87618a7c'
+        $active.authority.archiveUrl | Should -Be 'https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/472cbd6f533d3f6d0a5381862128ebcc87618a7c'
+        $active.authority.archiveSha256 | Should -Be '357def24360566e9351af5c7b3bb8b8a7989f9ccb1eaf6f2401fa33e4069d8bf'
         @($active.authority.files).Count | Should -Be 51
         Assert-CodeSourceAuthorityConfig -Config $active
     }
@@ -3429,8 +3429,8 @@ function Assert-AuthorityConfig { param([Parameter(Mandatory)] $Config) }
             }
             else {
                 foreach ($requiredBinding in @(
-                    'SYP154_CANDIDATE_AUTHORITY_ROOT: ${{ github.workspace }}/authority-ead467c',
-                    "Join-Path `$env:GITHUB_WORKSPACE 'authority-ead467c'",
+                    'SYP154_CANDIDATE_AUTHORITY_ROOT: ${{ github.workspace }}/authority-472cbd6',
+                    "Join-Path `$env:GITHUB_WORKSPACE 'authority-472cbd6'",
                     [string]$supervisorBindings[0].sha256
                 )) {
                     if (-not $residentStep.Contains($requiredBinding, [StringComparison]::Ordinal)) {
@@ -4934,9 +4934,9 @@ exit 0
         $workflow | Should -Match ([regex]::Escape('ref: ${{ github.event.pull_request.head.sha || github.sha }}'))
         $workflow | Should -Not -Match 'github\.event\.pull_request\.merge_commit_sha'
         $workflow | Should -Match 'runs-on:\s*windows-latest'
-        $workflow | Should -Match 'Checkout immutable ead authority fixture'
-        $workflow | Should -Match 'ref:\s*ead467c3488c103546f316d137196b447a1ff58a'
-        $workflow | Should -Match 'path:\s*authority-ead467c'
+        $workflow | Should -Match 'Checkout immutable 472cbd6 authority fixture'
+        $workflow | Should -Match 'ref:\s*472cbd6f533d3f6d0a5381862128ebcc87618a7c'
+        $workflow | Should -Match 'path:\s*authority-472cbd6'
         $workflow | Should -Match 'fetch-depth:\s*0'
         $workflow | Should -Match 'PULL_REQUEST_BASE_SHA:\s*\$\{\{\s*github\.event\.pull_request\.base\.sha\s*\}\}'
         $workflow | Should -Match 'PULL_REQUEST_HEAD_SHA:\s*\$\{\{\s*github\.event\.pull_request\.head\.sha\s*\}\}'

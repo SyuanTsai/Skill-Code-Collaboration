@@ -77,11 +77,11 @@ Consumers should resolve a release tag to an immutable commit SHA and persist th
 
 ## Validation
 
-The required GitHub gate runs the protected full-source validation path on Windows. It verifies the event-base `Validate.ps1` driver, the immutable candidate checkout, the real ead authority Git checkout, and one fresh run-owned tool closure. The current active authority tuple is commit `ead467c3488c103546f316d137196b447a1ff58a` with its complete reviewed 51-file closure.
+The required GitHub gate runs the protected full-source validation path on Windows. It verifies the event-base `Validate.ps1` driver, the immutable candidate checkout, the real 472cbd6 authority Git checkout, and one fresh run-owned tool closure. The current active authority tuple is commit `472cbd6f533d3f6d0a5381862128ebcc87618a7c` with its complete reviewed 51-file closure.
 
 Windows is the only supported host for local development, installation, execution, testing, acceptance, and CI. Run repository commands in PowerShell (pwsh); Linux/macOS hosts, WSL, and Linux containers are unsupported. See [Windows support and Skill inventory](docs/WINDOWS-SUPPORT.md) for the complete owned Skill inventory and support boundary.
 
-For a local full-source run, use the same trusted event-base driver, candidate checkout, and verified ead authority checkout, then prepare once and validate with the same `source-tools.json`:
+For a local full-source run, use the same trusted event-base driver, candidate checkout, and verified 472cbd6 authority checkout, then prepare once and validate with the same `source-tools.json`:
 
 ```powershell
 $runRoot = Join-Path (Join-Path $env:TEMP 'code-collaboration') ([guid]::NewGuid().ToString('N'))
@@ -89,7 +89,7 @@ $sourceTools = Join-Path $runRoot 'source-tools.json'
 $baseCommit = '<immutable event-base commit SHA>'
 $protectedDriver = '<trusted event-base checkout>/scripts/Validate.ps1'
 $candidateRoot = '<clean immutable candidate Git checkout>'
-$authorityRoot = '<verified ead authority Git checkout>'
+$authorityRoot = '<verified 472cbd6 authority Git checkout>'
 $artifactsRoot = Join-Path $runRoot 'core-v2'
 
 pwsh -File $protectedDriver -RepositoryRoot $candidateRoot -AdapterVersion 2 -PrepareSourceTools `
