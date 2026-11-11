@@ -125,8 +125,8 @@ Describe 'Code child uses central package tool report rules' {
         $activeConfig = Get-Content -LiteralPath (Join-Path $repositoryRoot 'config/standard-v1.json') -Raw | ConvertFrom-Json -Depth 20
         $authority = $activeConfig.authority
         $expectedRepository = 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-        $expectedCommit = 'ead467c3488c103546f316d137196b447a1ff58a'
-        $expectedArchiveSha256 = 'ab304bc6caabe4bb9b605f403c852650e19e25f72999010db61bbad695e1c60b'
+        $expectedCommit = '472cbd6f533d3f6d0a5381862128ebcc87618a7c'
+        $expectedArchiveSha256 = '357def24360566e9351af5c7b3bb8b8a7989f9ccb1eaf6f2401fa33e4069d8bf'
         Import-Module -Name (Join-Path $repositoryRoot 'scripts/StandardSourceDriver.psm1') -Force
         $activePin = Get-PreparedSourceAuthorityPin -AuthorityRevision $expectedCommit
         $activePaths = @($authority.files | ForEach-Object { [string]$_.path })
@@ -136,7 +136,7 @@ Describe 'Code child uses central package tool report rules' {
             $authority.archiveSha256 -cne $expectedArchiveSha256 -or @($authority.files).Count -ne 51 -or
             $activePin.commit -cne $expectedCommit -or $activePin.archiveSha256 -cne $expectedArchiveSha256 -or
             [string]::Join('|', $activePaths) -cne [string]::Join('|', $pinnedPaths)) {
-            throw 'The Pester child fixture requires the exact active ead authority tuple and ordered 51-file closure.'
+            throw 'The Pester child fixture requires the exact active 472cbd6 authority tuple and ordered 51-file closure.'
         }
         foreach ($entry in @($authority.files)) {
             if ([string]$entry.sha256 -cne [string]$activePin.files[[string]$entry.path]) {
@@ -177,10 +177,10 @@ Describe 'Code child uses central package tool report rules' {
         }
 
         if ([string]::IsNullOrWhiteSpace($env:SYP154_CANDIDATE_AUTHORITY_ROOT)) {
-            throw 'The common tool report integration requires the active ead authority checkout supplied by SourceValidation.'
+            throw 'The common tool report integration requires the active 472cbd6 authority checkout supplied by SourceValidation.'
         }
         if (-not [string]::IsNullOrWhiteSpace($env:SYP154_CANDIDATE_AUTHORITY_ROOT)) {
-            # Admit the active ead checkout used by SourceValidation, then use
+            # Admit the active 472cbd6 checkout used by SourceValidation, then use
             # its complete Git history to build the distinct historical 8a fixture.
             $script:authorityFixtureMode = 'verified-git-checkout'
             $moduleRoot = [IO.Path]::GetFullPath([string]$env:SYP154_CANDIDATE_AUTHORITY_ROOT)
@@ -372,8 +372,8 @@ Describe 'Code child uses central package tool report rules' {
         $BaseRevision = 'e' * 40
         $activeAuthority = (Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'config/standard-v1.json') -Raw | ConvertFrom-Json -Depth 20).authority
         $AuthorityRevision = [string]$activeAuthority.commit
-        $expectedSourceValidation = $AuthorityRevision -cin @('ff85d5f80fe795b96354e753074b5ce59ad04ecd', '8e627baf54bd6e47862e6291b25e71cc45a2f2b7', 'ead467c3488c103546f316d137196b447a1ff58a')
-        $AuthorityRevision | Should -BeIn @('8aabd22694a05771f98639f6d726cc9a620eb94b', 'ff85d5f80fe795b96354e753074b5ce59ad04ecd', '8e627baf54bd6e47862e6291b25e71cc45a2f2b7', 'ead467c3488c103546f316d137196b447a1ff58a')
+        $expectedSourceValidation = $AuthorityRevision -cin @('ff85d5f80fe795b96354e753074b5ce59ad04ecd', '8e627baf54bd6e47862e6291b25e71cc45a2f2b7', 'ead467c3488c103546f316d137196b447a1ff58a', '472cbd6f533d3f6d0a5381862128ebcc87618a7c')
+        $AuthorityRevision | Should -BeIn @('8aabd22694a05771f98639f6d726cc9a620eb94b', 'ff85d5f80fe795b96354e753074b5ce59ad04ecd', '8e627baf54bd6e47862e6291b25e71cc45a2f2b7', 'ead467c3488c103546f316d137196b447a1ff58a', '472cbd6f533d3f6d0a5381862128ebcc87618a7c')
         $SourceRepository = 'https://github.com/SyuanTsai/Skill-Code-Collaboration.git'
         $expectedCallerBindings = [ordered]@{
             runId = $runId
