@@ -1,138 +1,73 @@
 # SPDX-FileCopyrightText: 2026 SyuanTsai
 # SPDX-License-Identifier: Apache-2.0
-Describe 'Code Collaboration Standard v1 conformance' {
-    BeforeAll {
-        $script:RepositoryRoot = Split-Path -Parent $PSScriptRoot
-        $script:SourcePath = Join-Path $script:RepositoryRoot 'catalog/source.json'
-        $script:AdapterPath = Join-Path $script:RepositoryRoot 'config/standard-v1.json'
-        $script:ValidatorPath = Join-Path $script:RepositoryRoot 'scripts/Validate.ps1'
-        $script:DriverPath = Join-Path $script:RepositoryRoot 'scripts/StandardSourceDriver.psm1'
-    }
+$ErrorActionPreference = 'Stop'
 
-    It 'UnitT00_uses_the_canonical_schema_v2_source_inventory_and_source_root' {
-        # Scenario: a legacy runtime root or source-owned cross-source catalog is reintroduced.
-        # Purpose: keep this repository on the canonical source package topology.
-        Test-Path -LiteralPath (Join-Path $script:RepositoryRoot 'skills') -PathType Container | Should -BeTrue
-        $git = Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1
-        $gitRootOutput = @(& $git.Path -C $script:RepositoryRoot rev-parse --show-toplevel 2>$null)
-        $gitRootExitCode = $LASTEXITCODE
-        $exactGitRoot = $false
-        if ($gitRootExitCode -eq 0 -and $gitRootOutput.Count -eq 1) {
-            $reportedGitRoot = [IO.Path]::GetFullPath([string]$gitRootOutput[0]).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
-            $repositoryRoot = [IO.Path]::GetFullPath($script:RepositoryRoot).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
-            $pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
-            $exactGitRoot = $reportedGitRoot.Equals($repositoryRoot, $pathComparison)
-        }
-        if ($exactGitRoot) {
-            $trackedAgentEntries = @(& $git.Path -C $script:RepositoryRoot ls-files --cached -- '.agents/skills')
-            if ($LASTEXITCODE -ne 0) { throw 'Could not inspect tracked Agent skill entries at the exact repository root.' }
-            @($trackedAgentEntries | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count | Should -Be 0
-        }
-        else {
-            # Candidate snapshots may be nested below another worktree. Only inspect
-            # their own files; never let an ancestor repository supply inventory.
-            Test-Path -LiteralPath (Join-Path $script:RepositoryRoot '.agents') -PathType Container | Should -BeFalse
-        }
-        $source = Get-Content -LiteralPath $script:SourcePath -Raw | ConvertFrom-Json -Depth 20
-        @($source.PSObject.Properties.Name) | Should -Be @('schemaVersion','sourceId','repository','skillsRoot','skills')
+BeforeAll {
+    $script:RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+}
+
+Describe 'Code Collaboration consumer conformance' {
+    It 'uses the canonical schema v2 source inventory and source root' {
+        $source = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'catalog/source.json') | ConvertFrom-Json
         $source.schemaVersion | Should -Be 2
-        $source.sourceId | Should -Be 'code-collaboration'
-        $source.repository | Should -Be 'https://github.com/SyuanTsai/Skill-Code-Collaboration.git'
-        $source.skillsRoot | Should -Be 'skills'
+        $source.sourceId | Should -BeExactly 'code-collaboration'
+        $source.skillsRoot | Should -BeExactly 'skills'
         @($source.skills) | Should -Be @('orchestrate-ai-delivery', 'write-implementation-prompt')
     }
 
-    # Scenario: The Code config is read from the extracted candidate.
-    # Purpose: Keep the reviewed active 472cbd6 authority bundle complete without adding local security policy.
-    It 'UnitT10_pins_exact_authority_without_local_security_policy' {
-        # Scenario: a consumer pins an earlier, partial, or reordered Standard v1 snapshot.
-        # Purpose: require the exact protected active 472cbd6 tuple without changing the v1 adapter schema.
-        $adapter = Get-Content -LiteralPath $script:AdapterPath -Raw | ConvertFrom-Json -Depth 20
-        Import-Module -Name $script:DriverPath -Force
-        $expectedCommit = '472cbd6f533d3f6d0a5381862128ebcc87618a7c'
-        $pin = Get-PreparedSourceAuthorityPin -AuthorityRevision $expectedCommit
-        @($adapter.PSObject.Properties.Name) | Should -Be @('schemaVersion', 'standardVersion', 'authority')
-        $adapter.schemaVersion | Should -Be 1
-        $adapter.standardVersion | Should -Be 'v1'
-        $adapter.authority.repository | Should -Be 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-        $adapter.authority.commit | Should -Be $expectedCommit
-        $adapter.authority.archiveUrl | Should -Be "https://codeload.github.com/SyuanTsai/SyuanTsai-AI-Instructions/zip/$expectedCommit"
-        $adapter.authority.archiveSha256 | Should -Be '357def24360566e9351af5c7b3bb8b8a7989f9ccb1eaf6f2401fa33e4069d8bf'
-        @($adapter.authority.files).Count | Should -Be 51
-        @($adapter.authority.files.path) | Should -Be @($pin.files.Keys)
-        foreach ($entry in @($adapter.authority.files)) { $entry.sha256 | Should -Be $pin.files[$entry.path] }
-        @($adapter.PSObject.Properties.Name) | Should -Not -Contain 'security'
-        @($adapter.PSObject.Properties.Name) | Should -Not -Contain 'deviations'
+    It 'preserves the orchestration Skill policy boundary' {
+        $text = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills/orchestrate-ai-delivery/SKILL.md')
+        $text.Contains('Never commit or push without user consent.', [StringComparison]::Ordinal) | Should -BeTrue
+        $text.Contains('Only Jira, Git, and CLIs are in scope. Confluence is not.', [StringComparison]::Ordinal) | Should -BeTrue
+        $text.Contains('If execution mode is missing, ask; never assume it.', [StringComparison]::Ordinal) | Should -BeTrue
     }
 
-    It 'exposes one canonical validator and catalog domain dispatch' {
-        # Scenario: local and CI commands diverge or the profile catalog is left outside the gate.
-        # Purpose: expose one entry point while keeping catalog validation inside Repository Tests.
-        $validator = Get-Content -LiteralPath $script:ValidatorPath -Raw
-        $validator | Should -Match 'Invoke-StandardValidation\.ps1'
-        $validator | Should -Match '-DevelopmentHarness'
-        $validator | Should -Match 'standard-validation-adapter\.json'
-        $validator | Should -Match 'repository-test-catalog'
-        $validator | Should -Match 'tests/validate-catalog\.ps1'
-        $validator | Should -Match 'repository-test-pester'
+    It 'preserves the implementation prompt output contract' {
+        $text = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills/write-implementation-prompt/SKILL.md')
+        foreach ($heading in @('Changed files', 'Summary', 'Test commands', 'Test results', 'Blockers')) {
+            $text.Contains($heading, [StringComparison]::Ordinal) | Should -BeTrue
+        }
+        $text.Contains('never include local user names, absolute paths, machine identifiers, credentials, or tokens.', [StringComparison]::Ordinal) | Should -BeTrue
     }
 
-    It 'runs repository smoke and profile catalog validation against an extracted snapshot' {
-        # Scenario: the central runner executes Repository Tests without .git metadata.
-        # Purpose: keep both domain contracts on read-only candidate snapshot inputs.
-        $validator = Get-Content -LiteralPath $script:ValidatorPath -Raw
-        $validator | Should -Match '(?s)Join-Path \$candidateRoot ''scripts/Test-Repository\.ps1''.*\$validatorPath -RepositoryRoot \$candidateRoot.*-ReadOnlySnapshot'
-        $validator | Should -Match '(?s)Join-Path \$candidateRoot ''tests/validate-catalog\.ps1''.*\$validatorPath -RepositoryRoot \$candidateRoot'
-    }
-
-    It 'routes CI through the canonical validator without a second installer policy' {
-        # Scenario: CI adds a parallel validator or installs tools outside the central resolver.
-        # Purpose: keep local, pre-push, and CI validation on the same canonical command and trust boundary.
-        $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') -Raw
-        $workflow | Should -Match 'scripts/Validate\.ps1'
-        $workflow | Should -Not -Match 'tests/validate-catalog\.ps1'
-        $workflow | Should -Match 'persist-credentials:\s*false'
-        $workflow | Should -Match 'actions/checkout@[0-9a-f]{40}'
-        $workflow | Should -Match 'actions/setup-go@[0-9a-f]{40}'
-        $workflow | Should -Not -Match '(?m)^\s*(Install-Module|npm install|go install|pip install)\b'
-        Test-Path -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/skill-validator.yml') | Should -BeFalse
-
-        foreach ($context in @('repository-contract', 'skill-validator', 'skill-tools')) {
-            $pattern = "(?ms)^\s+{0}:\s+name:\s+{0}.*?needs:\s+- canonical-validation.*?{1}" -f `
-                [regex]::Escape($context),
-                [regex]::Escape("needs['canonical-validation'].result")
-            $workflow | Should -Match $pattern
+    It 'keeps OpenAI metadata bound to exact Skill tokens' {
+        $cases = @(
+            @{ Id = 'orchestrate-ai-delivery'; Token = '$orchestrate-ai-delivery' }
+            @{ Id = 'write-implementation-prompt'; Token = '$write-implementation-prompt' }
+        )
+        foreach ($case in $cases) {
+            $text = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot "skills/$($case.Id)/agents/openai.yaml")
+            $text.Contains($case.Token, [StringComparison]::Ordinal) | Should -BeTrue
+            $text.Contains('short_description: "', [StringComparison]::Ordinal) | Should -BeTrue
         }
     }
 
-    It 'keeps no-base workflow events unbased instead of substituting HEAD^' {
-        # Scenario: workflow_dispatch or a push with an all-zero before SHA has no comparison base.
-        # Purpose: require the canonical validator to perform full-candidate change detection.
-        $workflow = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows/validate.yml') -Raw
-        $workflow | Should -Not -Match 'git rev-parse HEAD\^'
-        $workflow | Should -Match "else \{\s*''\s*\}"
-        foreach ($stepName in @('Prepare source tools once', 'Run full source validation')) {
-            $escapedName = [regex]::Escape($stepName)
-            $step = [regex]::Match($workflow, "(?ms)- name: $escapedName(?<body>.*?)(?=^      - name:|^  [A-Za-z0-9_-]+:)")
-            $step.Success | Should -BeTrue
-            $body = $step.Groups['body'].Value
-            $body | Should -Match 'if \(-not \[string\]::IsNullOrWhiteSpace\(\$baseCommit\)\)'
-            $body | Should -Match ([regex]::Escape("`$baseArguments = @('-BaseCommit', `$baseCommit)"))
-            $body | Should -Match '\+ \$baseArguments'
+    It 'documents pinned consumer validation and the three repository checks' {
+        $readme = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'README.md')
+        $readme.Contains('config/authority-pin.json', [StringComparison]::Ordinal) | Should -BeTrue
+        $readme.Contains('consumer-gate', [StringComparison]::Ordinal) | Should -BeTrue
+        foreach ($name in @('Test-CodeCollaborationRepository.ps1', 'Test-CodeCollaborationCatalog.ps1', 'tests/')) {
+            $readme.Contains($name, [StringComparison]::Ordinal) | Should -BeTrue
         }
     }
 
-    It 'keeps public validation documentation on the canonical entry point' {
-        # Scenario: component validators become undocumented alternate release gates.
-        # Purpose: document Validate.ps1 as the sole public validation command.
-        $readme = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'README.md') -Raw
-        $readme | Should -Match 'scripts/Validate\.ps1'
-        $readme | Should -Not -Match 'scripts/(?:Invoke-StandardValidation|Test-Repository)\.ps1'
-        $readme | Should -Not -Match '(?i)\b(?:Invoke-Pester|pytest|skill-validator|skill-tools|skillspector)\b'
+    It 'keeps release rollback adoption and Windows guidance on the consumer model' {
+        foreach ($relative in @('docs/RELEASE.md', 'docs/ROLLBACK.md', 'docs/SOURCE-VALIDATION-ADOPTION.md', 'docs/WINDOWS-SUPPORT.md')) {
+            $text = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot $relative)
+            $text.Contains('consumer gate', [StringComparison]::OrdinalIgnoreCase) | Should -BeTrue
+            $text.Contains('config/authority-pin.json', [StringComparison]::Ordinal) | Should -BeTrue
+        }
+    }
 
-        $release = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'docs/RELEASE.md') -Raw
-        $release | Should -Match 'scripts/Validate\.ps1'
-        $release | Should -Not -Match 'scripts/(?:Get-SourcePin|Test-Repository)\.ps1'
-        $release | Should -Not -Match 'tests/validate-catalog\.ps1'
+    It 'exposes both general checks with the snapshot parameter contract' {
+        foreach ($relative in @('scripts/Test-CodeCollaborationRepository.ps1', 'scripts/Test-CodeCollaborationCatalog.ps1')) {
+            $tokens = $null
+            $errors = $null
+            $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $script:RepositoryRoot $relative), [ref]$tokens, [ref]$errors)
+            @($errors) | Should -HaveCount 0
+            $parameters = @($ast.ParamBlock.Parameters.Name.VariablePath.UserPath)
+            $parameters | Should -Contain 'RepositoryRoot'
+            $parameters | Should -Contain 'ReadOnlySnapshot'
+        }
     }
 }

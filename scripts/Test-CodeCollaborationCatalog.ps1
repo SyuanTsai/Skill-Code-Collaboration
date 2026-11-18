@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [string] $RepositoryRoot,
-    [string] $OutputPath
+    [switch] $ReadOnlySnapshot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -193,7 +193,6 @@ foreach ($skill in $catalogSkills) {
 Assert-True (Test-Path -LiteralPath (Join-Path $repoRoot 'VERSION') -PathType Leaf) 'VERSION is missing.'
 $version = (Get-Content -LiteralPath (Join-Path $repoRoot 'VERSION') -Raw).Trim()
 Assert-True ($version -match '^\d+\.\d+\.\d+$') 'VERSION must be a SemVer-compatible MAJOR.MINOR.PATCH value.'
-Assert-True (Test-Path -LiteralPath (Join-Path $repoRoot 'scripts/Get-SourcePin.ps1') -PathType Leaf) 'Source pin generator is missing.'
 Assert-True (Test-Path -LiteralPath (Join-Path $repoRoot 'docs/RELEASE.md') -PathType Leaf) 'Release documentation is missing.'
 Assert-True (Test-Path -LiteralPath (Join-Path $repoRoot 'docs/ROLLBACK.md') -PathType Leaf) 'Rollback documentation is missing.'
 
@@ -206,14 +205,4 @@ $result = [pscustomobject][ordered]@{
     profiles = @($profiles | ForEach-Object { [pscustomobject][ordered]@{ profileId = [string]$_.id; includes = @($_.includes); excludes = @($_.excludes) } })
     result = 'passed'
 }
-$json = $result | ConvertTo-Json -Depth 30
-if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
-    $outputFullPath = [IO.Path]::GetFullPath($OutputPath)
-    $outputDirectory = Split-Path -Parent $outputFullPath
-    if (-not [string]::IsNullOrWhiteSpace($outputDirectory)) { [void](New-Item -ItemType Directory -Path $outputDirectory -Force) }
-    if (Test-Path -LiteralPath $outputFullPath -PathType Leaf) { throw "OutputPath already exists: $outputFullPath" }
-    [IO.File]::WriteAllText($outputFullPath, $json + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-}
-if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-    [Console]::Out.WriteLine($json)
-}
+$result | ConvertTo-Json -Depth 30

@@ -1,123 +1,98 @@
 # SPDX-FileCopyrightText: 2026 SyuanTsai
 # SPDX-License-Identifier: Apache-2.0
-Describe 'Code Collaboration profile catalog contract' {
-    BeforeAll {
-        $script:RepositoryRoot = Split-Path -Parent $PSScriptRoot
-        $script:CatalogValidatorPath = Join-Path $script:RepositoryRoot 'tests/validate-catalog.ps1'
-        $script:SourceSkillId = 'write-implementation-prompt'
-        $script:AddSafeCatalogSkillFixture = {
-        param([Parameter(Mandatory = $true)][string] $Root)
+$ErrorActionPreference = 'Stop'
 
-        $newSkillId = 'safe-fixture-skill'
-        $sourceSkillRoot = Join-Path $Root "skills/$($script:SourceSkillId)"
-        $newSkillRoot = Join-Path $Root "skills/$newSkillId"
-        Copy-Item -LiteralPath $sourceSkillRoot -Destination $newSkillRoot -Recurse
-        foreach ($path in @('SKILL.md', 'agents/openai.yaml')) {
-            $file = Join-Path $newSkillRoot $path
-            $text = Get-Content -LiteralPath $file -Raw
-            $text = $text.Replace($script:SourceSkillId, $newSkillId)
-            Set-Content -LiteralPath $file -Value $text -Encoding utf8NoBOM -NoNewline
-        }
+BeforeAll {
+    . (Join-Path $PSScriptRoot 'ResolveLegacyAuthorityArchiveFixture.ps1')
+    $script:RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+    $script:CheckPath = Join-Path $script:RepositoryRoot 'scripts/Test-CodeCollaborationCatalog.ps1'
 
-        $sourcePath = Join-Path $Root 'catalog/source.json'
-        $source = Get-Content -LiteralPath $sourcePath -Raw | ConvertFrom-Json
-        $source.skills = @($source.skills + $newSkillId | Sort-Object)
-        $source | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $sourcePath -Encoding utf8NoBOM
+    function New-CatalogFixture {
+        $root = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        Copy-CodeCollaborationFixture -RepositoryRoot $script:RepositoryRoot -DestinationRoot $root
+    }
+}
 
-        $catalogPath = Join-Path $Root 'catalog/profiles.json'
-        $catalog = Get-Content -LiteralPath $catalogPath -Raw | ConvertFrom-Json
-        $existingSkill = @($catalog.skills | Where-Object id -eq $script:SourceSkillId)[0]
-        $newSkill = $existingSkill | ConvertTo-Json -Depth 20 | ConvertFrom-Json
-        $newSkill.id = $newSkillId
-        $newSkill.source.path = "skills/$newSkillId"
-        $newSkill.profiles = @()
-        $catalog.skills = @($catalog.skills + $newSkill | Sort-Object -Property id)
-        $catalog | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $catalogPath -Encoding utf8NoBOM
-        }
+Describe 'Code Collaboration catalog check' {
+    It 'accepts the current source and profile catalog in a read-only snapshot' {
+        $fixture = New-CatalogFixture
+        $result = Invoke-CodeCollaborationCheck -Path $script:CheckPath -RepositoryRoot $fixture
+        $result.result | Should -BeExactly 'passed'
+        $result.catalogId | Should -BeExactly 'code-collaboration'
+        @($result.skills.skillId) | Should -Be @('orchestrate-ai-delivery', 'write-implementation-prompt')
     }
 
-    BeforeEach {
-        $script:FixtureRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
-        New-Item -ItemType Directory -Path $script:FixtureRoot | Out-Null
-        foreach ($directory in @('catalog', 'skills', 'docs')) {
-            Copy-Item -LiteralPath (Join-Path $script:RepositoryRoot $directory) -Destination $script:FixtureRoot -Recurse
-        }
-        foreach ($file in @('VERSION', 'scripts/Get-SourcePin.ps1')) {
-            $destination = Join-Path $script:FixtureRoot $file
-            New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
-            Copy-Item -LiteralPath (Join-Path $script:RepositoryRoot $file) -Destination $destination
-        }
-    }
-
-    It 'accepts the current source and profile catalog' {
-        # Scenario: the checked-in catalog and all current packages are internally consistent.
-        # Purpose: establish the valid baseline for the canonical Repository Tests child.
-        { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot -OutputPath (Join-Path $script:FixtureRoot ("artifacts/{0}.json" -f [guid]::NewGuid().ToString('N'))) } | Should -Not -Throw
-    }
-
-    It 'accepts a newly declared safe Skill and its metadata' {
-        # Scenario: a new valid package is added to source inventory and a profile.
-        # Purpose: prove future Skills are automatically covered without adding a new hard-coded gate.
-        & $script:AddSafeCatalogSkillFixture -Root $script:FixtureRoot
-        { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot -OutputPath (Join-Path $script:FixtureRoot ("artifacts/{0}.json" -f [guid]::NewGuid().ToString('N'))) } | Should -Not -Throw
-    }
-
-    It 'keeps output-path execution JSON-only for the central runner' {
-        # Scenario: the central Repository Tests adapter requests a file report from the catalog validator.
-        # Purpose: prevent a second stdout JSON document from corrupting the child-runner envelope.
-        $outputPath = Join-Path $script:FixtureRoot 'artifacts/catalog-report.json'
-        $stdout = @(& $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot -OutputPath $outputPath)
-        $stdout | Should -BeNullOrEmpty
-        Test-Path -LiteralPath $outputPath -PathType Leaf | Should -BeTrue
-        { Get-Content -LiteralPath $outputPath -Raw | ConvertFrom-Json } | Should -Not -Throw
+    It 'does not write to the candidate snapshot' {
+        $fixture = New-CatalogFixture
+        $before = Get-CodeCollaborationTreeDigest -Root $fixture
+        $null = Invoke-CodeCollaborationCheck -Path $script:CheckPath -RepositoryRoot $fixture
+        $after = Get-CodeCollaborationTreeDigest -Root $fixture
+        $after | Should -BeExactly $before
     }
 
     It 'uses ordinal sorting for the filesystem Skill inventory' {
-        # Scenario: valid Skill IDs differ under culture-sensitive and ordinal sorting.
-        # Purpose: keep filesystem discovery aligned with the canonical source inventory contract.
-        $validator = Get-Content -LiteralPath $script:CatalogValidatorPath -Raw
-        $validator | Should -Match '\[Array\]::Sort\(\$actualSkillIds, \[StringComparer\]::Ordinal\)'
-        $validator | Should -Not -Match '\|\s*Sort-Object'
+        $fixture = New-CatalogFixture
+        [void](New-Item -ItemType Directory -Path (Join-Path $fixture 'skills/.hidden-package') -Force)
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*directories must exactly match*'
     }
 
     It 'rejects non-reciprocal profile membership' {
-        # Scenario: a profile includes a Skill while that Skill omits the profile.
-        # Purpose: keep profile.includes and Skill.profiles as one consistent membership relation.
-        $catalogPath = Join-Path $script:FixtureRoot 'catalog/profiles.json'
-        $catalog = Get-Content -LiteralPath $catalogPath -Raw | ConvertFrom-Json
+        $fixture = New-CatalogFixture
+        $path = Join-Path $fixture 'catalog/profiles.json'
+        $catalog = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json -Depth 30
         $catalog.skills[0].profiles = @()
-        $catalog | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $catalogPath -Encoding utf8NoBOM
-        { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot -OutputPath (Join-Path $script:FixtureRoot ("artifacts/{0}.json" -f [guid]::NewGuid().ToString('N'))) } | Should -Throw '*profiles must include profile*'
+        Write-CodeCollaborationJson -Path $path -Value $catalog
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*profiles must include profile*'
     }
 
-    It 'rejects a catalog whose Skill path has a case or identity drift' {
-        # Scenario: catalog metadata points at a different or differently cased package path.
-        # Purpose: keep stable Skill ID, source path, and filesystem identity exact.
-        $catalogPath = Join-Path $script:FixtureRoot 'catalog/profiles.json'
-        $catalog = Get-Content -LiteralPath $catalogPath -Raw | ConvertFrom-Json
+    It 'rejects a catalog whose Skill path has case or identity drift' {
+        $fixture = New-CatalogFixture
+        $path = Join-Path $fixture 'catalog/profiles.json'
+        $catalog = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json -Depth 30
         $catalog.skills[0].source.path = 'skills/Orchestrate-AI-Delivery'
-        $catalog | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $catalogPath -Encoding utf8NoBOM
-        { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot -OutputPath (Join-Path $script:FixtureRoot ("artifacts/{0}.json" -f [guid]::NewGuid().ToString('N'))) } | Should -Throw '*source path*'
+        Write-CodeCollaborationJson -Path $path -Value $catalog
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*source path must exactly match*'
     }
 
     It 'rejects duplicate catalog Skill IDs' {
-        # Scenario: profile catalog repeats a Skill record with the same stable ID.
-        # Purpose: prevent ambiguous metadata and receipt attribution.
-        $catalogPath = Join-Path $script:FixtureRoot 'catalog/profiles.json'
-        $catalog = Get-Content -LiteralPath $catalogPath -Raw | ConvertFrom-Json
-        $catalog.skills = @($catalog.skills + $catalog.skills[0])
-        $catalog | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $catalogPath -Encoding utf8NoBOM
-        { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot -OutputPath (Join-Path $script:FixtureRoot ("artifacts/{0}.json" -f [guid]::NewGuid().ToString('N'))) } | Should -Throw '*Skill IDs must be unique*'
+        $fixture = New-CatalogFixture
+        $path = Join-Path $fixture 'catalog/profiles.json'
+        $catalog = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json -Depth 30
+        $catalog.skills = @($catalog.skills) + @($catalog.skills[0])
+        Write-CodeCollaborationJson -Path $path -Value $catalog
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*Skill IDs must be unique*'
     }
 
     It 'rejects a catalog that omits a source-inventory Skill' {
-        # Scenario: source inventory declares a package that the profile catalog forgot to describe.
-        # Purpose: keep catalog cardinality equal to the canonical source inventory.
-        & $script:AddSafeCatalogSkillFixture -Root $script:FixtureRoot
-        $catalogPath = Join-Path $script:FixtureRoot 'catalog/profiles.json'
-        $catalog = Get-Content -LiteralPath $catalogPath -Raw | ConvertFrom-Json
-        $catalog.skills = @($catalog.skills | Where-Object id -ne 'safe-fixture-skill')
-        $catalog | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $catalogPath -Encoding utf8NoBOM
-        { & $script:CatalogValidatorPath -RepositoryRoot $script:FixtureRoot -OutputPath (Join-Path $script:FixtureRoot ("artifacts/{0}.json" -f [guid]::NewGuid().ToString('N'))) } | Should -Throw '*exactly match source inventory*'
+        $fixture = New-CatalogFixture
+        $path = Join-Path $fixture 'catalog/profiles.json'
+        $catalog = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json -Depth 30
+        $catalog.skills = @($catalog.skills[0])
+        Write-CodeCollaborationJson -Path $path -Value $catalog
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*count must exactly match*'
+    }
+
+    It 'rejects a profile that references an unknown Skill' {
+        $fixture = New-CatalogFixture
+        $path = Join-Path $fixture 'catalog/profiles.json'
+        $catalog = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json -Depth 30
+        $catalog.profiles[0].includes = @($catalog.profiles[0].includes) + @('unknown-skill')
+        Write-CodeCollaborationJson -Path $path -Value $catalog
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*references unknown Skill*'
+    }
+
+    It 'rejects duplicate source Skill IDs' {
+        $fixture = New-CatalogFixture
+        $path = Join-Path $fixture 'catalog/source.json'
+        $source = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+        $source.skills = @('orchestrate-ai-delivery', 'orchestrate-ai-delivery')
+        Write-CodeCollaborationJson -Path $path -Value $source
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*duplicate Skill ID*'
+    }
+
+    It 'rejects missing catalog documentation' {
+        $fixture = New-CatalogFixture
+        Remove-Item -LiteralPath (Join-Path $fixture 'docs/RELEASE.md')
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*Release documentation is missing*'
     }
 }

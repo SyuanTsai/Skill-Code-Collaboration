@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "repositoryId": "skill-code-collaboration",
+  "sourceRepository": "https://github.com/SyuanTsai/Skill-Code-Collaboration.git",
+  "activeSkills": [
+    "orchestrate-ai-delivery",
+    "write-implementation-prompt"
+  ],
+  "repositoryChecks": [
+    {
+      "id": "repository-code-collaboration",
+      "kind": "general",
+      "path": "scripts/Test-CodeCollaborationRepository.ps1"
+    },
+    {
+      "id": "repository-catalog",
+      "kind": "general",
+      "path": "scripts/Test-CodeCollaborationCatalog.ps1"
+    },
+    {
+      "id": "repository-pester",
+      "kind": "pester",
+      "path": "tests"
+    }
+  ]
+}

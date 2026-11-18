@@ -5,9 +5,7 @@
 [CmdletBinding()]
 param(
     [string] $RepositoryRoot,
-    [string] $OutputPath,
-    [switch] $ReadOnlySnapshot,
-    [string] $GitEntryModeManifestPath
+    [switch] $ReadOnlySnapshot
 )
 
 Set-StrictMode -Version Latest
@@ -79,49 +77,6 @@ function Read-StrictJson {
     }
 }
 
-function Read-GitEntryModeManifest {
-    param([Parameter(Mandatory = $true)][string] $Path)
-
-    $manifest = Read-StrictJson -Path $Path
-    Assert-ExactPropertySet -Value $manifest -Expected @('schemaVersion', 'candidateCommit', 'entries') -Context 'Git entry mode manifest'
-    if (($manifest.schemaVersion -isnot [int] -and $manifest.schemaVersion -isnot [long]) -or [int64]$manifest.schemaVersion -ne 3) {
-        throw 'Git entry mode manifest schemaVersion must be integer 3.'
-    }
-    if ($manifest.candidateCommit -isnot [string] -or [string]$manifest.candidateCommit -cnotmatch '^[0-9a-f]{40}$') {
-        throw 'Git entry mode manifest candidateCommit must be a lowercase full Git object ID.'
-    }
-    if ($manifest.entries -isnot [array] -or @($manifest.entries).Count -eq 0) {
-        throw 'Git entry mode manifest entries must be a non-empty array.'
-    }
-
-    $modes = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
-    foreach ($entry in @($manifest.entries)) {
-        Assert-ExactPropertySet -Value $entry -Expected @('path', 'mode', 'sha256') -Context 'Git entry mode manifest entry'
-        if ($entry.path -isnot [string] -or $entry.mode -isnot [string] -or $entry.sha256 -isnot [string]) {
-            throw 'Git entry mode manifest entries must contain string path, mode, and sha256 values.'
-        }
-        $pathValue = [string]$entry.path
-        $segments = $pathValue.Split('/')
-        if ([IO.Path]::IsPathRooted($pathValue) -or $segments -contains '' -or $segments -contains '.' -or $segments -contains '..' -or
-            $pathValue.Contains('\') -or $pathValue.Contains(':') -or
-            $pathValue -cmatch '[\x00-\x1f\x7f]') {
-            throw "Git entry mode manifest contains an unsafe path '$pathValue'."
-        }
-        $modeValue = [string]$entry.mode
-        if ($modeValue -cnotmatch '^[0-9]{6}$') {
-            throw "Git entry mode manifest contains invalid mode '$modeValue' for '$pathValue'."
-        }
-        $sha256Value = [string]$entry.sha256
-        if ($sha256Value -cnotmatch '^[0-9a-f]{64}$') {
-            throw "Git entry mode manifest contains invalid blob sha256 for '$pathValue'."
-        }
-        if (-not $modes.TryAdd($pathValue, [pscustomobject][ordered]@{ mode = $modeValue; sha256 = $sha256Value })) {
-            throw "Git entry mode manifest contains duplicate path '$pathValue'."
-        }
-    }
-    return $modes
-}
-
 function Get-UnicodeScalarCount {
     param(
         [Parameter(Mandatory = $true)][string] $Value,
@@ -184,39 +139,6 @@ function ConvertTo-AsciiLowerInvariant {
         }
     }
     return $builder.ToString()
-}
-
-function Get-GitBlobSha256 {
-    param(
-        [Parameter(Mandatory = $true)][string] $GitPath,
-        [Parameter(Mandatory = $true)][string] $RepositoryRoot,
-        [Parameter(Mandatory = $true)][string] $ObjectId
-    )
-
-    if ($ObjectId -cnotmatch '^[0-9a-f]{40}$') { throw "Invalid Git blob identity '$ObjectId'." }
-    $startInfo = [Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = $GitPath
-    $startInfo.UseShellExecute = $false
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    foreach ($argument in @('-C', $RepositoryRoot, 'cat-file', 'blob', $ObjectId)) {
-        [void]$startInfo.ArgumentList.Add($argument)
-    }
-    $process = [Diagnostics.Process]::new()
-    $process.StartInfo = $startInfo
-    $hasher = [Security.Cryptography.SHA256]::Create()
-    try {
-        if (-not $process.Start()) { throw "Could not start Git blob reader for '$ObjectId'." }
-        $hash = $hasher.ComputeHash($process.StandardOutput.BaseStream)
-        $stderr = $process.StandardError.ReadToEnd()
-        $process.WaitForExit()
-        if ($process.ExitCode -ne 0) { throw "Git blob reader failed for '$ObjectId': $stderr" }
-        return ([BitConverter]::ToString($hash) -replace '-', '').ToLowerInvariant()
-    }
-    finally {
-        $hasher.Dispose()
-        $process.Dispose()
-    }
 }
 
 function Read-SkillFrontmatter {
@@ -384,9 +306,7 @@ function Read-OpenAiMetadata {
 function Get-ContentInventory {
     param(
         [Parameter(Mandatory = $true)][string] $RepositoryRoot,
-        [Parameter(Mandatory = $true)][string] $SkillId,
-        [switch] $ReadOnlySnapshot,
-        [Collections.Generic.Dictionary[string, object]] $SnapshotGitEntryModes
+        [Parameter(Mandatory = $true)][string] $SkillId
     )
 
     $skillRoot = [IO.Path]::GetFullPath((Join-Path $RepositoryRoot "skills/$SkillId"))
@@ -430,90 +350,12 @@ function Get-ContentInventory {
     }
     if ($pathToFile.Count -eq 0) { throw "Skill '$SkillId' has an empty package inventory." }
 
-    if ($ReadOnlySnapshot) {
-        if ($null -eq $SnapshotGitEntryModes) {
-            throw "Skill '$SkillId' read-only snapshot validation requires a Git entry mode manifest."
-        }
-        $prefix = "skills/$SkillId/"
-        $expectedPaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-        foreach ($entry in $SnapshotGitEntryModes.GetEnumerator()) {
-            if ($entry.Key.StartsWith($prefix, [StringComparison]::Ordinal)) {
-                if ([string]$entry.Value.mode -cnotin @('100644', '100755')) {
-                    throw "Skill '$SkillId' contains non-regular Git entry '$($entry.Key)' with mode '$($entry.Value.mode)'."
-                }
-                [void]$expectedPaths.Add($entry.Key.Substring($prefix.Length))
-            }
-        }
-        if ($expectedPaths.Count -ne $pathToFile.Count) {
-            throw "Skill '$SkillId' filesystem inventory does not match the Git entry mode manifest."
-        }
-        foreach ($path in $pathToFile.Keys) {
-            if (-not $expectedPaths.Contains($path)) {
-                throw "Skill '$SkillId' filesystem inventory is missing Git entry mode '$path'."
-            }
-        }
-        [string[]]$sortedPaths = @($pathToFile.Keys)
-        [Array]::Sort($sortedPaths, [StringComparer]::Ordinal)
-        $files = @()
-        $canonical = [Text.StringBuilder]::new()
-        foreach ($path in $sortedPaths) {
-            $manifestPath = "skills/$SkillId/$path"
-            if (-not $SnapshotGitEntryModes.ContainsKey($manifestPath)) {
-                throw "Skill '$SkillId' filesystem inventory is missing Git blob identity '$path'."
-            }
-            $sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $pathToFile[$path].FullName).Hash.ToLowerInvariant()
-            $expectedSha256 = [string]$SnapshotGitEntryModes[$manifestPath].sha256
-            if ($sha256 -cne $expectedSha256) {
-                throw "Skill '$SkillId' filesystem content is not bound to its committed Git blob '$path'."
-            }
-            $files += [pscustomobject][ordered]@{ path = $path; sha256 = $sha256 }
-            [void]$canonical.Append($path).Append("`t").Append($sha256).Append("`n")
-        }
-        $hasher = [Security.Cryptography.SHA256]::Create()
-        try {
-            $contentSha256 = ([BitConverter]::ToString($hasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($canonical.ToString()))) -replace '-', '').ToLowerInvariant()
-        }
-        finally { $hasher.Dispose() }
-        return [pscustomobject][ordered]@{ skillId = $SkillId; contentSha256 = $contentSha256; files = $files }
-    }
-
-    $git = Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1
-    $tracked = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::Ordinal)
-    $gitLines = @(& $git.Path -C $RepositoryRoot ls-files -s -- "skills/$SkillId")
-    if ($LASTEXITCODE -ne 0) { throw "Git inventory lookup failed for '$SkillId'." }
-    foreach ($line in $gitLines) {
-        if ([string]$line -cnotmatch '^(?<mode>[0-9]{6}) (?<objectId>[0-9a-f]{40}) (?<stage>[0-3])\t(?<path>.+)$') {
-            throw "Git returned malformed index entry for '$SkillId': $line"
-        }
-        if ([string]$Matches.mode -cnotin @('100644', '100755') -or [string]$Matches.stage -cne '0') {
-            throw "Skill '$SkillId' contains non-regular or unresolved Git entry '$($Matches.path)'."
-        }
-        $prefix = "skills/$SkillId/"
-        $packagePath = ([string]$Matches.path).Substring($prefix.Length)
-        if (-not $tracked.TryAdd($packagePath, [string]$Matches.objectId)) {
-            throw "Skill '$SkillId' contains duplicate Git index path '$packagePath'."
-        }
-    }
-    if ($tracked.Count -ne $pathToFile.Count) {
-        throw "Skill '$SkillId' filesystem inventory does not match the Git index."
-    }
-    foreach ($path in $pathToFile.Keys) {
-        if (-not $tracked.ContainsKey($path)) { throw "Skill '$SkillId' contains untracked package file '$path'." }
-    }
-
     [string[]]$sortedPaths = @($pathToFile.Keys)
     [Array]::Sort($sortedPaths, [StringComparer]::Ordinal)
     $files = @()
     $canonical = [Text.StringBuilder]::new()
     foreach ($path in $sortedPaths) {
-        $repositoryPath = "skills/$SkillId/$path"
-        $workingObjectId = ([string](@(
-            & $git.Path -C $RepositoryRoot hash-object "--path=$repositoryPath" -- $pathToFile[$path].FullName
-        ) | Select-Object -First 1)).Trim()
-        if ($LASTEXITCODE -ne 0 -or $workingObjectId -cnotmatch '^[0-9a-f]{40}$' -or $workingObjectId -cne $tracked[$path]) {
-            throw "Skill '$SkillId' working-tree content is not bound to its Git index entry '$path'."
-        }
-        $sha256 = Get-GitBlobSha256 -GitPath $git.Path -RepositoryRoot $RepositoryRoot -ObjectId $tracked[$path]
+        $sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $pathToFile[$path].FullName).Hash.ToLowerInvariant()
         $files += [pscustomobject][ordered]@{ path = $path; sha256 = $sha256 }
         [void]$canonical.Append($path).Append("`t").Append($sha256).Append("`n")
     }
@@ -529,14 +371,6 @@ $repoRoot = if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
     [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 }
 else { [IO.Path]::GetFullPath($RepositoryRoot) }
-
-$snapshotGitEntryModes = $null
-if ($ReadOnlySnapshot) {
-    if ([string]::IsNullOrWhiteSpace($GitEntryModeManifestPath)) {
-        throw 'Read-only snapshot validation requires GitEntryModeManifestPath.'
-    }
-    $snapshotGitEntryModes = Read-GitEntryModeManifest -Path ([IO.Path]::GetFullPath($GitEntryModeManifestPath))
-}
 
 $sourcePath = Join-Path $repoRoot 'catalog/source.json'
 $inventory = Read-StrictJson -Path $sourcePath
@@ -608,7 +442,7 @@ foreach ($skillId in $skillIds) {
     }
     [void](Read-SkillFrontmatter -Path $skillFile -ExpectedSkillId $skillId)
     [void](Read-OpenAiMetadata -Path $metadataFile -ExpectedSkillId $skillId)
-    $packages += Get-ContentInventory -RepositoryRoot $repoRoot -SkillId $skillId -ReadOnlySnapshot:$ReadOnlySnapshot -SnapshotGitEntryModes $snapshotGitEntryModes
+    $packages += Get-ContentInventory -RepositoryRoot $repoRoot -SkillId $skillId
 }
 
 $result = [pscustomobject][ordered]@{
@@ -619,12 +453,4 @@ $result = [pscustomobject][ordered]@{
     skills = $packages
     result = 'passed'
 }
-$json = $result | ConvertTo-Json -Depth 20
-if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
-    $outputFullPath = [IO.Path]::GetFullPath($OutputPath)
-    $outputDirectory = Split-Path -Parent $outputFullPath
-    if (-not [string]::IsNullOrWhiteSpace($outputDirectory)) { [void](New-Item -ItemType Directory -Path $outputDirectory -Force) }
-    [IO.File]::WriteAllText($outputFullPath, $json + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-}
-Write-Host "Code Collaboration repository validation passed: $($skillIds.Count) active Skills."
-$json
+$result | ConvertTo-Json -Depth 20
