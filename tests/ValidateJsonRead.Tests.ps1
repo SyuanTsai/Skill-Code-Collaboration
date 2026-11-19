@@ -42,6 +42,28 @@ Describe 'Consumer repository strict JSON reading' {
         { & $script:CatalogCheck -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*duplicate JSON property*'
     }
 
+    It 'rejects nested duplicate properties through both strict readers' {
+        $fixture = New-JsonFixture
+        $sourcePath = Join-Path $fixture 'catalog/source.json'
+        $sourceText = Get-Content -Raw -LiteralPath $sourcePath
+        $sourceNeedle = '    "orchestrate-ai-delivery",'
+        $sourceReplacement = '    {"skillId":"wrong","skillId":"orchestrate-ai-delivery"},'
+        $mutatedSource = $sourceText.Replace($sourceNeedle, $sourceReplacement)
+        $mutatedSource | Should -Not -BeExactly $sourceText
+        [IO.File]::WriteAllText($sourcePath, $mutatedSource, [Text.UTF8Encoding]::new($false))
+        { & $script:RepositoryCheck -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw "*duplicate JSON property 'skillId'.*"
+
+        $fixture = New-JsonFixture
+        $catalogPath = Join-Path $fixture 'catalog/profiles.json'
+        $catalogText = Get-Content -Raw -LiteralPath $catalogPath
+        $catalogNeedle = '        "path": "skills/orchestrate-ai-delivery"'
+        $catalogReplacement = '        "path": "skills/wrong", "path": "skills/orchestrate-ai-delivery"'
+        $mutatedCatalog = $catalogText.Replace($catalogNeedle, $catalogReplacement)
+        $mutatedCatalog | Should -Not -BeExactly $catalogText
+        [IO.File]::WriteAllText($catalogPath, $mutatedCatalog, [Text.UTF8Encoding]::new($false))
+        { & $script:CatalogCheck -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw "*duplicate JSON property 'path'.*"
+    }
+
     It 'rejects invalid UTF-8 bytes' {
         $fixture = New-JsonFixture
         $path = Join-Path $fixture 'catalog/source.json'

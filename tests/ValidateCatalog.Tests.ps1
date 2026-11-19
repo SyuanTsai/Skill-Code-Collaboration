@@ -11,6 +11,53 @@ BeforeAll {
         $root = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
         Copy-CodeCollaborationFixture -RepositoryRoot $script:RepositoryRoot -DestinationRoot $root
     }
+
+    function Add-CatalogSkillFixture {
+        param([Parameter(Mandatory)][string] $Root)
+
+        $sourceSkillId = 'write-implementation-prompt'
+        $newSkillId = 'zz-added-skill'
+        $sourceSkillRoot = Join-Path $Root "skills/$sourceSkillId"
+        $newSkillRoot = Join-Path $Root "skills/$newSkillId"
+        Copy-Item -LiteralPath $sourceSkillRoot -Destination $newSkillRoot -Recurse
+        foreach ($relative in @('SKILL.md', 'agents/openai.yaml')) {
+            $path = Join-Path $newSkillRoot $relative
+            $text = Get-Content -Raw -LiteralPath $path
+            [IO.File]::WriteAllText($path, $text.Replace($sourceSkillId, $newSkillId), [Text.UTF8Encoding]::new($false))
+        }
+
+        $sourcePath = Join-Path $Root 'catalog/source.json'
+        $source = Get-Content -Raw -LiteralPath $sourcePath | ConvertFrom-Json
+        [string[]]$sourceSkills = @($source.skills) + $newSkillId
+        [Array]::Sort($sourceSkills, [StringComparer]::Ordinal)
+        $source.skills = $sourceSkills
+        Write-CodeCollaborationJson -Path $sourcePath -Value $source
+
+        $catalogPath = Join-Path $Root 'catalog/profiles.json'
+        $catalog = Get-Content -Raw -LiteralPath $catalogPath | ConvertFrom-Json -Depth 50
+        $template = @($catalog.skills | Where-Object { $_.id -ceq $sourceSkillId })[0]
+        $added = $template | ConvertTo-Json -Depth 50 | ConvertFrom-Json -Depth 50
+        $added.id = $newSkillId
+        $added.source.path = "skills/$newSkillId"
+        $added.dependencies = @()
+        $catalog.skills = @($catalog.skills) + $added
+        foreach ($profile in @($catalog.profiles)) {
+            if (@($added.profiles) -ccontains [string]$profile.id) {
+                [string[]]$includes = @($profile.includes) + $newSkillId
+                [Array]::Sort($includes, [StringComparer]::Ordinal)
+                $profile.includes = $includes
+            }
+        }
+        Write-CodeCollaborationJson -Path $catalogPath -Value $catalog
+
+        $gatePath = Join-Path $Root 'config/consumer-gate.json'
+        $gate = Get-Content -Raw -LiteralPath $gatePath | ConvertFrom-Json -Depth 50
+        [string[]]$activeSkills = @($gate.activeSkills) + $newSkillId
+        [Array]::Sort($activeSkills, [StringComparer]::Ordinal)
+        $gate.activeSkills = $activeSkills
+        Write-CodeCollaborationJson -Path $gatePath -Value $gate
+        return $newSkillId
+    }
 }
 
 Describe 'Code Collaboration catalog check' {
@@ -28,6 +75,18 @@ Describe 'Code Collaboration catalog check' {
         $null = Invoke-CodeCollaborationCheck -Path $script:CheckPath -RepositoryRoot $fixture
         $after = Get-CodeCollaborationTreeDigest -Root $fixture
         $after | Should -BeExactly $before
+    }
+
+    It 'accepts an added valid Skill across the catalog inventory' {
+        $fixture = New-CatalogFixture
+        $newSkillId = Add-CatalogSkillFixture -Root $fixture
+        $result = Invoke-CodeCollaborationCheck -Path $script:CheckPath -RepositoryRoot $fixture
+        $result.result | Should -BeExactly 'passed'
+        $result.activeSkillCount | Should -Be 3
+        @($result.skills.skillId) | Should -Be @('orchestrate-ai-delivery', 'write-implementation-prompt', 'zz-added-skill')
+        $added = @($result.skills | Where-Object { $_.skillId -ceq $newSkillId })[0]
+        $added.sourcePath | Should -BeExactly 'skills/zz-added-skill'
+        @($result.profiles[0].includes) | Should -Contain $newSkillId
     }
 
     It 'uses ordinal sorting for the filesystem Skill inventory' {
