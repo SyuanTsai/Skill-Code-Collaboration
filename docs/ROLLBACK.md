@@ -4,28 +4,10 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Rollback
 
-Rollback is source-pin based. Do not rewrite a released tag or force-update a consumer to a different commit under the same version.
+Rollback keeps the consumer gate intact. Revert the affected repository change in a new reviewed commit and require the pinned three-platform consumer gate to pass again.
 
-Windows is the only supported host for local installation, execution, testing, rollback verification, and CI. Use PowerShell (pwsh) for repository commands; Linux/macOS hosts, WSL, and Linux containers are unsupported.
+If the failure was introduced by an authority upgrade, restore the previously reviewed immutable `commit` in `config/authority-pin.json`. Do not rewrite a released tag, replace the bootstrap, or introduce repository-local authority policy.
 
-## Consumer rollback
+If initial conversion is withdrawn before merge, withdraw the conversion as a unit. After conversion has merged, cleanup removes only the transition workflow; the permanent consumer gate, both general checks, and the complete `tests/` suite remain required.
 
-1. Stop selecting the affected profile if the Skill must be removed immediately.
-2. Restore the consumer's previous `code-collaboration` requested ref, resolved commit SHA, and content SHA-256.
-3. Re-run the consumer's resolver/discovery step.
-4. Verify the available Skill set matches the restored pin and that capability filtering is applied again.
-5. Remove only artifacts managed by the newer source pin; do not delete unrelated `skills/` content.
-
-## Repository rollback
-
-If a released change must be reverted, create a new commit that restores the previous behavior and release a new patch version. Never move or overwrite an existing release tag.
-
-## Safe fallback behavior
-
-Consumers must treat an unavailable or uninstalled Skill as absent. They must not assume a direct `skills/...` path exists merely because a related workflow exists in another source repository.
-
-## Protected full-source gate rollback
-
-The current required CI gate is the protected full-source route with the active 472cbd6/51 authority tuple. If preparation or validation fails, retain the setup receipts, raw process output, Core report, Pester case inventory, stage timing file, completed setup timing file, and source-validation timing file; the required check must remain failed until a reviewed fix passes. Do not reuse a prepared `source-tools.json` after changing the candidate, authority checkout, runtime, or tool closure; create a fresh run-owned preparation.
-
-To roll back the 472cbd6 authority adoption to the preceding active ead tuple, revert the config and CI authority selection together in a new reviewed commit. The protected driver retains its separate exact 8a authority pin and continues to recognize the reviewed ff85, 8e and ead historical tuples. Do not treat the unqualified `pwsh -File ./scripts/Validate.ps1` legacy route as a successful substitute for the current required gate. Release tags remain immutable.
+Consumers must treat an unavailable Skill as absent and must not delete unrelated Skill content during rollback.

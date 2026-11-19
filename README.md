@@ -8,115 +8,43 @@ Independent Agent Skills source repository for code-delegation workflows.
 
 - Stable source ID: `code-collaboration`
 - Source inventory: `catalog/source.json`
-- Profile catalog extension: `catalog/profiles.json`
-- Current repository version: `0.1.0`
-
-For source maintenance and review, follow the [central Skill maintenance guidelines](https://github.com/SyuanTsai/SyuanTsai-AI-Instructions/blob/76cee33b5e9b91b8a21f362f2936078c74a68fb7/docs/skill-maintenance-guidelines.md) when deciding scope, supporting resources, dependencies, and replacement cleanup.
+- Profile catalog: `catalog/profiles.json`
+- Current version: `0.1.0`
 
 ## Skills
 
-| Skill | Profile | Purpose | Capability gate |
-| --- | --- | --- | --- |
-| `orchestrate-ai-delivery` | `ai-delivery` | Plan, dispatch, review, and gate delivery of one Jira issue through an AI controller and executor. | External CLI mode needs at least one of the claude, codex, or copilot CLIs installed and logged in |
-| `write-implementation-prompt` | `ai-delivery` | Build self-contained implementation prompts for a delegated executor and select an exact available model. | None |
+| Skill | Profile | Purpose |
+| --- | --- | --- |
+| `orchestrate-ai-delivery` | `ai-delivery` | Plan, dispatch, review, and gate delivery of one Jira issue through a selected controller and executor. |
+| `write-implementation-prompt` | `ai-delivery` | Create a repository-scoped implementation prompt and recommend an exact available executor model. |
 
-Bitbucket pull-request review belongs to the separately versioned `Skill-Atlassian-Ecosystem` source so Atlassian credentials and product workflows have one ownership boundary.
+Name a Skill or make a request matching its description to invoke it. The orchestration Skill never commits, pushes, or writes Jira without the user's consent; work-environment Jira issues remain read-only.
 
-## Usage examples
+## Repository contract
 
-Skills can be triggered by naming the Skill or by making a request that matches its description.
+`catalog/source.json` is the canonical active-Skill inventory. `catalog/profiles.json` defines the opt-in `ai-delivery` profile and its dependency relationships. Stable package paths are:
 
-- `orchestrate-ai-delivery`: “Use orchestrate-ai-delivery for SYP-123 in this repository on branch feature/x. Controller: you. Execution mode: external CLI, executor codex.”
-- `write-implementation-prompt`: “Use write-implementation-prompt to write a prompt for codex CLI that adds input validation to the order form.”
-
-The controller never commits, pushes, or writes Jira without the user's consent. Jira issues from a work environment are read-only.
-
-## Repository layout
-
-```text
-skills/
-  orchestrate-ai-delivery/
-    SKILL.md
-    agents/openai.yaml
-    references/
-      dispatch.md
-      models.json
-      models.md
-      review.md
-      usage-report.md
-    scripts/Update-ModelAvailability.ps1
-    scripts/Update-ModelBaseline.ps1
-  write-implementation-prompt/
-    SKILL.md
-    agents/openai.yaml
-catalog/
-  profiles.json
-docs/
-  RELEASE.md
-  ROLLBACK.md
-  WINDOWS-SUPPORT.md
-scripts/
-  Get-SourcePin.ps1
-tests/
-  validate-catalog.ps1
-.github/workflows/
-  validate.yml
-VERSION
-```
-
-## Discovery and selection
-
-Consumers discover this source through the canonical `catalog/source.json` inventory. The domain-specific `catalog/profiles.json` holds the opt-in `ai-delivery` profile and selection metadata. The former `write-copilot-implementation-prompt` Skill and its `copilot` profile were removed; select `write-implementation-prompt` through `ai-delivery` instead.
-
-Direct paths are stable within a pinned version:
-
-- `skills/write-implementation-prompt`
 - `skills/orchestrate-ai-delivery`
+- `skills/write-implementation-prompt`
 
-Consumers should resolve a release tag to an immutable commit SHA and persist that SHA plus a reproducible repository content hash. The source-pin metadata helper produces the pin evidence used for that purpose.
+The repository-specific checks are:
 
-## Validation
+- `scripts/Test-CodeCollaborationRepository.ps1`
+- `scripts/Test-CodeCollaborationCatalog.ps1`
+- the complete `tests/` Pester suite
 
-The required GitHub gate runs the protected full-source validation path on Windows. It verifies the event-base `Validate.ps1` driver, the immutable candidate checkout, the real 472cbd6 authority Git checkout, and one fresh run-owned tool closure. The current active authority tuple is commit `472cbd6f533d3f6d0a5381862128ebcc87618a7c` with its complete reviewed 51-file closure.
+The two PowerShell checks accept `-RepositoryRoot` and `-ReadOnlySnapshot`, operate on an extracted snapshot without Git metadata, and write results to standard output without changing the candidate.
 
-Windows is the only supported host for local development, installation, execution, testing, acceptance, and CI. Run repository commands in PowerShell (pwsh); Linux/macOS hosts, WSL, and Linux containers are unsupported. See [Windows support and Skill inventory](docs/WINDOWS-SUPPORT.md) for the complete owned Skill inventory and support boundary.
+## Consumer gate
 
-For a local full-source run, use the same trusted event-base driver, candidate checkout, and verified 472cbd6 authority checkout, then prepare once and validate with the same `source-tools.json`:
+Validation is owned by the pinned authority and runs through the `consumer-gate` workflow on Windows, Linux, and macOS. The repository bootstrap reads `config/authority-pin.json`; routine authority upgrades change only that file's `commit`. `config/consumer-gate.json` binds this repository, the active Skill inventory, and the three repository checks above.
 
-```powershell
-$runRoot = Join-Path (Join-Path $env:TEMP 'code-collaboration') ([guid]::NewGuid().ToString('N'))
-$sourceTools = Join-Path $runRoot 'source-tools.json'
-$baseCommit = '<immutable event-base commit SHA>'
-$protectedDriver = '<trusted event-base checkout>/scripts/Validate.ps1'
-$candidateRoot = '<clean immutable candidate Git checkout>'
-$authorityRoot = '<verified 472cbd6 authority Git checkout>'
-$artifactsRoot = Join-Path $runRoot 'core-v2'
+The transition workflow is temporary during conversion. After conversion, the cleanup pull request removes only that workflow; the permanent gate, bootstrap, configuration, checks, and full test suite remain.
 
-pwsh -File $protectedDriver -RepositoryRoot $candidateRoot -AdapterVersion 2 -PrepareSourceTools `
-  -SourceToolsPath $sourceTools -AuthorityRepositoryRoot $authorityRoot `
-  -TrustedToolRoot $PSHOME -BaseCommit $baseCommit -TimeoutSeconds 10800
+See [release](docs/RELEASE.md), [rollback](docs/ROLLBACK.md), [consumer-gate adoption](docs/SOURCE-VALIDATION-ADOPTION.md), and [cross-platform support](docs/WINDOWS-SUPPORT.md).
 
-pwsh -File $protectedDriver -RepositoryRoot $candidateRoot -AdapterVersion 2 -SourceValidation `
-  -SourceToolsPath $sourceTools -AuthorityRepositoryRoot $authorityRoot `
-  -TrustedToolRoot $PSHOME -BaseCommit $baseCommit -ArtifactsRoot $artifactsRoot -TimeoutSeconds 10800
-```
+## License and scope
 
-The workflow retains the report, raw process output, native reports, Pester case inventory, setup receipts, and timing records. The 1200-second timing target is diagnostic only; the process timeout is 10800 seconds. Component scripts are not additional public validation gates. Generate source-pin metadata separately when producing release evidence.
+The Apache-2.0 license applies to repository-authored Skills, metadata, catalogs, documentation, checks, tests, and workflow configuration. External services, credentials, tenant data, and user-supplied content remain outside that grant. See [PROVENANCE.md](PROVENANCE.md) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-The unqualified `pwsh -File ./scripts/Validate.ps1` command remains the historical legacy route. CI uses explicit `-AdapterVersion 2 -PrepareSourceTools` and `-SourceValidation` calls through the trusted base driver. See [Protected full-source validation](docs/SOURCE-VALIDATION-ADOPTION.md) for the event inputs, preparation rules, and evidence contract.
-
-## Versioning and rollback
-
-This repository is independently versioned. Release and pin rules are documented in `docs/RELEASE.md`. A consumer can roll back without modifying Skill content by restoring its previous source pin; see `docs/ROLLBACK.md`.
-
-## License and contribution boundary
-
-The Apache-2.0 license in [LICENSE](LICENSE) applies to the repository-authored Skill instructions, agent metadata, catalog data, documentation, validation scripts, tests, and workflow configuration in this repository. It does not grant rights to external services, GitHub/Copilot product materials, consumer prompts or outputs, credentials, tenant data, or other content supplied by a user.
-
-The repository does not vendor third-party source code. CI and developer tools are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); their upstream terms remain applicable. The evidence and file-by-file decision record is [PROVENANCE.md](PROVENANCE.md).
-
-Contributors must have the right to submit their contribution. Unless a separate written agreement says otherwise, an intentional contribution to this repository is submitted under Apache-2.0; contributors must preserve existing notices and identify material that is not their own.
-
-## Scope
-
-This repository owns only Code Collaboration Skills and their directly required metadata, references, tests, and release contract. General AI instructions, unrelated Skills, and consumer-specific installation state belong outside this repository.
+This repository owns only Code Collaboration Skills and their directly required metadata, references, tests, and release contract.

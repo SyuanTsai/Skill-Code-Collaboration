@@ -1,207 +1,217 @@
 # SPDX-FileCopyrightText: 2026 SyuanTsai
 # SPDX-License-Identifier: Apache-2.0
-Describe 'Code Collaboration Standard v1 repository contract' {
-    BeforeAll {
-        $script:RepositoryRoot = Split-Path -Parent $PSScriptRoot
-        $script:ValidatorPath = Join-Path $script:RepositoryRoot 'scripts/Test-Repository.ps1'
-        $script:GitPath = (Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Path
+$ErrorActionPreference = 'Stop'
+
+BeforeAll {
+    . (Join-Path $PSScriptRoot 'ResolveLegacyAuthorityArchiveFixture.ps1')
+    $script:RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+    $script:CheckPath = Join-Path $script:RepositoryRoot 'scripts/Test-CodeCollaborationRepository.ps1'
+
+    function New-RepositoryFixture {
+        $root = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        Copy-CodeCollaborationFixture -RepositoryRoot $script:RepositoryRoot -DestinationRoot $root
     }
 
-    BeforeEach {
-        $script:FixtureRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
-        New-Item -ItemType Directory -Path $script:FixtureRoot | Out-Null
-        Copy-Item -LiteralPath (Join-Path $script:RepositoryRoot 'catalog') -Destination $script:FixtureRoot -Recurse
-        Copy-Item -LiteralPath (Join-Path $script:RepositoryRoot 'config') -Destination $script:FixtureRoot -Recurse
-        Copy-Item -LiteralPath (Join-Path $script:RepositoryRoot 'skills') -Destination $script:FixtureRoot -Recurse
-        & $script:GitPath -C $script:FixtureRoot init --quiet
-        & $script:GitPath -C $script:FixtureRoot add -- catalog/source.json config skills
-        if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the repository contract fixture.' }
-        $script:SkillId = 'write-implementation-prompt'
-        $script:SkillRoot = Join-Path $script:FixtureRoot "skills/$($script:SkillId)"
-    }
+    function Add-RepositorySkillFixture {
+        param([Parameter(Mandatory)][string] $Root)
 
-    It 'accepts the current schema v2 inventory and canonical Skill package' {
-        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Not -Throw
-    }
+        $sourceSkillId = 'write-implementation-prompt'
+        $newSkillId = 'zz-added-skill'
+        $sourceSkillRoot = Join-Path $Root "skills/$sourceSkillId"
+        $newSkillRoot = Join-Path $Root "skills/$newSkillId"
+        Copy-Item -LiteralPath $sourceSkillRoot -Destination $newSkillRoot -Recurse
+        foreach ($relative in @('SKILL.md', 'agents/openai.yaml')) {
+            $path = Join-Path $newSkillRoot $relative
+            $text = Get-Content -Raw -LiteralPath $path
+            [IO.File]::WriteAllText($path, $text.Replace($sourceSkillId, $newSkillId), [Text.UTF8Encoding]::new($false))
+        }
 
-    It 'produces a deterministic per-Skill content hash' {
-        $first = & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot | Select-Object -Last 1 | ConvertFrom-Json
-        $second = & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot | Select-Object -Last 1 | ConvertFrom-Json
-        $first.skills[0].contentSha256 | Should -Be $second.skills[0].contentSha256
-        $first.skills[0].contentSha256 | Should -Match '^[0-9a-f]{64}$'
-    }
+        $sourcePath = Join-Path $Root 'catalog/source.json'
+        $source = Get-Content -Raw -LiteralPath $sourcePath | ConvertFrom-Json
+        [string[]]$sourceSkills = @($source.skills) + $newSkillId
+        [Array]::Sort($sourceSkills, [StringComparer]::Ordinal)
+        $source.skills = $sourceSkills
+        Write-CodeCollaborationJson -Path $sourcePath -Value $source
 
-    It 'requires a Git entry mode manifest for read-only snapshots' {
-        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot -ReadOnlySnapshot } | Should -Throw '*requires GitEntryModeManifestPath*'
-    }
-
-    It 'rejects a read-only snapshot whose Git manifest contains a symlink entry' {
-        # Scenario: archive extraction materializes a committed symlink as an ordinary file.
-        # Purpose: preserve the original Git entry-type gate across snapshot validation.
-        $manifestPath = Join-Path $script:FixtureRoot 'git-entry-modes.json'
-        $entries = @(Get-ChildItem -LiteralPath (Join-Path $script:FixtureRoot 'skills') -Recurse -File | ForEach-Object {
-            [ordered]@{
-                path = [IO.Path]::GetRelativePath($script:FixtureRoot, $_.FullName).Replace([IO.Path]::DirectorySeparatorChar, '/')
-                mode = '100644'
-                sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+        $catalogPath = Join-Path $Root 'catalog/profiles.json'
+        $catalog = Get-Content -Raw -LiteralPath $catalogPath | ConvertFrom-Json -Depth 50
+        $template = @($catalog.skills | Where-Object { $_.id -ceq $sourceSkillId })[0]
+        $added = $template | ConvertTo-Json -Depth 50 | ConvertFrom-Json -Depth 50
+        $added.id = $newSkillId
+        $added.source.path = "skills/$newSkillId"
+        $added.dependencies = @()
+        $catalog.skills = @($catalog.skills) + $added
+        foreach ($profile in @($catalog.profiles)) {
+            if (@($added.profiles) -ccontains [string]$profile.id) {
+                [string[]]$includes = @($profile.includes) + $newSkillId
+                [Array]::Sort($includes, [StringComparer]::Ordinal)
+                $profile.includes = $includes
             }
-        })
-        $entries[0].mode = '120000'
-        [ordered]@{ schemaVersion = 3; candidateCommit = ('a' * 40); entries = $entries } |
-            ConvertTo-Json -Depth 20 |
-            Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
+        }
+        Write-CodeCollaborationJson -Path $catalogPath -Value $catalog
 
-        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot -ReadOnlySnapshot -GitEntryModeManifestPath $manifestPath } | Should -Throw '*non-regular Git entry*'
+        $gatePath = Join-Path $Root 'config/consumer-gate.json'
+        $gate = Get-Content -Raw -LiteralPath $gatePath | ConvertFrom-Json -Depth 50
+        [string[]]$activeSkills = @($gate.activeSkills) + $newSkillId
+        [Array]::Sort($activeSkills, [StringComparer]::Ordinal)
+        $gate.activeSkills = $activeSkills
+        Write-CodeCollaborationJson -Path $gatePath -Value $gate
+        return $newSkillId
+    }
+}
+
+Describe 'Code Collaboration repository check' {
+    It 'accepts the current snapshot without repository metadata' {
+        $fixture = New-RepositoryFixture
+        Test-Path -LiteralPath (Join-Path $fixture '.git') | Should -BeFalse
+        $result = Invoke-CodeCollaborationCheck -Path $script:CheckPath -RepositoryRoot $fixture
+        $result.result | Should -BeExactly 'passed'
+        $result.activeSkillCount | Should -Be 2
+        @($result.skills.skillId) | Should -Be @('orchestrate-ai-delivery', 'write-implementation-prompt')
     }
 
-    It 'rejects read-only snapshot bytes that do not match committed Git blob digests' {
-        # Scenario: git archive export-subst rewrites a committed Skill file before extraction.
-        # Purpose: ensure snapshot evidence remains bound to the original committed blob bytes.
-        $manifestPath = Join-Path $script:FixtureRoot 'git-entry-modes.json'
-        $entries = @(Get-ChildItem -LiteralPath (Join-Path $script:FixtureRoot 'skills') -Recurse -File | ForEach-Object {
-            [ordered]@{
-                path = [IO.Path]::GetRelativePath($script:FixtureRoot, $_.FullName).Replace([IO.Path]::DirectorySeparatorChar, '/')
-                mode = '100644'
-                sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
-            }
-        })
-        [ordered]@{ schemaVersion = 3; candidateCommit = ('a' * 40); entries = $entries } |
-            ConvertTo-Json -Depth 20 |
-            Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
-        Add-Content -LiteralPath (Join-Path $script:SkillRoot 'SKILL.md') -Value 'snapshot export-subst mutation'
-
-        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot -ReadOnlySnapshot -GitEntryModeManifestPath $manifestPath } |
-            Should -Throw '*committed Git blob*'
+    It 'produces deterministic ordinal content inventories' {
+        $fixture = New-RepositoryFixture
+        $first = Invoke-CodeCollaborationCheck -Path $script:CheckPath -RepositoryRoot $fixture
+        $second = Invoke-CodeCollaborationCheck -Path $script:CheckPath -RepositoryRoot $fixture
+        ($first.skills | ConvertTo-Json -Depth 20 -Compress) | Should -BeExactly ($second.skills | ConvertTo-Json -Depth 20 -Compress)
+        foreach ($skill in @($first.skills)) {
+            [string[]]$actual = @($skill.files.path)
+            [string[]]$expected = @($actual)
+            [Array]::Sort($expected, [StringComparer]::Ordinal)
+            ($actual -join "`n") | Should -BeExactly ($expected -join "`n")
+            [string]$skill.contentSha256 | Should -Match '^[0-9a-f]{64}$'
+        }
     }
 
-    It 'rejects an unlisted Skill directory' {
-        New-Item -ItemType Directory -Path (Join-Path $script:FixtureRoot 'skills/unlisted-skill') | Out-Null
-        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*inventory does not exactly match*'
+    It 'accepts an added valid Skill from the source inventory' {
+        $fixture = New-RepositoryFixture
+        $newSkillId = Add-RepositorySkillFixture -Root $fixture
+        $result = Invoke-CodeCollaborationCheck -Path $script:CheckPath -RepositoryRoot $fixture
+        $result.result | Should -BeExactly 'passed'
+        $result.activeSkillCount | Should -Be 3
+        @($result.skills.skillId) | Should -Be @('orchestrate-ai-delivery', 'write-implementation-prompt', 'zz-added-skill')
+        $added = @($result.skills | Where-Object { $_.skillId -ceq $newSkillId })[0]
+        [string]$added.contentSha256 | Should -Match '^[0-9a-f]{64}$'
+        @($added.files.path) | Should -Contain 'SKILL.md'
+        @($added.files.path) | Should -Contain 'agents/openai.yaml'
+    }
+
+    It 'includes hidden package files in the content digest' {
+        $fixture = New-RepositoryFixture
+        $before = Invoke-CodeCollaborationCheck -Path $script:CheckPath -RepositoryRoot $fixture
+        $hidden = Join-Path $fixture 'skills/write-implementation-prompt/.fixture-policy'
+        [IO.File]::WriteAllText($hidden, 'hidden', [Text.UTF8Encoding]::new($false))
+        $after = Invoke-CodeCollaborationCheck -Path $script:CheckPath -RepositoryRoot $fixture
+        $beforeHash = @($before.skills | Where-Object skillId -CEQ 'write-implementation-prompt')[0].contentSha256
+        $afterSkill = @($after.skills | Where-Object skillId -CEQ 'write-implementation-prompt')[0]
+        $afterSkill.files.path | Should -Contain '.fixture-policy'
+        $afterSkill.contentSha256 | Should -Not -BeExactly $beforeHash
+    }
+
+    It 'rejects a hidden entry beside canonical Skill packages' {
+        $fixture = New-RepositoryFixture
+        [void](New-Item -ItemType Directory -Path (Join-Path $fixture 'skills/.unexpected') -Force)
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*inventory does not exactly match*'
     }
 
     It 'rejects non-package content at the canonical source root' {
-        Set-Content -LiteralPath (Join-Path $script:FixtureRoot 'skills/ignored.ps1') -Value 'Write-Output unsafe'
-        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*non-package or reparse entry*'
+        $fixture = New-RepositoryFixture
+        [IO.File]::WriteAllText((Join-Path $fixture 'skills/ignored.ps1'), 'Write-Output unsafe', [Text.UTF8Encoding]::new($false))
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*non-package or reparse entry*'
     }
 
-    It 'rejects coexistence with the legacy Skill source root' {
-        New-Item -ItemType Directory -Path (Join-Path $script:FixtureRoot '.agents/skills') -Force | Out-Null
-        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*Legacy .agents/skills source root*'
+    It 'rejects a second source root' {
+        $fixture = New-RepositoryFixture
+        [void](New-Item -ItemType Directory -Path (Join-Path $fixture '.agents/skills') -Force)
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*must not coexist*'
     }
 
-    It 'rejects schema v1 or unknown source metadata fields' {
-        $sourcePath = Join-Path $script:FixtureRoot 'catalog/source.json'
-        $source = Get-Content -LiteralPath $sourcePath -Raw | ConvertFrom-Json
+    It 'rejects schema drift and unknown source fields' {
+        $fixture = New-RepositoryFixture
+        $path = Join-Path $fixture 'catalog/source.json'
+        $source = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
         $source.schemaVersion = 1
-        $source | Add-Member -NotePropertyName profiles -NotePropertyValue @()
-        $source | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $sourcePath -Encoding utf8NoBOM
-        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*invalid property set*'
+        $source | Add-Member -NotePropertyName unexpected -NotePropertyValue $true
+        Write-CodeCollaborationJson -Path $path -Value $source
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*invalid property set*'
     }
 
     It 'rejects duplicate JSON properties before object materialization' {
-        $sourcePath = Join-Path $script:FixtureRoot 'catalog/source.json'
-        $text = Get-Content -LiteralPath $sourcePath -Raw
-        $text = $text -replace '"sourceId": "code-collaboration",', '"sourceId": "code-collaboration", "sourceId": "other",'
-        Set-Content -LiteralPath $sourcePath -Value $text -Encoding utf8NoBOM -NoNewline
-        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*duplicate JSON property*'
+        $fixture = New-RepositoryFixture
+        $path = Join-Path $fixture 'catalog/source.json'
+        $text = Get-Content -Raw -LiteralPath $path
+        $mutated = $text.Replace('"schemaVersion": 2,', '"schemaVersion": 2,"schemaVersion": 2,')
+        $mutated | Should -Not -BeExactly $text
+        [IO.File]::WriteAllText($path, $mutated, [Text.UTF8Encoding]::new($false))
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*duplicate JSON property*'
     }
 
-    It 'accepts a second declared Skill with a safe package and metadata fixture' {
-        # Scenario: a future release adds one valid Skill to the canonical source inventory.
-        # Purpose: prove the integrity validator is inventory-driven instead of hard-coded to one package.
-        $newSkillId = 'safe-fixture-skill'
-        $newSkillRoot = Join-Path $script:FixtureRoot "skills/$newSkillId"
-        Copy-Item -LiteralPath $script:SkillRoot -Destination $newSkillRoot -Recurse
-        foreach ($path in @('SKILL.md', 'agents/openai.yaml')) {
-            $file = Join-Path $newSkillRoot $path
-            $text = Get-Content -LiteralPath $file -Raw
-            $text = $text.Replace($script:SkillId, $newSkillId)
-            Set-Content -LiteralPath $file -Value $text -Encoding utf8NoBOM -NoNewline
-        }
-        $sourcePath = Join-Path $script:FixtureRoot 'catalog/source.json'
-        $source = Get-Content -LiteralPath $sourcePath -Raw | ConvertFrom-Json
-        $source.skills = @($source.skills + $newSkillId | Sort-Object)
-        $source | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $sourcePath -Encoding utf8NoBOM
-        & $script:GitPath -C $script:FixtureRoot add -- catalog/source.json "skills/$newSkillId"
-        if ($LASTEXITCODE -ne 0) { throw 'Could not stage the safe Skill fixture.' }
+    It 'rejects duplicate and unsorted Skill IDs' {
+        $fixture = New-RepositoryFixture
+        $path = Join-Path $fixture 'catalog/source.json'
+        $source = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+        $source.skills = @('write-implementation-prompt', 'orchestrate-ai-delivery')
+        Write-CodeCollaborationJson -Path $path -Value $source
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*ordinal ascending order*'
 
-        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Not -Throw
+        $source.skills = @('orchestrate-ai-delivery', 'orchestrate-ai-delivery')
+        Write-CodeCollaborationJson -Path $path -Value $source
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*Duplicate Skill ID*'
     }
 
-    It 'rejects a declared Skill whose metadata file is missing' {
-        # Scenario: source inventory declares a package but agents/openai.yaml is omitted.
-        # Purpose: preserve the per-package metadata contract for every active Skill.
-        Remove-Item -LiteralPath (Join-Path $script:SkillRoot 'agents/openai.yaml')
-        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*missing*openai.yaml*'
+    It 'rejects missing required Skill metadata' {
+        $fixture = New-RepositoryFixture
+        Remove-Item -LiteralPath (Join-Path $fixture 'skills/write-implementation-prompt/agents/openai.yaml')
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*is missing*'
     }
 
-    It 'rejects a duplicate Skill ID in the source inventory' {
-        # Scenario: a malformed source inventory repeats one stable Skill ID.
-        # Purpose: fail closed before package cardinality or tool receipts can become ambiguous.
-        $sourcePath = Join-Path $script:FixtureRoot 'catalog/source.json'
-        $source = Get-Content -LiteralPath $sourcePath -Raw | ConvertFrom-Json
-        $source.skills = @($source.skills + $script:SkillId)
-        $source | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $sourcePath -Encoding utf8NoBOM
-        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*Duplicate Skill ID*'
+    It 'accepts optional license frontmatter and a normal blank line before the body' {
+        $fixture = New-RepositoryFixture
+        $path = Join-Path $fixture 'skills/write-implementation-prompt/SKILL.md'
+        $text = Get-Content -Raw -LiteralPath $path
+        $mutated = [regex]::Replace($text, '(?m)^---\r?\n<!--', "license: Apache-2.0`n---`n`n<!--", 1)
+        $mutated | Should -Not -BeExactly $text
+        [IO.File]::WriteAllText($path, $mutated, [Text.UTF8Encoding]::new($false))
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Not -Throw
     }
 
-    It 'UnitT10_rejects_an_unsorted_source_inventory' {
-        # Scenario: a synthetic two-Skill fixture lists its valid IDs in descending ordinal order.
-        # Purpose: exercise the ordering guard even while the production catalog contains only one Skill.
-        $newSkillId = 'a-safe-ordering-fixture'
-        $newSkillRoot = Join-Path $script:FixtureRoot "skills/$newSkillId"
-        Copy-Item -LiteralPath $script:SkillRoot -Destination $newSkillRoot -Recurse
-        foreach ($relativePath in @('SKILL.md', 'agents/openai.yaml')) {
-            $fixturePath = Join-Path $newSkillRoot $relativePath
-            $text = Get-Content -LiteralPath $fixturePath -Raw
-            Set-Content -LiteralPath $fixturePath -Value $text.Replace($script:SkillId, $newSkillId) -Encoding utf8NoBOM -NoNewline
-        }
-        $sourcePath = Join-Path $script:FixtureRoot 'catalog/source.json'
-        $source = Get-Content -LiteralPath $sourcePath -Raw | ConvertFrom-Json
-        $source.skills = @($script:SkillId, $newSkillId)
-        $source | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $sourcePath -Encoding utf8NoBOM
-        & $script:GitPath -C $script:FixtureRoot add -- catalog/source.json "skills/$newSkillId"
-        if ($LASTEXITCODE -ne 0) { throw 'Could not stage the synthetic ordering fixture.' }
-        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*ordinal ascending order*'
-    }
+    It 'accepts supported OpenAI fields and rejects an unknown field' {
+        $fixture = New-RepositoryFixture
+        $path = Join-Path $fixture 'skills/write-implementation-prompt/agents/openai.yaml'
+        $text = Get-Content -Raw -LiteralPath $path
+        $needle = '  default_prompt: "Use $write-implementation-prompt to prepare a self-contained implementation prompt for the chosen executor."'
+        $supported = $needle + "`n" + '  icon_small: "./assets/icon.svg"' + "`n" + '  brand_color: "#123456"'
+        [IO.File]::WriteAllText($path, $text.Replace($needle, $supported), [Text.UTF8Encoding]::new($false))
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Not -Throw
 
-    It 'rejects untracked package content from the integrity inventory' {
-        Set-Content -LiteralPath (Join-Path $script:SkillRoot 'untracked.txt') -Value 'not indexed'
-        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*filesystem inventory does not match the Git index*'
-    }
-
-    It 'rejects unstaged package bytes that are not bound to the Git index' {
-        Add-Content -LiteralPath (Join-Path $script:SkillRoot 'SKILL.md') -Value ([Environment]::NewLine + 'Additional valid body text.')
-        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*working-tree content is not bound*'
+        [IO.File]::WriteAllText($path, $text.Replace($needle, $needle + "`n" + '  unknown_field: "rejected"'), [Text.UTF8Encoding]::new($false))
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*unsupported or duplicate interface key*'
     }
 
     It 'rejects malformed OpenAI metadata lexical style' {
-        $metadataPath = Join-Path $script:SkillRoot 'agents/openai.yaml'
-        $metadata = Get-Content -LiteralPath $metadataPath -Raw
-        $metadata = $metadata -replace 'display_name: "Write Implementation Prompt"', '"display_name": "Write Implementation Prompt"'
-        Set-Content -LiteralPath $metadataPath -Value $metadata -Encoding utf8NoBOM -NoNewline
-        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*quoted mapping key*'
+        $fixture = New-RepositoryFixture
+        $path = Join-Path $fixture 'skills/write-implementation-prompt/agents/openai.yaml'
+        $text = Get-Content -Raw -LiteralPath $path
+        $mutated = $text.Replace('display_name: "Write Implementation Prompt"', '"display_name": "Write Implementation Prompt"')
+        $mutated | Should -Not -BeExactly $text
+        [IO.File]::WriteAllText($path, $mutated, [Text.UTF8Encoding]::new($false))
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*quoted mapping key*'
     }
 
     It 'rejects comments outside the SPDX license header' {
-        Add-Content -LiteralPath (Join-Path $script:SkillRoot 'agents/openai.yaml') -Value '# unsupported comment'
-        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Throw '*unsupported or malformed syntax*'
+        $fixture = New-RepositoryFixture
+        $path = Join-Path $fixture 'skills/write-implementation-prompt/agents/openai.yaml'
+        [IO.File]::AppendAllText($path, "# unsupported comment`n", [Text.UTF8Encoding]::new($false))
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*unsupported or malformed syntax*'
     }
 
-    It 'accepts the allowed optional license frontmatter field' {
-        $skillPath = Join-Path $script:SkillRoot 'SKILL.md'
-        $skill = Get-Content -LiteralPath $skillPath -Raw
-        $lines = [Collections.Generic.List[string]]::new()
-        $lines.AddRange([string[]]($skill.Replace([Environment]::NewLine, ([string][char]10)).Split([char]10)))
-        $descriptionIndex = 0
-        for ($index = 0; $index -lt $lines.Count; $index++) {
-            if ($lines[$index].StartsWith('description:', [StringComparison]::Ordinal)) { $descriptionIndex = $index; break }
-        }
-        $lines.Insert($descriptionIndex + 1, 'license: Apache-2.0')
-        $skill = $lines -join [Environment]::NewLine
-        Set-Content -LiteralPath $skillPath -Value $skill -Encoding utf8NoBOM -NoNewline
-        & $script:GitPath -C $script:FixtureRoot add -- skills/$($script:SkillId)/SKILL.md
-        if ($LASTEXITCODE -ne 0) { throw 'Could not stage the optional license fixture.' }
-        { & $script:ValidatorPath -RepositoryRoot $script:FixtureRoot } | Should -Not -Throw
+    It 'rejects an empty Skill body' {
+        $fixture = New-RepositoryFixture
+        $path = Join-Path $fixture 'skills/write-implementation-prompt/SKILL.md'
+        $text = Get-Content -Raw -LiteralPath $path
+        $frontmatter = [regex]::Match($text.Replace("`r`n", "`n"), '(?s)\A---\n.*?\n---\n').Value
+        [IO.File]::WriteAllText($path, $frontmatter, [Text.UTF8Encoding]::new($false))
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*non-empty Markdown body*'
     }
 }
