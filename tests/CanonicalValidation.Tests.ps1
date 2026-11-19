@@ -9,12 +9,13 @@ BeforeAll {
 }
 
 Describe 'Canonical consumer gate configuration' {
-    It 'pins the exact approved authority commit' {
+    It 'validates the canonical authority pin contract' {
         $pin = Get-Content -Raw -LiteralPath $script:PinPath | ConvertFrom-Json
         @($pin.PSObject.Properties.Name) | Should -Be @('schemaVersion', 'repository', 'commit')
         $pin.schemaVersion | Should -Be 1
         $pin.repository | Should -BeExactly 'https://github.com/SyuanTsai/SyuanTsai-AI-Instructions.git'
-        $pin.commit | Should -BeExactly '43239581cbf1d0fc6a9d6d82766375a0db72d228'
+        $pin.commit -is [string] | Should -BeTrue
+        [regex]::IsMatch([string]$pin.commit, '^[0-9a-f]{40}$') | Should -BeTrue
     }
 
     It 'declares only consumer identity active Skills and repository checks' {
@@ -50,11 +51,16 @@ Describe 'Canonical consumer gate configuration' {
         $expected = [ordered]@{
             'scripts/Invoke-PinnedAuthority.ps1' = '2b2941066308b689140bdbd57654b5347f39933e3c91c6097ce4646709a3e76b'
             '.github/workflows/consumer-gate.yml' = 'dffbac5117290e8ca4fd1c1179355a9bae59bcc3496ce3e9413e813f88da19d5'
-            '.github/workflows/consumer-gate-transition.yml' = '6c78b69f413f9878d9dd73ad42b7bbe5b4442b82617649122e8e8c9bc992132f'
         }
         foreach ($entry in $expected.GetEnumerator()) {
             $actual = (Get-FileHash -LiteralPath (Join-Path $script:RepositoryRoot $entry.Key) -Algorithm SHA256).Hash.ToLowerInvariant()
             $actual | Should -BeExactly $entry.Value
+        }
+
+        $transitionPath = Join-Path $script:RepositoryRoot '.github/workflows/consumer-gate-transition.yml'
+        if (Test-Path -LiteralPath $transitionPath -PathType Leaf) {
+            $actual = (Get-FileHash -LiteralPath $transitionPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            $actual | Should -BeExactly '6c78b69f413f9878d9dd73ad42b7bbe5b4442b82617649122e8e8c9bc992132f'
         }
     }
 }

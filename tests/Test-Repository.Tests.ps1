@@ -55,6 +55,12 @@ Describe 'Code Collaboration repository check' {
         { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*inventory does not exactly match*'
     }
 
+    It 'rejects non-package content at the canonical source root' {
+        $fixture = New-RepositoryFixture
+        [IO.File]::WriteAllText((Join-Path $fixture 'skills/ignored.ps1'), 'Write-Output unsafe', [Text.UTF8Encoding]::new($false))
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*non-package or reparse entry*'
+    }
+
     It 'rejects a second source root' {
         $fixture = New-RepositoryFixture
         [void](New-Item -ItemType Directory -Path (Join-Path $fixture '.agents/skills') -Force)
@@ -121,6 +127,23 @@ Describe 'Code Collaboration repository check' {
 
         [IO.File]::WriteAllText($path, $text.Replace($needle, $needle + "`n" + '  unknown_field: "rejected"'), [Text.UTF8Encoding]::new($false))
         { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*unsupported or duplicate interface key*'
+    }
+
+    It 'rejects malformed OpenAI metadata lexical style' {
+        $fixture = New-RepositoryFixture
+        $path = Join-Path $fixture 'skills/write-implementation-prompt/agents/openai.yaml'
+        $text = Get-Content -Raw -LiteralPath $path
+        $mutated = $text.Replace('display_name: "Write Implementation Prompt"', '"display_name": "Write Implementation Prompt"')
+        $mutated | Should -Not -BeExactly $text
+        [IO.File]::WriteAllText($path, $mutated, [Text.UTF8Encoding]::new($false))
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*quoted mapping key*'
+    }
+
+    It 'rejects comments outside the SPDX license header' {
+        $fixture = New-RepositoryFixture
+        $path = Join-Path $fixture 'skills/write-implementation-prompt/agents/openai.yaml'
+        [IO.File]::AppendAllText($path, "# unsupported comment`n", [Text.UTF8Encoding]::new($false))
+        { & $script:CheckPath -RepositoryRoot $fixture -ReadOnlySnapshot } | Should -Throw '*unsupported or malformed syntax*'
     }
 
     It 'rejects an empty Skill body' {

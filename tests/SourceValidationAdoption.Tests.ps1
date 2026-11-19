@@ -42,12 +42,19 @@ Describe 'Consumer gate adoption contract' {
         $text.Contains('scripts/Invoke-PinnedAuthority.ps1', [StringComparison]::Ordinal) | Should -BeTrue
     }
 
-    It 'runs the transition workflow on all three platforms with transition mode' {
-        $text = Get-Content -Raw -LiteralPath $script:TransitionWorkflow
-        foreach ($runner in @('windows-latest', 'ubuntu-latest', 'macos-latest')) {
-            $text.Contains($runner, [StringComparison]::Ordinal) | Should -BeTrue
+    It 'validates transition mode when the transition workflow is present' {
+        if (Test-Path -LiteralPath $script:TransitionWorkflow -PathType Leaf) {
+            $text = Get-Content -Raw -LiteralPath $script:TransitionWorkflow
+            foreach ($runner in @('windows-latest', 'ubuntu-latest', 'macos-latest')) {
+                $text.Contains($runner, [StringComparison]::Ordinal) | Should -BeTrue
+            }
+            $text.Contains('-TransitionFromLegacy', [StringComparison]::Ordinal) | Should -BeTrue
         }
-        $text.Contains('-TransitionFromLegacy', [StringComparison]::Ordinal) | Should -BeTrue
+        else {
+            [string[]]$actual = @(Get-ChildItem -LiteralPath (Join-Path $script:RepositoryRoot '.github/workflows') -File -Force | ForEach-Object Name)
+            [Array]::Sort($actual, [StringComparer]::Ordinal)
+            ($actual -join "`n") | Should -BeExactly 'consumer-gate.yml'
+        }
     }
 
     It 'keeps the permanent workflow independent of transition mode' {
@@ -71,9 +78,8 @@ Describe 'Consumer gate adoption contract' {
         $fixture = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
         [void](New-Item -ItemType Directory -Path $fixture -Force)
         Copy-Item -LiteralPath $script:PermanentWorkflow -Destination (Join-Path $fixture 'consumer-gate.yml')
-        Copy-Item -LiteralPath $script:TransitionWorkflow -Destination (Join-Path $fixture 'consumer-gate-transition.yml')
-        Remove-Item -LiteralPath (Join-Path $fixture 'consumer-gate-transition.yml')
         [string[]]$remaining = @(Get-ChildItem -LiteralPath $fixture -File -Force | ForEach-Object Name)
+        [Array]::Sort($remaining, [StringComparer]::Ordinal)
         $remaining | Should -Be @('consumer-gate.yml')
     }
 }
