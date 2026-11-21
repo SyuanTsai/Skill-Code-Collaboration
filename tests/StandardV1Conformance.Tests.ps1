@@ -30,6 +30,14 @@ Describe 'Code Collaboration consumer conformance' {
         $text.Contains('never include local user names, absolute paths, machine identifiers, credentials, or tokens.', [StringComparison]::Ordinal) | Should -BeTrue
     }
 
+    It 'requires evidence-scoped dispatch for code-evidence documentation prompts' {
+        $text = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills/write-implementation-prompt/SKILL.md')
+        $text.Contains('When delegated work must investigate code before writing or updating documentation (code-evidence documentation), require an evidence-scoped dispatch; for a single small documentation edit, allow a streamlined dispatch without an evidence table.', [StringComparison]::Ordinal) | Should -BeTrue
+        $text.Contains('Classify evidence as at least `confirmed in code`, `confirmed not mapped`, or `unconfirmed`; never mark inference, a missing result, a DTO declaration, or recent documentation as confirmed.', [StringComparison]::Ordinal) | Should -BeTrue
+        $text.Contains('Require symbol-first searches, then only necessary excerpts, and return relevant excerpts, diffs, and summaries rather than whole files or storage XML without justification; allow justified reinspection for new evidence, failures, or state drift, without hard read-count limits.', [StringComparison]::Ordinal) | Should -BeTrue
+        $text.Contains('For an evidence-scoped dispatch, within the existing five report headings, put a compact evidence table under `Summary` with source, target, condition, status, commit/file/symbol; do not add or rename headings.', [StringComparison]::Ordinal) | Should -BeTrue
+    }
+
     It 'keeps OpenAI metadata bound to exact Skill tokens' {
         $cases = @(
             @{ Id = 'orchestrate-ai-delivery'; Token = '$orchestrate-ai-delivery' }
