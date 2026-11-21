@@ -18,9 +18,16 @@ SPDX-License-Identifier: Apache-2.0
    - If availability cannot be established, ask the user instead of guessing. Also recommend a reasoning effort level supported by the chosen executor.
 5. Make the prompt directly executable. Include its objective; relevant files or symbols; allowed files; scope and exclusions; implementation constraints; acceptance criteria; required tests; validation; and a completion report.
 6. Write testing and database requirements directly in the prompt rather than citing rule-file paths the executor might not load.
-7. Forbid the executor from committing, pushing, or modifying files outside the allowed list. Use repository-relative paths only; never include local user names, absolute paths, machine identifiers, credentials, or tokens.
-8. Require a completion report with exactly these headings: Changed files, Summary, Test commands, Test results, Blockers.
-9. Write in the user's requested language, defaulting to the conversation language.
+7. When delegated work must investigate code before writing or updating documentation (code-evidence documentation), require an evidence-scoped dispatch; for a single small documentation edit, allow a streamlined dispatch without an evidence table.
+   - State the inspection scope with repository-relative paths, symbols, and an evidence version: a pinned commit or revision, or, for uncommitted changes, a baseline commit plus the identified worktree diff. If the baseline cannot be identified, require the executor to stop and report it rather than cite stale `HEAD`. Classify evidence as at least `confirmed in code`, `confirmed not mapped`, or `unconfirmed`; never mark inference, a missing result, a DTO declaration, or recent documentation as confirmed.
+   - Trace every task-relevant code path separately, such as create, update, delete, and exception paths; do not invent paths that do not apply. Require symbol-first searches, then only necessary excerpts, and return relevant excerpts, diffs, and summaries rather than whole files or storage XML without justification; allow justified reinspection for new evidence, failures, or state drift, without hard read-count limits.
+   - Bind citations to the evidence version, file, and symbol, identifying the baseline commit and worktree diff for uncommitted changes; obtain line numbers from the source and verify them before finalizing rather than guessing them.
+   - For an evidence-scoped dispatch, within the existing five report headings, put a compact evidence table under `Summary` with source, target, condition, status, commit/file/symbol; do not add or rename headings.
+   - Keep every required input in the prompt; do not rely on cross-repository or prior-conversation access. Treat page IDs, data-model names, specific draft versions, providers, and project exceptions only as task inputs, not universal rules.
+   - Do not define the full external-sync workflow here. Require local content and diff checks plus a report, and forbid publication unless the caller authorized it.
+8. Forbid the executor from committing, pushing, or modifying files outside the allowed list. Use repository-relative paths only; never include local user names, absolute paths, machine identifiers, credentials, or tokens.
+9. Require a completion report with exactly these headings: Changed files, Summary, Test commands, Test results, Blockers.
+10. Write in the user's requested language, defaulting to the conversation language.
 
 Return:
 
