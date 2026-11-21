@@ -49,8 +49,8 @@ Describe 'Canonical consumer gate configuration' {
 
     It 'keeps all authority templates at the reviewed byte identities' {
         $expected = [ordered]@{
-            'scripts/Invoke-PinnedAuthority.ps1' = '2b2941066308b689140bdbd57654b5347f39933e3c91c6097ce4646709a3e76b'
-            '.github/workflows/consumer-gate.yml' = 'dffbac5117290e8ca4fd1c1179355a9bae59bcc3496ce3e9413e813f88da19d5'
+            'scripts/Invoke-PinnedAuthority.ps1' = '4bde1cf7ca72a1a65ddc2ea30799daa3ff26deb69361406a38e1c9d4a7ae9835'
+            '.github/workflows/consumer-gate.yml' = 'e67b40ac2b18f6d13aab573a17b8a55eed74df9ed41721f710bfb46a52881519'
         }
         foreach ($entry in $expected.GetEnumerator()) {
             $actual = (Get-FileHash -LiteralPath (Join-Path $script:RepositoryRoot $entry.Key) -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -60,7 +60,7 @@ Describe 'Canonical consumer gate configuration' {
         $transitionPath = Join-Path $script:RepositoryRoot '.github/workflows/consumer-gate-transition.yml'
         if (Test-Path -LiteralPath $transitionPath -PathType Leaf) {
             $actual = (Get-FileHash -LiteralPath $transitionPath -Algorithm SHA256).Hash.ToLowerInvariant()
-            $actual | Should -BeExactly '6c78b69f413f9878d9dd73ad42b7bbe5b4442b82617649122e8e8c9bc992132f'
+            $actual | Should -BeExactly '61032baf65fd52829e327470253df22d9a832986c6efdbfb3da9d8f7bba4ffac'
         }
     }
 }
