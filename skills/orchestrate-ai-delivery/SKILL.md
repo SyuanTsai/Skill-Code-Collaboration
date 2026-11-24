@@ -44,7 +44,7 @@ The controller can run in a CLI (`claude`, `codex`, `copilot`, or `junie`) or in
 
 In external CLI mode, before the first dispatch, verify from the controller's shell that the executor CLI starts with `--version` and is signed in, and that the required test commands can run in the required directory. If the IDE sandbox or permissions block CLI launches, network access, a user-installed `pwsh`, or unattended execution because each command requires human approval, name the specific restriction and ask the user to run the dispatch command in a local terminal or switch controllers. Report dispatch only when it has been confirmed.
 
-In built-in sub agent mode, no executor CLI is required. Before the first dispatch, verify that the controller's own sub-agent tool is available, that it can select the planned model or that the limitation is recorded, and that the required test commands can run. See [Controller hosts](references/dispatch.md#controller-hosts) for details.
+In built-in sub agent mode, no executor CLI is required. Before the first dispatch, verify that the controller's own sub-agent tool is available, that it can select the planned model or that the limitation is recorded, and that the required test commands can run. See the Controller hosts section of [references/dispatch.md](references/dispatch.md) for details.
 
 ## Workflow
 
@@ -94,7 +94,7 @@ Report in the conversation:
 
 ### References
 
-- [references/dispatch.md](references/dispatch.md): execution modes, CLI invocation, spec-only dispatch, parallelism, thread strategy, and the dispatch record. See [Built-in sub-agent reference](references/dispatch.md#built-in-sub-agent-reference), [Controller hosts](references/dispatch.md#controller-hosts), and [Adding another CLI](references/dispatch.md#adding-another-cli).
+- [references/dispatch.md](references/dispatch.md): execution modes, CLI invocation, spec-only dispatch, parallelism, thread strategy, and the dispatch record, plus the Built-in sub-agent reference, Controller hosts, and Adding another CLI sections.
 - [references/review.md](references/review.md): review composition, finding policy, and review prompt template.
 - [references/models.md](references/models.md) and [references/models.json](references/models.json): model selection, work-type tiers, and baseline list; perform the weekly availability check with `scripts/Update-ModelAvailability.ps1`.
 - [references/usage-report.md](references/usage-report.md): usage reporting.
