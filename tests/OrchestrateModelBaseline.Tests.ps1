@@ -15,10 +15,10 @@ BeforeAll {
     function Write-TestBaseline {
         param([string]$Path, [object[]]$Models)
         $value = [pscustomobject][ordered]@{
-            schemaVersion = 1
-            reviewedOn = '2026-11-02'
+            schemaVersion = 2
+            reviewMaxAgeDays = 30
             models = @($Models)
-            efforts = [pscustomobject][ordered]@{ codex = @('low'); copilot = @('none'); claude = @('low') }
+            efforts = [pscustomobject][ordered]@{ codex = @('low'); copilot = @('none'); claude = @('low'); junie = @('low') }
         }
         $null = New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force
         Set-Content -LiteralPath $Path -Value ($value | ConvertTo-Json -Depth 6) -Encoding utf8
@@ -32,7 +32,7 @@ BeforeAll {
         )
         [pscustomobject][ordered]@{
             cli = $Cli; id = $Id; family = 'vendor'; capability = $Capability; cost = $Cost
-            status = $Status; evidence = $Evidence; notes = $Notes
+            status = $Status; evidence = $Evidence; reviewedOn = '2026-11-02'; notes = $Notes
         }
     }
 
@@ -229,6 +229,40 @@ Context 'Baseline reconciliation' {
         $result.status | Should -Be 'unchanged'
         $result.written | Should -BeFalse
         [System.IO.File]::ReadAllBytes($script:Baseline) | Should -Be $before
+    }
+
+    # Scenario: Junie lists an unknown ID while UTC is still on the prior date.
+    # Purpose: add the model as unevaluated with the Taipei date.
+    It 'UnitT90_adds a Junie ID with its Taipei review date' {
+        Write-TestBaseline -Path $script:Baseline -Models @(New-TestBaselineModel -Cli junie)
+        Write-TestCache -Directory $script:Cache -Environment personal -Cli junie -Models @(
+            New-TestAvailabilityModel -Cli junie -Id new-junie -Status unevaluated -Reason not-in-baseline)
+
+        $result = Invoke-ModelBaselineUpdate -BaselinePath $script:Baseline -CacheDirectory $script:Cache `
+            -Now ([DateTimeOffset]'2026-11-04T16:00:00Z')
+        $added = (Get-Content -LiteralPath $script:Baseline -Raw | ConvertFrom-Json).models | Where-Object id -eq 'new-junie'
+
+        $result.added | Should -Be @('junie/new-junie')
+        $added.status | Should -Be 'unevaluated'
+        $added.reviewedOn | Should -Be '2026-11-05'
+    }
+
+    # Scenario: personal and work both report a rated Junie model as absent this week.
+    # Purpose: mark the model unavailable while retaining its ratings and human review date.
+    It 'UnitT95_preserves the review date when Junie no longer lists a model' {
+        Write-TestBaseline -Path $script:Baseline -Models @(New-TestBaselineModel -Cli junie -Id gone-junie)
+        $missing = New-TestAvailabilityModel -Cli junie -Id gone-junie -Status unavailable -Reason not-listed-by-cli
+        Write-TestCache -Directory $script:Cache -Environment personal -Cli junie -Models @($missing)
+        Write-TestCache -Directory $script:Cache -Environment work -Cli junie -Models @($missing)
+
+        $result = Invoke-ModelBaselineUpdate -BaselinePath $script:Baseline -CacheDirectory $script:Cache -Now $script:Now
+        $saved = (Get-Content -LiteralPath $script:Baseline -Raw | ConvertFrom-Json).models[0]
+
+        $result.markedUnavailable | Should -Be @('junie/gone-junie')
+        $saved.status | Should -Be 'unavailable'
+        $saved.capability | Should -Be 3
+        $saved.cost | Should -Be 2
+        $saved.reviewedOn | Should -Be '2026-11-02'
     }
 }
 

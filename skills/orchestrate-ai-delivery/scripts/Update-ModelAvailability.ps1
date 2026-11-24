@@ -9,14 +9,16 @@ param(
 
     [switch]$Force,
 
+    [switch]$ReviewOnly,
+
     [string]$CacheDirectory,
 
     [string]$BaselinePath,
 
     [DateTimeOffset]$Now = [DateTimeOffset]::Now,
 
-    [ValidateSet('claude', 'codex', 'copilot')]
-    [string[]]$Cli = @('claude', 'codex', 'copilot')
+    [ValidateSet('claude', 'codex', 'copilot', 'junie')]
+    [string[]]$Cli = @('claude', 'codex', 'copilot', 'junie')
 )
 
 Set-StrictMode -Version Latest
@@ -90,6 +92,18 @@ function Test-CopilotCandidate {
         [int]$TimeoutSeconds = 60
     )
 
+    function Get-CopilotProbeLineVerdict {
+        param([string]$Line)
+
+        if (Test-TextContainsAny -Text $Line -Fragments @('user.message', 'assistant.turn_start')) {
+            return 'available'
+        }
+        if ($Line -match '"session\.error"' -and $Line -match 'is not available') {
+            return 'unavailable'
+        }
+        return $null
+    }
+
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = 'copilot'
     $startInfo.UseShellExecute = $false
@@ -131,9 +145,15 @@ function Test-CopilotCandidate {
                     $stdoutClosed = $true
                 }
                 else {
-                    if (Test-TextContainsAny -Text $line -Fragments @('user.message', 'assistant.turn_start')) {
+                    $verdict = Get-CopilotProbeLineVerdict -Line $line
+                    if ($verdict -eq 'available') {
                         Stop-CopilotProbeProcess -Process $process
                         return $true
+                    }
+                    if ($verdict -eq 'unavailable') {
+                        $unavailable = $true
+                        Stop-CopilotProbeProcess -Process $process
+                        break
                     }
                     $stdoutTask = $process.StandardOutput.ReadLineAsync()
                 }
@@ -254,6 +274,55 @@ function Get-CopilotAvailableModels {
     }
 
     return @($available)
+}
+
+function Invoke-JunieListModels {
+    [CmdletBinding()]
+    param()
+
+    $PSNativeCommandUseErrorActionPreference = $false
+    $output = '' | & junie list-models 2>$null
+    return [pscustomobject]@{
+        Lines    = @($output)
+        ExitCode = $LASTEXITCODE
+    }
+}
+
+function Get-JunieAvailableModels {
+    [CmdletBinding()]
+    param()
+
+    try {
+        $probe = Invoke-JunieListModels
+    }
+    catch {
+        throw 'Junie list-models could not run.'
+    }
+    if ($probe.ExitCode -ne 0) {
+        throw ('Junie list-models exited with code {0}.' -f $probe.ExitCode)
+    }
+
+    $output = $probe.Lines -join "`n"
+    $jsonStart = $output.IndexOf('{')
+    if ($jsonStart -lt 0) {
+        throw 'Junie list-models returned unexpected output.'
+    }
+    try {
+        $catalog = $output.Substring($jsonStart) | ConvertFrom-Json
+    }
+    catch {
+        throw 'Junie list-models returned unexpected output.'
+    }
+    if ($null -eq $catalog -or $null -eq $catalog.PSObject.Properties['models'] -or $catalog.models -isnot [array]) {
+        throw 'Junie list-models returned unexpected output: expected a models array.'
+    }
+    foreach ($entry in $catalog.models) {
+        if ($null -eq $entry -or $null -eq $entry.PSObject.Properties['id'] -or
+            $entry.id -isnot [string] -or [string]::IsNullOrWhiteSpace($entry.id)) {
+            throw 'Junie list-models returned unexpected output: expected a model ID.'
+        }
+        $entry.id
+    }
 }
 
 function Invoke-ClaudeAuthStatus {
@@ -413,6 +482,92 @@ function Get-SafeProbeFailureReason {
     return 'probe failed'
 }
 
+function Get-ModelReviewStatus {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$Baseline,
+
+        [DateTimeOffset]$Now = [DateTimeOffset]::Now
+    )
+
+    $taipeiDate = $Now.ToOffset([TimeSpan]::FromHours(8)).Date
+    $overdue = [System.Collections.Generic.List[object]]::new()
+    $unevaluated = [System.Collections.Generic.List[object]]::new()
+    foreach ($entry in $Baseline.models) {
+        if ($entry.status -eq 'unevaluated') {
+            $unevaluated.Add([pscustomobject]@{ cli = $entry.cli; id = $entry.id })
+        }
+        elseif ($entry.status -eq 'active') {
+            $reviewDate = [DateTime]::ParseExact($entry.reviewedOn, 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
+            $ageDays = ($taipeiDate - $reviewDate).Days
+            if ($ageDays -gt $Baseline.reviewMaxAgeDays) {
+                $overdue.Add([pscustomobject]@{
+                    cli        = $entry.cli
+                    id         = $entry.id
+                    reviewedOn = $entry.reviewedOn
+                    ageDays    = $ageDays
+                })
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        maxAgeDays  = $Baseline.reviewMaxAgeDays
+        overdue     = $overdue.ToArray()
+        unevaluated = $unevaluated.ToArray()
+    }
+}
+
+function Update-AvailabilityModelReview {
+    param(
+        [psobject]$Review,
+        [object[]]$BaselineModels,
+        [object[]]$Models
+    )
+
+    $baselineDates = [System.Collections.Generic.Dictionary[string, string]]::new([System.StringComparer]::Ordinal)
+    foreach ($entry in $BaselineModels) {
+        $baselineDates[('{0}/{1}' -f $entry.cli, $entry.id)] = $entry.reviewedOn
+    }
+    $overdueKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($entry in $Review.overdue) {
+        $null = $overdueKeys.Add(('{0}/{1}' -f $entry.cli, $entry.id))
+    }
+
+    $unevaluatedKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    $discovered = foreach ($model in $Models) {
+        $key = '{0}/{1}' -f $model.cli, $model.id
+        $reviewedOn = $null
+        $isOverdue = $false
+        if ($model.reason -ne 'not-in-baseline' -and $baselineDates.ContainsKey($key)) {
+            $reviewedOn = $baselineDates[$key]
+            $isOverdue = $overdueKeys.Contains($key)
+        }
+        elseif ($model.reason -eq 'not-in-baseline' -and -not $baselineDates.ContainsKey($key) -and $unevaluatedKeys.Add($key)) {
+            [pscustomobject]@{ cli = $model.cli; id = $model.id }
+        }
+
+        $model | Add-Member -NotePropertyName reviewedOn -NotePropertyValue $reviewedOn -Force
+        $model | Add-Member -NotePropertyName reviewOverdue -NotePropertyValue $isOverdue -Force
+    }
+    if ($null -ne $discovered) {
+        $Review.unevaluated = @($Review.unevaluated) + @($discovered)
+    }
+}
+
+function Get-ModelReviewWarnings {
+    param([psobject]$Review)
+
+    foreach ($entry in $Review.overdue) {
+        'review: {0}/{1} rating last reviewed {2} ({3} days ago); re-rate it before relying on it' -f
+            $entry.cli, $entry.id, $entry.reviewedOn, $entry.ageDays
+    }
+    if ($Review.unevaluated.Count -gt 0) {
+        'review: {0} unevaluated models; rate them and update references/models.json by pull request' -f $Review.unevaluated.Count
+    }
+}
+
 function New-AvailabilityModelRecord {
     [CmdletBinding()]
     param(
@@ -436,12 +591,15 @@ function New-AvailabilityModelRecord {
     )
 
     return [pscustomobject][ordered]@{
-        cli        = $CliName
-        id         = $Id
-        family     = $Family
-        status     = $Status
-        selectable = $Selectable
-        reason     = $Reason
+        cli           = $CliName
+        id            = $Id
+        family        = $Family
+        status        = $Status
+        selectable    = $Selectable
+        reason        = $Reason
+        # Review fields are applied together to new and carried-over records.
+        reviewedOn    = $null
+        reviewOverdue = $false
     }
 }
 
@@ -488,7 +646,16 @@ function Test-ModelBaselinePayload {
         $null -eq $schemaVersionProperty -or
         $null -eq $schemaVersionProperty.Value -or
         $schemaVersionProperty.Value.GetType() -notin $integerTypes -or
-        $schemaVersionProperty.Value -ne 1
+        $schemaVersionProperty.Value -ne 2
+    ) {
+        return $false
+    }
+    $maxAgeProperty = $Value.PSObject.Properties['reviewMaxAgeDays']
+    if (
+        $null -eq $maxAgeProperty -or
+        $null -eq $maxAgeProperty.Value -or
+        $maxAgeProperty.Value.GetType() -notin $integerTypes -or
+        $maxAgeProperty.Value -lt 1 -or $maxAgeProperty.Value -gt 366
     ) {
         return $false
     }
@@ -496,17 +663,28 @@ function Test-ModelBaselinePayload {
         return $false
     }
 
-    $allowedClis = @('claude', 'codex', 'copilot')
+    $allowedClis = @('claude', 'codex', 'copilot', 'junie')
     $allowedStatuses = @('active', 'unevaluated', 'excluded', 'unavailable')
     $allowedEvidence = @('official', 'measured', 'inferred')
     $modelKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
 
     foreach ($entry in $Value.models) {
+        if ($null -eq $entry) { return $false }
         foreach ($field in @('cli', 'id', 'family')) {
             $property = $entry.PSObject.Properties[$field]
             if ($null -eq $property -or $property.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($property.Value)) {
                 return $false
             }
+        }
+        $reviewedOnProperty = $entry.PSObject.Properties['reviewedOn']
+        if ($null -eq $reviewedOnProperty -or $reviewedOnProperty.Value -isnot [string]) {
+            return $false
+        }
+        try {
+            $null = [DateTime]::ParseExact($reviewedOnProperty.Value, 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
+        }
+        catch {
+            return $false
         }
         $notesProperty = $entry.PSObject.Properties['notes']
         if ($null -eq $notesProperty -or $notesProperty.Value -isnot [string]) {
@@ -598,7 +776,9 @@ function Resolve-ModelBaseline {
 
         [DateTimeOffset]$Now = [DateTimeOffset]::Now,
 
-        [string]$BundledPath = (Join-Path $PSScriptRoot '../references/models.json')
+        [string]$BundledPath = (Join-Path $PSScriptRoot '../references/models.json'),
+
+        [switch]$SkipCacheWrite
     )
 
     $copyPath = Join-Path $CacheDirectory 'models-baseline.json'
@@ -647,7 +827,9 @@ function Resolve-ModelBaseline {
             )
             baseline = $downloaded
         }
-        Write-ModelAvailabilityCache -Value $wrapper -Path $copyPath
+        if (-not $SkipCacheWrite) {
+            Write-ModelAvailabilityCache -Value $wrapper -Path $copyPath
+        }
         return [pscustomobject]@{
             baseline = $downloaded
             source   = 'downloaded'
@@ -685,26 +867,29 @@ function Invoke-ModelAvailabilityUpdate {
 
         [switch]$Force,
 
+        [switch]$ReviewOnly,
+
         [string]$CacheDirectory,
 
         [string]$BaselinePath,
 
         [DateTimeOffset]$Now = [DateTimeOffset]::Now,
 
-        [ValidateSet('claude', 'codex', 'copilot')]
-        [string[]]$Cli = @('claude', 'codex', 'copilot')
+        [ValidateSet('claude', 'codex', 'copilot', 'junie')]
+        [string[]]$Cli = @('claude', 'codex', 'copilot', 'junie')
     )
 
-    $skillDirectory = Split-Path -Parent $PSScriptRoot
-    $cacheDirectoryArguments = @{
-        RequestedDirectory = $CacheDirectory
-        SkillDirectory     = $skillDirectory
+    if ($ReviewOnly -and $Force) {
+        throw 'ReviewOnly and Force cannot be used together.'
     }
-    $resolvedCacheDirectory = Resolve-ModelAvailabilityCacheDirectory @cacheDirectoryArguments
-    $cachePath = Join-Path $resolvedCacheDirectory "model-availability.$Environment.json"
+
+    if (-not $ReviewOnly -or [string]::IsNullOrWhiteSpace($BaselinePath)) {
+        $skillDirectory = Split-Path -Parent $PSScriptRoot
+        $resolvedCacheDirectory = Resolve-ModelAvailabilityCacheDirectory -RequestedDirectory $CacheDirectory -SkillDirectory $skillDirectory
+    }
 
     if ([string]::IsNullOrWhiteSpace($BaselinePath)) {
-        $baselineResolution = Resolve-ModelBaseline -CacheDirectory $resolvedCacheDirectory -Now $Now
+        $baselineResolution = Resolve-ModelBaseline -CacheDirectory $resolvedCacheDirectory -Now $Now -SkipCacheWrite:$ReviewOnly
         $baseline = $baselineResolution.baseline
         $baselineSource = [string]$baselineResolution.source
         $baselineWarnings = @($baselineResolution.warnings)
@@ -717,7 +902,21 @@ function Invoke-ModelAvailabilityUpdate {
     }
     $baselineModels = @($baseline.models)
     $baselineSha256 = Get-ModelBaselineIdentity -Baseline $baseline
+    $review = Get-ModelReviewStatus -Baseline $baseline -Now $Now
 
+    if ($ReviewOnly) {
+        return [pscustomobject]@{
+            schemaVersion  = 1
+            status         = 'review'
+            environment    = $Environment
+            baselineSource = $baselineSource
+            baselineSha256 = $baselineSha256
+            review         = $review
+            warnings       = @($baselineWarnings + @(Get-ModelReviewWarnings -Review $review))
+        }
+    }
+
+    $cachePath = Join-Path $resolvedCacheDirectory "model-availability.$Environment.json"
     $previous = $null
     if (Test-Path -LiteralPath $cachePath -PathType Leaf) {
         $previous = Get-Content -LiteralPath $cachePath -Raw | ConvertFrom-Json
@@ -730,7 +929,7 @@ function Invoke-ModelAvailabilityUpdate {
             $null -ne $previous.PSObject.Properties['baselineSha256'] -and
             [string]$previous.baselineSha256 -eq $baselineSha256
         )
-        foreach ($requiredCli in @('claude', 'codex', 'copilot')) {
+        foreach ($requiredCli in @('claude', 'codex', 'copilot', 'junie')) {
             if (-not $allCliStatesFresh) {
                 break
             }
@@ -778,16 +977,21 @@ function Invoke-ModelAvailabilityUpdate {
         }
 
         if ($allCliStatesFresh) {
+            if ($null -ne $previous.PSObject.Properties['models']) {
+                Update-AvailabilityModelReview -Review $review -BaselineModels $baselineModels -Models @($previous.models)
+            }
+            $previous | Add-Member -NotePropertyName review -NotePropertyValue $review -Force
             $previous | Add-Member -NotePropertyName status -NotePropertyValue 'fresh' -Force
             $previous | Add-Member -NotePropertyName baselineSource -NotePropertyValue $baselineSource -Force
             $previous | Add-Member -NotePropertyName baselineSha256 -NotePropertyValue $baselineSha256 -Force
             $priorWarnings = if ($null -ne $previous.PSObject.Properties['warnings']) {
-                @($previous.warnings | Where-Object { [string]$_ -notlike 'baseline: *' })
+                @($previous.warnings | Where-Object { [string]$_ -notlike 'baseline: *' -and [string]$_ -notlike 'review: *' })
             }
             else {
                 @()
             }
-            $previous | Add-Member -NotePropertyName warnings -NotePropertyValue @($priorWarnings + $baselineWarnings | Select-Object -Unique) -Force
+            $currentWarnings = @($priorWarnings) + $baselineWarnings + @(Get-ModelReviewWarnings -Review $review)
+            $previous | Add-Member -NotePropertyName warnings -NotePropertyValue @($currentWarnings | Select-Object -Unique) -Force
             return $previous
         }
     }
@@ -806,7 +1010,7 @@ function Invoke-ModelAvailabilityUpdate {
             [string]$previous.baselineSha256 -ne $baselineSha256
         )
     ) {
-        $selectedClis = @('claude', 'codex', 'copilot')
+        $selectedClis = @('claude', 'codex', 'copilot', 'junie')
     }
     $models = [System.Collections.Generic.List[object]]::new()
     foreach ($previousModel in $previousModels) {
@@ -836,6 +1040,7 @@ function Invoke-ModelAvailabilityUpdate {
 
     foreach ($cliName in $selectedClis) {
         $cliBaseline = @($baselineModels | Where-Object { $_.cli -eq $cliName })
+        $baselineIds = @($cliBaseline | ForEach-Object id)
         $command = Get-Command -Name $cliName -CommandType Application -ErrorAction SilentlyContinue
 
         if ($null -eq $command) {
@@ -864,12 +1069,15 @@ function Invoke-ModelAvailabilityUpdate {
                 'codex' {
                     $foundIds = @(Get-CodexAvailableModels)
                 }
+                'junie' {
+                    $foundIds = @(Get-JunieAvailableModels)
+                }
                 'copilot' {
-                    $foundIds = @(Get-CopilotAvailableModels -Candidates @($cliBaseline.id))
+                    $foundIds = @(Get-CopilotAvailableModels -Candidates $baselineIds)
                 }
                 'claude' {
                     if (Get-ClaudeLoginState) {
-                        $foundIds = @($cliBaseline.id)
+                        $foundIds = $baselineIds
                         $claudeReason = 'assumed-when-logged-in'
                     }
                     else {
@@ -902,7 +1110,6 @@ function Invoke-ModelAvailabilityUpdate {
                 $models.Add((New-AvailabilityModelRecord @recordArguments))
             }
 
-            $baselineIds = @($cliBaseline.id)
             foreach ($foundId in @($foundIds | Select-Object -Unique)) {
                 if ([string]$foundId -notin $baselineIds) {
                     $recordArguments = @{
@@ -952,6 +1159,11 @@ function Invoke-ModelAvailabilityUpdate {
         }
     }
 
+    Update-AvailabilityModelReview -Review $review -BaselineModels $baselineModels -Models $models.ToArray()
+    foreach ($reviewWarning in @(Get-ModelReviewWarnings -Review $review)) {
+        $warnings.Add($reviewWarning)
+    }
+
     $suggestions = @($models | Where-Object {
             $_.status -eq 'unevaluated' -and $_.reason -eq 'not-in-baseline'
         } | ForEach-Object {
@@ -981,7 +1193,8 @@ function Invoke-ModelAvailabilityUpdate {
         warnings       = @($warnings)
         suggestions    = @($suggestions)
         clis           = [pscustomobject]$cliStates
-        models         = @($models)
+        review         = $review
+        models         = $models.ToArray()
     }
 
     Write-ModelAvailabilityCache -Value $result -Path $cachePath

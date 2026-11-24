@@ -138,7 +138,7 @@ function Invoke-ModelBaselineUpdate {
     foreach ($cachePath in $cachePaths) {
         $cache = Get-Content -LiteralPath $cachePath -Raw | ConvertFrom-Json
         $environment = [string]$cache.environment
-        foreach ($cliName in @('codex', 'copilot')) {
+        foreach ($cliName in @('codex', 'copilot', 'junie')) {
             $isCurrent = $false
             $cliProperty = if ($null -ne $cache.PSObject.Properties['clis']) { $cache.clis.PSObject.Properties[$cliName] } else { $null }
             if ($null -ne $cliProperty) {
@@ -168,7 +168,7 @@ function Invoke-ModelBaselineUpdate {
     }
 
     $removalsEnabled = @{}
-    foreach ($cliName in @('codex', 'copilot')) {
+    foreach ($cliName in @('codex', 'copilot', 'junie')) {
         $observedEnvironments = @($observations | Where-Object cli -eq $cliName | ForEach-Object environment | Select-Object -Unique)
         $removalsEnabled[$cliName] = (
             $observedEnvironments.Count -eq 2 -and
@@ -213,6 +213,7 @@ function Invoke-ModelBaselineUpdate {
     $candidateKeys = [string[]]@($candidateGroups.Keys)
     [Array]::Sort($candidateKeys, [System.StringComparer]::Ordinal)
 
+    $date = $Now.ToOffset([TimeSpan]::FromHours(8)).ToString('yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
     $additions = [System.Collections.Generic.List[object]]::new()
     foreach ($key in $candidateKeys) {
         $group = $candidateGroups[$key]
@@ -221,7 +222,6 @@ function Invoke-ModelBaselineUpdate {
         $environments = [string[]]@($group.environments)
         [Array]::Sort($environments, [System.StringComparer]::Ordinal)
         $environmentText = $environments -join ' and '
-        $date = $Now.ToOffset([TimeSpan]::FromHours(8)).ToString('yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
         $additions.Add([pscustomobject][ordered]@{
                 cli = $cliName
                 id = $id
@@ -230,15 +230,15 @@ function Invoke-ModelBaselineUpdate {
                 cost = $null
                 status = 'unevaluated'
                 evidence = 'measured'
+                reviewedOn = $date
                 notes = "listed by $cliName CLI in $environmentText on $date; not yet rated"
             })
     }
 
     $markedUnavailable = [System.Collections.Generic.List[string]]::new()
-    $date = $Now.ToOffset([TimeSpan]::FromHours(8)).ToString('yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
     foreach ($entry in @($baseline.models)) {
         $cliName = [string]$entry.cli
-        if ($cliName -notin @('codex', 'copilot')) { continue }
+        if ($cliName -notin @('codex', 'copilot', 'junie')) { continue }
         $cliObservations = @($observations | Where-Object cli -eq $cliName)
         if ([string]$entry.status -eq 'unavailable') {
             $listedAgain = @($cliObservations | Where-Object {

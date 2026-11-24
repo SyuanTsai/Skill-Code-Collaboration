@@ -12,12 +12,14 @@ BeforeAll {
     $script:BaselinePath = Join-Path $script:SkillRoot 'references/models.json'
     . $script:ScriptPath -Environment personal
     $script:RealGetClaudeLoginState = ${function:Get-ClaudeLoginState}
+    $script:RealGetJunieAvailableModels = ${function:Get-JunieAvailableModels}
     $script:RealGetCopilotAvailableModels = ${function:Get-CopilotAvailableModels}
 
     $script:Baseline = Get-Content -LiteralPath $script:BaselinePath -Raw | ConvertFrom-Json
     $script:BaselineIdentity = Get-ModelBaselineIdentity -Baseline $script:Baseline
     $script:ClaudeIds = @($script:Baseline.models | Where-Object cli -eq 'claude' | ForEach-Object id)
     $script:CodexIds = @($script:Baseline.models | Where-Object cli -eq 'codex' | ForEach-Object id)
+    $script:JunieIds = @($script:Baseline.models | Where-Object cli -eq 'junie' | ForEach-Object id)
     $script:CopilotIds = @($script:Baseline.models | Where-Object cli -eq 'copilot' | ForEach-Object id)
 
     function Write-TestAvailabilityCache {
@@ -39,7 +41,9 @@ BeforeAll {
             [AllowNull()]
             [string]$BaselineSha256 = $script:BaselineIdentity,
 
-            [switch]$OmitBaselineSha256
+            [switch]$OmitBaselineSha256,
+
+            [string[]]$Warnings = @()
         )
 
         $null = New-Item -ItemType Directory -Path $Directory -Force
@@ -49,7 +53,7 @@ BeforeAll {
             environment    = $Environment
             baselineSource = 'explicit'
             lastCheckedUtc = $LastCheckedUtc
-            warnings       = @()
+            warnings       = $Warnings
             suggestions    = @()
             clis           = $Clis
             models         = @($Models)
@@ -71,7 +75,7 @@ BeforeAll {
         )
 
         $states = [ordered]@{}
-        foreach ($cliName in @('claude', 'codex', 'copilot')) {
+        foreach ($cliName in @('claude', 'codex', 'copilot', 'junie')) {
             $states[$cliName] = [pscustomobject][ordered]@{
                 stale      = $cliName -eq $StaleCli
                 checkedUtc = $CheckedUtc
@@ -85,10 +89,11 @@ BeforeEach {
     Mock Invoke-ModelBaselineDownload { $script:Baseline }
     Mock Get-Command {
         [pscustomobject]@{ Name = $Name }
-    } -ParameterFilter { $Name -in @('claude', 'codex', 'copilot') }
+    } -ParameterFilter { $Name -in @('claude', 'codex', 'copilot', 'junie') }
     Mock Get-ClaudeLoginState { $true }
     Mock Get-CodexAvailableModels { @($script:CodexIds) }
     Mock Get-CopilotAvailableModels { @($script:CopilotIds) }
+    Mock Get-JunieAvailableModels { @($script:JunieIds) }
 }
 
 Context 'Weekly availability trigger' {
@@ -110,6 +115,7 @@ Context 'Weekly availability trigger' {
         Should -Invoke Get-ClaudeLoginState -Times 0 -Exactly
         Should -Invoke Get-CodexAvailableModels -Times 0 -Exactly
         Should -Invoke Get-CopilotAvailableModels -Times 0 -Exactly
+        Should -Invoke Get-JunieAvailableModels -Times 0 -Exactly
     }
 
     It 'uses the preceding Monday for Sunday 23:59 in Taipei' {
@@ -146,6 +152,7 @@ Context 'Weekly availability trigger' {
         Should -Invoke Get-ClaudeLoginState -Times 1 -Exactly
         Should -Invoke Get-CodexAvailableModels -Times 1 -Exactly
         Should -Invoke Get-CopilotAvailableModels -Times 1 -Exactly
+        Should -Invoke Get-JunieAvailableModels -Times 1 -Exactly
     }
 
     It 'retries a cache checked this week when any CLI state is stale' {
@@ -178,6 +185,7 @@ Context 'Weekly availability trigger' {
                 claude  = [pscustomobject]@{ stale = $false; checkedUtc = $lastWeek }
                 codex   = [pscustomobject]@{ stale = $false; checkedUtc = $thisWeek }
                 copilot = [pscustomobject]@{ stale = $false; checkedUtc = $lastWeek }
+                junie   = [pscustomobject]@{ stale = $false; checkedUtc = $thisWeek }
             })
 
         $result = Invoke-ModelAvailabilityUpdate `
@@ -189,6 +197,7 @@ Context 'Weekly availability trigger' {
         Should -Invoke Get-ClaudeLoginState -Times 1 -Exactly
         Should -Invoke Get-CodexAvailableModels -Times 1 -Exactly
         Should -Invoke Get-CopilotAvailableModels -Times 1 -Exactly
+        Should -Invoke Get-JunieAvailableModels -Times 1 -Exactly
     }
 
     It 'returns fresh when every CLI state was checked this week and is not stale' {
@@ -209,6 +218,7 @@ Context 'Weekly availability trigger' {
         Should -Invoke Get-ClaudeLoginState -Times 0 -Exactly
         Should -Invoke Get-CodexAvailableModels -Times 0 -Exactly
         Should -Invoke Get-CopilotAvailableModels -Times 0 -Exactly
+        Should -Invoke Get-JunieAvailableModels -Times 0 -Exactly
     }
 
     # Scenario: all CLI states and the baseline identity are current. Purpose: reuse a cache only for the baseline it describes.
@@ -226,6 +236,7 @@ Context 'Weekly availability trigger' {
         Should -Invoke Get-ClaudeLoginState -Times 0 -Exactly
         Should -Invoke Get-CodexAvailableModels -Times 0 -Exactly
         Should -Invoke Get-CopilotAvailableModels -Times 0 -Exactly
+        Should -Invoke Get-JunieAvailableModels -Times 0 -Exactly
     }
 
     # Scenario: a forced single-CLI refresh has the current baseline identity. Purpose: retain the caller's narrow probe scope.
@@ -242,6 +253,7 @@ Context 'Weekly availability trigger' {
         Should -Invoke Get-ClaudeLoginState -Times 0 -Exactly
         Should -Invoke Get-CodexAvailableModels -Times 1 -Exactly
         Should -Invoke Get-CopilotAvailableModels -Times 0 -Exactly
+        Should -Invoke Get-JunieAvailableModels -Times 0 -Exactly
     }
 
     # Scenario: the cache belongs to a different baseline. Purpose: re-probe and stamp the newly resolved identity.
@@ -265,6 +277,7 @@ Context 'Weekly availability trigger' {
         Should -Invoke Get-ClaudeLoginState -Times 1 -Exactly
         Should -Invoke Get-CodexAvailableModels -Times 1 -Exactly
         Should -Invoke Get-CopilotAvailableModels -Times 1 -Exactly
+        Should -Invoke Get-JunieAvailableModels -Times 1 -Exactly
     }
 
     # Scenario: a legacy cache has no baseline identity. Purpose: re-probe rather than trusting an unbound cache.
@@ -284,6 +297,46 @@ Context 'Weekly availability trigger' {
 }
 
 Context 'CLI output parsing' {
+    BeforeAll {
+        function Invoke-TestCopilotProbeLineVerdict {
+            param([string]$Line)
+
+            $helper = ${function:Test-CopilotCandidate}.Ast.Find({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                    $node.Name -eq 'Get-CopilotProbeLineVerdict'
+            }, $true)
+            if ($null -eq $helper) { throw 'Copilot probe line verdict helper not found.' }
+            & ($helper.Body.GetScriptBlock()) -Line $Line
+        }
+    }
+
+    # Scenario: Copilot reports an unavailable model as a session.error JSON event.
+    # Purpose: classify the event as unavailable.
+    It 'UnitT20_classifies a Copilot unavailable session error' {
+        $line = '{"type":"session.error","data":{"errorType":"query","message":"Execution failed: Model \"gpt-5.6-terra\" is not available."},"id":"example","timestamp":"example","parentId":"example"}'
+        Invoke-TestCopilotProbeLineVerdict -Line $line | Should -Be 'unavailable'
+    }
+
+    # Scenario: Copilot emits an assistant turn start event.
+    # Purpose: retain the existing available-model classification.
+    It 'UnitT30_classifies a Copilot assistant turn as available' {
+        Invoke-TestCopilotProbeLineVerdict -Line '{"type":"assistant.turn_start"}' | Should -Be 'available'
+    }
+
+    # Scenario: Copilot emits unrelated session events.
+    # Purpose: leave their availability undecided.
+    It 'UnitT40_ignores unrelated Copilot session events' {
+        Invoke-TestCopilotProbeLineVerdict -Line '{"type":"session.warning"}' | Should -BeNullOrEmpty
+        Invoke-TestCopilotProbeLineVerdict -Line '{"type":"session.start"}' | Should -BeNullOrEmpty
+    }
+
+    # Scenario: Copilot emits a session error for a rate limit.
+    # Purpose: avoid classifying unrelated errors as unavailable models.
+    It 'UnitT50_ignores other Copilot session errors' {
+        Invoke-TestCopilotProbeLineVerdict -Line '{"type":"session.error","data":{"message":"Rate limit exceeded"}}' | Should -BeNullOrEmpty
+    }
+
     It 'uses valid Claude logged-out JSON even when auth status exits non-zero' {
         Mock Invoke-ClaudeAuthStatus {
             [pscustomobject]@{
@@ -311,6 +364,20 @@ Context 'CLI output parsing' {
             'claude-sonnet-5'
             'gpt-5.6-luna'
         )
+    }
+
+    # Scenario: Junie emits a startup log line followed by a JSON catalog.
+    # Purpose: extract model IDs without treating the startup log as catalog data.
+    It 'UnitT10_parses Junie model IDs after a startup log' {
+        Mock Invoke-JunieListModels {
+            [pscustomobject]@{
+                Lines = @('Junie 1.0 (pid=123): log file: junie.log', '{', '  "models": [{ "id": "one", "name": "First" }, { "id": "two" }]', '}')
+                ExitCode = 0
+            }
+        }
+
+        @(& $script:RealGetJunieAvailableModels) | Should -Be @('one', 'two')
+        Should -Invoke Invoke-JunieListModels -Times 1 -Exactly
     }
 }
 
@@ -446,6 +513,179 @@ Context 'Probe failure handling' {
     }
 }
 
+Context 'Junie availability' {
+    # Scenario: Junie returns a startup log without a JSON payload while Codex succeeds.
+    # Purpose: isolate Junie probe failures and report a safe warning.
+    It 'UnitT10_marks only Junie stale when its output has no JSON' {
+        Mock Invoke-JunieListModels { [pscustomobject]@{ Lines = @('Junie startup log'); ExitCode = 0 } }
+        Mock Get-JunieAvailableModels { & $script:RealGetJunieAvailableModels }
+
+        { & $script:RealGetJunieAvailableModels } | Should -Throw '*unexpected output*'
+        $result = Invoke-ModelAvailabilityUpdate -Environment personal -BaselinePath $script:BaselinePath `
+            -CacheDirectory (Join-Path $TestDrive 'junie-bad-output') -Cli junie, codex
+
+        $result.status | Should -Be 'partial'
+        $result.clis.junie.stale | Should -BeTrue
+        $result.clis.codex.stale | Should -BeFalse
+        $result.warnings | Should -Contain 'junie: availability not updated (unexpected output)'
+    }
+
+    # Scenario: Junie lists a catalog ID absent from the baseline, including a duplicate.
+    # Purpose: require review before selection and count the new ID only once.
+    It 'UnitT20_reports a new Junie model as unevaluated' {
+        Mock Invoke-JunieListModels {
+            [pscustomobject]@{
+                Lines = @('{"models":[{"id":"gpt-6.1-terra"},{"id":"new-junie"},{"id":"new-junie"}]}')
+                ExitCode = 0
+            }
+        }
+        Mock Get-JunieAvailableModels { & $script:RealGetJunieAvailableModels }
+        $result = Invoke-ModelAvailabilityUpdate -Environment personal -BaselinePath $script:BaselinePath `
+            -CacheDirectory (Join-Path $TestDrive 'junie-new-model') -Cli junie
+        $newModel = $result.models | Where-Object id -eq 'new-junie'
+
+        $newModel.status | Should -Be 'unevaluated'
+        $newModel.reason | Should -Be 'not-in-baseline'
+        $newModel.selectable | Should -BeFalse
+        $newModel.reviewedOn | Should -BeNullOrEmpty
+        $newModel.reviewOverdue | Should -BeFalse
+        ($result.models | Where-Object id -eq 'gpt-6.1-terra').reason | Should -Be 'listed-by-cli'
+        ($result.models | Where-Object id -eq 'gpt-6.2-astra').reason | Should -Be 'not-listed-by-cli'
+        @($result.review.unevaluated | Where-Object { $_.cli -eq 'junie' -and $_.id -eq 'new-junie' }).Count | Should -Be 1
+    }
+}
+
+Context 'Rating review' {
+    BeforeEach {
+        $script:ReviewFixturePath = Join-Path $TestDrive 'review-fixture.json'
+        $fixture = [pscustomobject][ordered]@{
+            schemaVersion = 2
+            reviewMaxAgeDays = 30
+            models = @(
+                [pscustomobject]@{ cli = 'codex'; id = 'old'; family = 'openai'; status = 'active'; reviewedOn = '2026-11-01'; capability = 3; cost = 2; evidence = 'official'; notes = '' }
+                [pscustomobject]@{ cli = 'codex'; id = 'boundary'; family = 'openai'; status = 'active'; reviewedOn = '2026-11-02'; capability = 3; cost = 2; evidence = 'official'; notes = '' }
+                [pscustomobject]@{ cli = 'codex'; id = 'unrated'; family = 'openai'; status = 'unevaluated'; reviewedOn = '2026-11-01'; capability = $null; cost = $null; evidence = 'measured'; notes = '' }
+            )
+            efforts = $script:Baseline.efforts
+        }
+        Set-Content -LiteralPath $script:ReviewFixturePath -Value ($fixture | ConvertTo-Json -Depth 6)
+        Mock Get-CodexAvailableModels { @('old', 'boundary', 'unrated') }
+    }
+
+    # Scenario: two active ratings were reviewed 31 and 30 days ago.
+    # Purpose: enforce a strict greater-than threshold without changing selectability.
+    It 'UnitT10_flags only active ratings older than 30 days' {
+        $result = Invoke-ModelAvailabilityUpdate -Environment personal -BaselinePath $script:ReviewFixturePath `
+            -CacheDirectory (Join-Path $TestDrive 'review-overdue') -Cli codex -Now ([DateTimeOffset]'2026-12-02T10:00:00+08:00')
+
+        $result.review.maxAgeDays | Should -Be 30
+        @($result.review.overdue.id) | Should -Be @('old')
+        $result.review.overdue[0].ageDays | Should -Be 31
+        $old = $result.models | Where-Object id -eq 'old'
+        $old.reviewedOn | Should -Be '2026-11-01'
+        $old.reviewOverdue | Should -BeTrue
+        $old.selectable | Should -BeTrue
+        ($result.models | Where-Object id -eq 'boundary').reviewOverdue | Should -BeFalse
+        ($result.models | Where-Object id -eq 'unrated').reviewOverdue | Should -BeFalse
+        $result.warnings | Should -Contain 'review: codex/old rating last reviewed 2026-11-01 (31 days ago); re-rate it before relying on it'
+        $result.warnings | Should -Contain 'review: 1 unevaluated models; rate them and update references/models.json by pull request'
+    }
+
+    # Scenario: Taipei has reached December 2 while UTC is still December 1.
+    # Purpose: use the Taipei calendar day to age ratings.
+    It 'UnitT20_calculates age across the Taipei date boundary' {
+        $baseline = Get-Content -LiteralPath $script:ReviewFixturePath -Raw | ConvertFrom-Json
+        $result = Get-ModelReviewStatus -Baseline $baseline -Now ([DateTimeOffset]'2026-12-01T16:00:00Z')
+
+        @($result.overdue.id) | Should -Be @('old')
+        $result.overdue[0].ageDays | Should -Be 31
+    }
+
+    # Scenario: the cache was written on the 30-day boundary and is still fresh one day later.
+    # Purpose: replace outdated review warnings and flags without probing again.
+    It 'UnitT30_recalculates review data from a fresh cache' {
+        $cacheDirectory = Join-Path $TestDrive 'review-fresh'
+        $lastCheckedUtc = '2026-12-01T02:00:00Z'
+        $baseline = Get-Content -LiteralPath $script:ReviewFixturePath -Raw | ConvertFrom-Json
+        $cachedModels = @(
+            [pscustomobject]@{ cli = 'codex'; id = 'old'; status = 'available'; reason = 'listed-by-cli'; reviewedOn = '2026-11-01'; reviewOverdue = $false }
+            [pscustomobject]@{ cli = 'codex'; id = 'discovered'; status = 'unevaluated'; reason = 'not-in-baseline' }
+        )
+        $null = Write-TestAvailabilityCache -Directory $cacheDirectory -Environment personal -LastCheckedUtc $lastCheckedUtc `
+            -Clis (New-TestCliStates -CheckedUtc $lastCheckedUtc) -Models $cachedModels `
+            -BaselineSha256 (Get-ModelBaselineIdentity -Baseline $baseline) -Warnings @('review: old warning', 'keep this warning')
+
+        $result = Invoke-ModelAvailabilityUpdate -Environment personal -BaselinePath $script:ReviewFixturePath `
+            -CacheDirectory $cacheDirectory -Now ([DateTimeOffset]'2026-12-02T10:00:00+08:00')
+
+        $result.status | Should -Be 'fresh'
+        @($result.review.overdue.id) | Should -Be @('old')
+        @($result.review.unevaluated.id) | Should -Be @('unrated', 'discovered')
+        ($result.models | Where-Object id -eq 'old').reviewOverdue | Should -BeTrue
+        $result.warnings | Should -Not -Contain 'review: old warning'
+        $result.warnings | Should -Contain 'keep this warning'
+        $result.warnings | Should -Contain 'review: codex/old rating last reviewed 2026-11-01 (31 days ago); re-rate it before relying on it'
+        $result.warnings | Should -Contain 'review: 2 unevaluated models; rate them and update references/models.json by pull request'
+        Should -Invoke Get-CodexAvailableModels -Times 0 -Exactly
+        Should -Invoke Get-JunieAvailableModels -Times 0 -Exactly
+    }
+
+    # Scenario: a scheduler requests rating review from an explicit baseline and an empty cache directory.
+    # Purpose: report ratings without probing any CLI or creating a cache.
+    It 'UnitT40_reviews the explicit baseline without probing or caching' {
+        $cacheDirectory = Join-Path $TestDrive 'review-only-explicit'
+        $result = Invoke-ModelAvailabilityUpdate -Environment personal -BaselinePath $script:ReviewFixturePath `
+            -CacheDirectory $cacheDirectory -ReviewOnly -Now ([DateTimeOffset]'2026-12-02T10:00:00+08:00')
+
+        $result.schemaVersion | Should -Be 1
+        $result.status | Should -Be 'review'
+        $result.environment | Should -Be 'personal'
+        $result.baselineSource | Should -Be 'explicit'
+        @($result.review.overdue.id) | Should -Be @('old')
+        $result.warnings | Should -Contain 'review: 1 unevaluated models; rate them and update references/models.json by pull request'
+        Test-Path -LiteralPath $cacheDirectory | Should -BeFalse
+        Should -Invoke Invoke-ModelBaselineDownload -Times 0 -Exactly
+        Should -Invoke Get-ClaudeLoginState -Times 0 -Exactly
+        Should -Invoke Get-CodexAvailableModels -Times 0 -Exactly
+        Should -Invoke Get-CopilotAvailableModels -Times 0 -Exactly
+        Should -Invoke Get-JunieAvailableModels -Times 0 -Exactly
+    }
+
+    # Scenario: an existing availability cache contains invalid JSON.
+    # Purpose: review the baseline without reading or rewriting that cache.
+    It 'UnitT42_ignores an existing availability cache in review-only mode' {
+        $cacheDirectory = Join-Path $TestDrive 'review-only-existing-cache'
+        $null = New-Item -ItemType Directory -Path $cacheDirectory
+        $cachePath = Join-Path $cacheDirectory 'model-availability.personal.json'
+        Set-Content -LiteralPath $cachePath -Value 'invalid JSON' -NoNewline
+
+        $result = Invoke-ModelAvailabilityUpdate -Environment personal -BaselinePath $script:ReviewFixturePath `
+            -CacheDirectory $cacheDirectory -ReviewOnly
+
+        $result.status | Should -Be 'review'
+        (Get-Content -LiteralPath $cachePath -Raw) | Should -BeExactly 'invalid JSON'
+    }
+
+    # Scenario: a scheduled review has no explicit baseline and a successful mocked download.
+    # Purpose: resolve the baseline normally without persisting a cache file.
+    It 'UnitT45_reviews the resolved baseline without writing a local copy' {
+        $cacheDirectory = Join-Path $TestDrive 'review-only-resolved'
+        $result = Invoke-ModelAvailabilityUpdate -Environment work -CacheDirectory $cacheDirectory -ReviewOnly
+
+        $result.status | Should -Be 'review'
+        $result.baselineSource | Should -Be 'downloaded'
+        $result.baselineSha256 | Should -Be $script:BaselineIdentity
+        Test-Path -LiteralPath $cacheDirectory | Should -BeFalse
+        Should -Invoke Invoke-ModelBaselineDownload -Times 1 -Exactly
+    }
+
+    # Scenario: a caller supplies both the review and force switches.
+    # Purpose: reject conflicting modes before attempting a probe.
+    It 'UnitT50_rejects ReviewOnly with Force' {
+        { Invoke-ModelAvailabilityUpdate -Environment personal -ReviewOnly -Force } | Should -Throw '*ReviewOnly*Force*'
+    }
+}
+
 Context 'Cache isolation and safety' {
     It 'separates personal and work caches and does not reuse another environment' {
         $cacheDirectory = Join-Path $TestDrive 'environments'
@@ -534,7 +774,7 @@ Context 'Resolve-ModelBaseline' {
 
     # Scenario: a download has an unsupported schema. Purpose: reject malformed or incompatible remote data.
     It 'UnitT60_rejects an unsupported downloaded schema' {
-        Mock Invoke-ModelBaselineDownload { [pscustomobject]@{ schemaVersion = 2; models = @() } }
+        Mock Invoke-ModelBaselineDownload { [pscustomobject]@{ schemaVersion = 3; models = @() } }
         $result = Resolve-ModelBaseline -CacheDirectory (Join-Path $TestDrive 'baseline-rejected') `
             -Now ([DateTimeOffset]'2026-11-02T01:00:00+08:00')
         $result.source | Should -Be 'bundled'
@@ -556,6 +796,13 @@ Context 'Resolve-ModelBaseline' {
         @{ Defect = 'active without capability'; Mutate = { param($value) $value.models[0].capability = $null } }
         @{ Defect = 'duplicate id'; Mutate = { param($value) $value.models = @($value.models) + @($value.models[0]) } }
         @{ Defect = 'missing efforts'; Mutate = { param($value) $value.PSObject.Properties.Remove('efforts') } }
+        @{ Defect = 'schema version 1'; Mutate = { param($value) $value.schemaVersion = 1 } }
+        @{ Defect = 'missing reviewed date'; Mutate = { param($value) $value.models[0].PSObject.Properties.Remove('reviewedOn') } }
+        @{ Defect = 'invalid reviewed date format'; Mutate = { param($value) $value.models[0].reviewedOn = '2026/11/24' } }
+        @{ Defect = 'invalid reviewed calendar date'; Mutate = { param($value) $value.models[0].reviewedOn = '2026-02-30' } }
+        @{ Defect = 'zero review age limit'; Mutate = { param($value) $value.reviewMaxAgeDays = 0 } }
+        @{ Defect = 'unknown cli'; Mutate = { param($value) $value.models[0].cli = 'unknown' } }
+        @{ Defect = 'missing Junie efforts'; Mutate = { param($value) $value.efforts.PSObject.Properties.Remove('junie') } }
     ) {
         param($Defect, $Mutate)
         $invalid = ($script:Baseline | ConvertTo-Json -Depth 6 | ConvertFrom-Json)
@@ -595,10 +842,11 @@ Context 'Baseline integrity' {
     It 'has valid unique model entries and rating rules' {
         { Get-Content -LiteralPath $script:BaselinePath -Raw | ConvertFrom-Json } | Should -Not -Throw
         $baseline = Get-Content -LiteralPath $script:BaselinePath -Raw | ConvertFrom-Json
-        $baseline.schemaVersion | Should -Be 1
+        $baseline.schemaVersion | Should -Be 2
+        $baseline.reviewMaxAgeDays | Should -Be 30
 
         foreach ($entry in $baseline.models) {
-            foreach ($field in @('cli', 'id', 'family', 'capability', 'cost', 'status', 'evidence', 'notes')) {
+            foreach ($field in @('cli', 'id', 'family', 'capability', 'cost', 'status', 'evidence', 'reviewedOn', 'notes')) {
                 @($entry.PSObject.Properties.Name) -contains $field | Should -Be $true
             }
             $entry.status | Should -BeIn @('active', 'unevaluated', 'excluded', 'unavailable')
@@ -623,6 +871,7 @@ Context 'Baseline integrity' {
         @($baseline.efforts.claude) | Should -Be @('low', 'medium', 'high', 'xhigh', 'max')
         @($baseline.efforts.codex) | Should -Be @('low', 'medium', 'high', 'xhigh', 'max', 'ultra')
         @($baseline.efforts.copilot) | Should -Be @('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')
+        @($baseline.efforts.junie) | Should -Be @('low', 'medium', 'high')
     }
 }
 
@@ -670,9 +919,14 @@ Context 'CLI state reasons' {
             }
         }
         Mock Get-ClaudeLoginState { & $script:RealGetClaudeLoginState }
+        $baselinePath = Join-Path $TestDrive 'claude-rated-baseline.json'
+        $baseline = Get-Content -LiteralPath $script:BaselinePath -Raw | ConvertFrom-Json
+        $baseline.models = @($baseline.models | Where-Object status -ne 'unevaluated')
+        Set-Content -LiteralPath $baselinePath -Value ($baseline | ConvertTo-Json -Depth 6)
 
         $result = Invoke-ModelAvailabilityUpdate `
             -Environment work `
+            -BaselinePath $baselinePath `
             -CacheDirectory $cacheDirectory `
             -Cli claude `
             -Force `

@@ -1,15 +1,16 @@
 {
-  "schemaVersion": 1,
-  "reviewedOn": "2026-11-02",
+  "schemaVersion": 2,
+  "reviewMaxAgeDays": 30,
   "models": [
     {
       "cli": "claude",
-      "id": "claude-fable-5-1",
+      "id": "claude-fable-5-2",
       "family": "anthropic",
       "capability": 4,
       "cost": 4,
       "status": "active",
       "evidence": "official",
+      "reviewedOn": "2026-11-24",
       "notes": "alias `fable`; availability depends on CLI login"
     },
     {
@@ -20,6 +21,7 @@
       "cost": 3,
       "status": "active",
       "evidence": "official",
+      "reviewedOn": "2026-11-24",
       "notes": "alias `opus`"
     },
     {
@@ -30,6 +32,7 @@
       "cost": 2,
       "status": "active",
       "evidence": "official",
+      "reviewedOn": "2026-11-24",
       "notes": "alias `sonnet`"
     },
     {
@@ -40,7 +43,63 @@
       "cost": 1,
       "status": "active",
       "evidence": "measured",
-      "notes": "alias `haiku`; verified as a sub agent"
+      "reviewedOn": "2026-11-24",
+      "notes": "alias `haiku`; sub agent model verified 2026-11-24"
+    },
+    {
+      "cli": "claude",
+      "id": "claude-fable-5-1",
+      "family": "anthropic",
+      "capability": null,
+      "cost": null,
+      "status": "excluded",
+      "evidence": "official",
+      "reviewedOn": "2026-11-24",
+      "notes": "superseded by claude-fable-5-2; the CLI still accepts and bills it"
+    },
+    {
+      "cli": "codex",
+      "id": "gpt-6.2-astra",
+      "family": "openai",
+      "capability": 4,
+      "cost": 4,
+      "status": "active",
+      "evidence": "inferred",
+      "reviewedOn": "2026-11-24",
+      "notes": "catalog: most capable model for complex coding"
+    },
+    {
+      "cli": "codex",
+      "id": "gpt-6.2-sol",
+      "family": "openai",
+      "capability": 3,
+      "cost": 2,
+      "status": "active",
+      "evidence": "inferred",
+      "reviewedOn": "2026-11-24",
+      "notes": "catalog: go-to model for coding"
+    },
+    {
+      "cli": "codex",
+      "id": "gpt-6.1-sol",
+      "family": "openai",
+      "capability": 3,
+      "cost": 2,
+      "status": "active",
+      "evidence": "inferred",
+      "reviewedOn": "2026-11-24",
+      "notes": "catalog: previous generation"
+    },
+    {
+      "cli": "codex",
+      "id": "gpt-6.1-terra",
+      "family": "openai",
+      "capability": 2,
+      "cost": 2,
+      "status": "active",
+      "evidence": "inferred",
+      "reviewedOn": "2026-11-24",
+      "notes": "catalog: efficient; visual understanding and computer use"
     },
     {
       "cli": "codex",
@@ -50,7 +109,30 @@
       "cost": 4,
       "status": "active",
       "evidence": "official",
-      "notes": "CLI description \"Frontier intelligence\""
+      "reviewedOn": "2026-11-24",
+      "notes": "catalog: previous generation"
+    },
+    {
+      "cli": "codex",
+      "id": "gpt-6-sol",
+      "family": "openai",
+      "capability": 3,
+      "cost": 2,
+      "status": "active",
+      "evidence": "inferred",
+      "reviewedOn": "2026-11-24",
+      "notes": "catalog: legacy"
+    },
+    {
+      "cli": "codex",
+      "id": "gpt-6-luna",
+      "family": "openai",
+      "capability": 1,
+      "cost": 1,
+      "status": "active",
+      "evidence": "inferred",
+      "reviewedOn": "2026-11-24",
+      "notes": "catalog: fast and affordable for easier tasks"
     },
     {
       "cli": "codex",
@@ -60,7 +142,8 @@
       "cost": 2,
       "status": "active",
       "evidence": "official",
-      "notes": "\"workhorse\""
+      "reviewedOn": "2026-11-24",
+      "notes": "catalog: legacy"
     },
     {
       "cli": "codex",
@@ -70,7 +153,8 @@
       "cost": 2,
       "status": "active",
       "evidence": "official",
-      "notes": "\"balanced\""
+      "reviewedOn": "2026-11-24",
+      "notes": "catalog: legacy; sub agent model verified 2026-11-24"
     },
     {
       "cli": "codex",
@@ -80,7 +164,8 @@
       "cost": 1,
       "status": "active",
       "evidence": "official",
-      "notes": "\"fast and efficient\""
+      "reviewedOn": "2026-11-24",
+      "notes": "catalog: legacy"
     },
     {
       "cli": "codex",
@@ -90,6 +175,7 @@
       "cost": null,
       "status": "unevaluated",
       "evidence": "official",
+      "reviewedOn": "2026-11-24",
       "notes": "hidden in the CLI catalog"
     },
     {
@@ -100,7 +186,19 @@
       "cost": null,
       "status": "excluded",
       "evidence": "official",
+      "reviewedOn": "2026-11-24",
       "notes": "internal approval-review model"
+    },
+    {
+      "cli": "copilot",
+      "id": "claude-opus-5.5",
+      "family": "anthropic",
+      "capability": 4,
+      "cost": 4,
+      "status": "active",
+      "evidence": "inferred",
+      "reviewedOn": "2026-11-24",
+      "notes": ""
     },
     {
       "cli": "copilot",
@@ -110,17 +208,19 @@
       "cost": 4,
       "status": "active",
       "evidence": "official",
+      "reviewedOn": "2026-11-24",
       "notes": ""
     },
     {
       "cli": "copilot",
-      "id": "claude-opus-4.8",
+      "id": "claude-sonnet-5.5",
       "family": "anthropic",
-      "capability": 4,
-      "cost": 4,
+      "capability": 3,
+      "cost": 3,
       "status": "active",
-      "evidence": "official",
-      "notes": "older; prefer claude-opus-5 at equal rating"
+      "evidence": "measured",
+      "reviewedOn": "2026-11-24",
+      "notes": "2026-11-24 sub agent: 23k input tokens cost 5.77 AI Credits"
     },
     {
       "cli": "copilot",
@@ -130,6 +230,18 @@
       "cost": 2,
       "status": "active",
       "evidence": "official",
+      "reviewedOn": "2026-11-24",
+      "notes": ""
+    },
+    {
+      "cli": "copilot",
+      "id": "claude-haiku-5.5",
+      "family": "anthropic",
+      "capability": 1,
+      "cost": 1,
+      "status": "active",
+      "evidence": "inferred",
+      "reviewedOn": "2026-11-24",
       "notes": ""
     },
     {
@@ -140,7 +252,63 @@
       "cost": 1,
       "status": "active",
       "evidence": "official",
+      "reviewedOn": "2026-11-24",
       "notes": ""
+    },
+    {
+      "cli": "copilot",
+      "id": "gpt-6.1-sol",
+      "family": "openai",
+      "capability": 3,
+      "cost": 2,
+      "status": "active",
+      "evidence": "inferred",
+      "reviewedOn": "2026-11-24",
+      "notes": ""
+    },
+    {
+      "cli": "copilot",
+      "id": "gpt-6-astra",
+      "family": "openai",
+      "capability": 4,
+      "cost": 4,
+      "status": "active",
+      "evidence": "inferred",
+      "reviewedOn": "2026-11-24",
+      "notes": ""
+    },
+    {
+      "cli": "copilot",
+      "id": "gpt-6-sol",
+      "family": "openai",
+      "capability": 3,
+      "cost": 2,
+      "status": "active",
+      "evidence": "inferred",
+      "reviewedOn": "2026-11-24",
+      "notes": ""
+    },
+    {
+      "cli": "copilot",
+      "id": "gpt-6.1-terra",
+      "family": "openai",
+      "capability": 2,
+      "cost": 2,
+      "status": "active",
+      "evidence": "inferred",
+      "reviewedOn": "2026-11-24",
+      "notes": ""
+    },
+    {
+      "cli": "copilot",
+      "id": "gpt-6-luna",
+      "family": "openai",
+      "capability": 1,
+      "cost": 1,
+      "status": "active",
+      "evidence": "measured",
+      "reviewedOn": "2026-11-24",
+      "notes": "2026-11-24 sub agent: 13k input tokens cost 0.16 AI Credits"
     },
     {
       "cli": "copilot",
@@ -150,16 +318,7 @@
       "cost": 2,
       "status": "active",
       "evidence": "official",
-      "notes": ""
-    },
-    {
-      "cli": "copilot",
-      "id": "gpt-5.6-terra",
-      "family": "openai",
-      "capability": 2,
-      "cost": 2,
-      "status": "active",
-      "evidence": "official",
+      "reviewedOn": "2026-11-24",
       "notes": ""
     },
     {
@@ -170,6 +329,7 @@
       "cost": 1,
       "status": "active",
       "evidence": "measured",
+      "reviewedOn": "2026-11-24",
       "notes": "measured: one minimal call cost 0.41 AI Credits"
     },
     {
@@ -180,7 +340,30 @@
       "cost": 2,
       "status": "active",
       "evidence": "official",
+      "reviewedOn": "2026-11-24",
       "notes": ""
+    },
+    {
+      "cli": "copilot",
+      "id": "claude-opus-4.8",
+      "family": "anthropic",
+      "capability": 4,
+      "cost": 4,
+      "status": "unavailable",
+      "evidence": "measured",
+      "reviewedOn": "2026-11-24",
+      "notes": "not offered on 2026-11-24"
+    },
+    {
+      "cli": "copilot",
+      "id": "gpt-5.6-terra",
+      "family": "openai",
+      "capability": 2,
+      "cost": 2,
+      "status": "unavailable",
+      "evidence": "measured",
+      "reviewedOn": "2026-11-24",
+      "notes": "not offered on 2026-11-24; the task tool silently fell back to claude-sonnet-5.5"
     },
     {
       "cli": "copilot",
@@ -190,7 +373,151 @@
       "cost": null,
       "status": "unevaluated",
       "evidence": "measured",
+      "reviewedOn": "2026-11-24",
       "notes": "available but no rating basis yet"
+    },
+    {
+      "cli": "copilot",
+      "id": "gemini-4-argon",
+      "family": "google",
+      "capability": null,
+      "cost": null,
+      "status": "unevaluated",
+      "evidence": "measured",
+      "reviewedOn": "2026-11-24",
+      "notes": "listed by --model error on 2026-11-24"
+    },
+    {
+      "cli": "copilot",
+      "id": "gemini-3.8-flash",
+      "family": "google",
+      "capability": null,
+      "cost": null,
+      "status": "unevaluated",
+      "evidence": "measured",
+      "reviewedOn": "2026-11-24",
+      "notes": "listed by --model error on 2026-11-24"
+    },
+    {
+      "cli": "copilot",
+      "id": "mai-code-1.1-flash",
+      "family": "microsoft",
+      "capability": null,
+      "cost": null,
+      "status": "unevaluated",
+      "evidence": "measured",
+      "reviewedOn": "2026-11-24",
+      "notes": "listed by --model error on 2026-11-24"
+    },
+    {
+      "cli": "junie",
+      "id": "claude-fable-5-2",
+      "family": "anthropic",
+      "capability": 4,
+      "cost": 4,
+      "status": "active",
+      "evidence": "inferred",
+      "reviewedOn": "2026-11-24",
+      "notes": ""
+    },
+    {
+      "cli": "junie",
+      "id": "gpt-6.2-astra",
+      "family": "openai",
+      "capability": 4,
+      "cost": 4,
+      "status": "active",
+      "evidence": "inferred",
+      "reviewedOn": "2026-11-24",
+      "notes": ""
+    },
+    {
+      "cli": "junie",
+      "id": "claude-opus-5-5",
+      "family": "anthropic",
+      "capability": 4,
+      "cost": 3,
+      "status": "active",
+      "evidence": "inferred",
+      "reviewedOn": "2026-11-24",
+      "notes": ""
+    },
+    {
+      "cli": "junie",
+      "id": "claude-sonnet-5-5",
+      "family": "anthropic",
+      "capability": 3,
+      "cost": 2,
+      "status": "active",
+      "evidence": "inferred",
+      "reviewedOn": "2026-11-24",
+      "notes": ""
+    },
+    {
+      "cli": "junie",
+      "id": "gpt-6.2-sol",
+      "family": "openai",
+      "capability": 3,
+      "cost": 2,
+      "status": "active",
+      "evidence": "inferred",
+      "reviewedOn": "2026-11-24",
+      "notes": ""
+    },
+    {
+      "cli": "junie",
+      "id": "gpt-6.1-sol",
+      "family": "openai",
+      "capability": 3,
+      "cost": 2,
+      "status": "active",
+      "evidence": "inferred",
+      "reviewedOn": "2026-11-24",
+      "notes": ""
+    },
+    {
+      "cli": "junie",
+      "id": "gpt-6.1-terra",
+      "family": "openai",
+      "capability": 2,
+      "cost": 2,
+      "status": "active",
+      "evidence": "inferred",
+      "reviewedOn": "2026-11-24",
+      "notes": "Junie default model"
+    },
+    {
+      "cli": "junie",
+      "id": "claude-haiku-5-5",
+      "family": "anthropic",
+      "capability": 1,
+      "cost": 1,
+      "status": "active",
+      "evidence": "inferred",
+      "reviewedOn": "2026-11-24",
+      "notes": ""
+    },
+    {
+      "cli": "junie",
+      "id": "gpt-6-luna",
+      "family": "openai",
+      "capability": 1,
+      "cost": 1,
+      "status": "active",
+      "evidence": "inferred",
+      "reviewedOn": "2026-11-24",
+      "notes": ""
+    },
+    {
+      "cli": "junie",
+      "id": "gpt-5.6-luna",
+      "family": "openai",
+      "capability": 1,
+      "cost": 1,
+      "status": "active",
+      "evidence": "measured",
+      "reviewedOn": "2026-11-24",
+      "notes": "2026-11-24 probe: one task cost 0.0029 as reported by Junie"
     }
   ],
   "efforts": {
@@ -217,6 +544,11 @@
       "high",
       "xhigh",
       "max"
+    ],
+    "junie": [
+      "low",
+      "medium",
+      "high"
     ]
   }
 }
