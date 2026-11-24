@@ -158,10 +158,18 @@ OpenAI family.
 tools when they meet the Step's needs. The read-only restriction is accepted, but
 that it blocks every write is **Unverified**.
 
+On Windows, `copilot` can resolve to a Node version manager proxy (such as
+`copilot.exe` or `copilot.cmd`) that runs a batch script. That proxy rejects a
+multi-line `-p` value with `InvalidBatchScriptArg` before any model call. Run
+the package loader with `node` instead (Verified 2026-11-24 with GitHub Copilot
+CLI 1.0.115). If `copilot` is installed some other way, check that a
+multi-line `-p` value reaches the CLI before the first dispatch.
+
 PowerShell 7 implementation example:
 
 ```powershell
-copilot -C <worktree> -p (Get-Content -Raw <prompt-file>) --no-ask-user --allow-all-tools --model <model> --reasoning-effort <effort> --usage-output-file <usage-file>
+$copilotLoader = Join-Path (npm root -g).Trim() '@github\copilot\npm-loader.js'
+node $copilotLoader -C <worktree> -p (Get-Content -Raw <prompt-file>) --no-ask-user --allow-all-tools --model <model> --reasoning-effort <effort> --usage-output-file <usage-file>
 ```
 
 POSIX-shell implementation example:
@@ -210,15 +218,20 @@ third-party MCP servers; it gives a warning and does not block dispatch.
 Run `claude` from inside the Step's worktree: set the working directory to
 `<worktree>` before launching.
 
+Pass `--strict-mcp-config` without `--mcp-config` so that the run loads no MCP
+servers. Otherwise the user's MCP servers load their tool definitions into every
+run. A two-turn review measured on 2026-11-24 wrote 792,394 cache tokens and cost
+USD 6.36. With the flag, the startup context was about 47,000 tokens.
+
 Implementation example:
 ```text
-claude -p "<implementation-prompt>" --model <model> --effort <effort> --output-format json --no-session-persistence
+claude -p "<implementation-prompt>" --model <model> --effort <effort> --strict-mcp-config --output-format json --no-session-persistence
 ```
 
 Read-only review example:
 
 ```text
-claude -p "<review-prompt>" --model <model> --effort <effort> --permission-mode plan --output-format json --no-session-persistence
+claude -p "<review-prompt>" --model <model> --effort <effort> --permission-mode plan --strict-mcp-config --output-format json --no-session-persistence
 ```
 
 Tool restriction and plan mode exist, but their blocking behavior is **Unverified**.
