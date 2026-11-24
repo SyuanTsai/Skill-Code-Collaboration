@@ -1,6 +1,6 @@
 ---
 name: orchestrate-ai-delivery
-description: Plan one Jira issue or an ad-hoc requirement into Steps, dispatch each to claude, codex, copilot, or junie CLI or a built-in sub agent with an explicit model, review diffs, fix valid findings, run required tests, and stop at a human gate. Use when asked to drive or delegate implementation of a Jira issue or a described change.
+description: Plan a Jira issue or ad-hoc requirement into Steps, dispatch each to claude, codex, copilot, or junie CLI or a built-in sub agent with an explicit model, review diffs, fix valid findings, run tests, and stop at a human gate. Use when asked to drive or delegate a Jira issue or described change.
 ---
 <!--
 SPDX-FileCopyrightText: 2026 SyuanTsai
