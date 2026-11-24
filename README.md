@@ -4,6 +4,54 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Skill Code Collaboration
 
+## Overview
+
+**What it is:** Two Agent Skills for AI-assisted software delivery.
+
+**Problem it solves:** An AI controller plans one Jira issue, delegates implementation, and reviews the result. The user must approve commits, pushes, and Jira writes.
+
+**Key Skills**
+
+| Skill | What it does |
+| --- | --- |
+| [`orchestrate-ai-delivery`](skills/orchestrate-ai-delivery/SKILL.md) | Breaks one Jira issue into steps and dispatches each step to Claude CLI, Codex CLI, Copilot CLI, or a built-in subagent with an explicit model. Reviews diffs, addresses valid findings, runs required tests, and stops for human approval. |
+| [`write-implementation-prompt`](skills/write-implementation-prompt/SKILL.md) | Writes a self-contained implementation prompt scoped to the target repository and recommends an executor, an exact model, and a reasoning effort level. |
+
+**Platform:** The catalog lists both Skills for any platform. Repository validation uses PowerShell 7 on Windows, Linux, and macOS.
+
+**Quick start:**
+
+1. Install these Agent Skills via [SyuanTsai-AI-Instructions](https://github.com/SyuanTsai/SyuanTsai-AI-Instructions).
+2. Enable the opt-in `ai-delivery` profile listed in the [profile catalog](catalog/profiles.json).
+3. Invoke `orchestrate-ai-delivery` or `write-implementation-prompt` by name in your request.
+
+**License:** The repository-authored content is licensed under [Apache-2.0](LICENSE). See the [licensing scope](#license-and-scope).
+
+## 概覽
+
+**這是什麼：** 兩個用於 AI 輔助軟體交付的 Agent Skills。
+
+**解決的問題：** 由負責協調的 AI 為單一 Jira 議題規劃工作、委派實作並審查結果。Git commit、push 和寫入 Jira 都須經使用者同意。
+
+**主要 Skills**
+
+| Skill | 功能 |
+| --- | --- |
+| [`orchestrate-ai-delivery`](skills/orchestrate-ai-delivery/SKILL.md) | 將單一 Jira 議題拆成步驟，為每個步驟指定模型，再交給 Claude CLI、Codex CLI、Copilot CLI 或內建子代理程式執行。審查變更差異、處理經確認的問題、執行必要測試，並停下來等待人工核准。 |
+| [`write-implementation-prompt`](skills/write-implementation-prompt/SKILL.md) | 撰寫一份可獨立使用、以目標儲存庫為範圍的實作提示詞，並推薦執行者、確切的模型及推理強度。 |
+
+**平台：** 目錄將兩個 Skill 都列為適用於任何平台。儲存庫在 Windows、Linux 和 macOS 上使用 PowerShell 7 進行驗證。
+
+**快速開始：**
+
+1. 透過 [SyuanTsai-AI-Instructions](https://github.com/SyuanTsai/SyuanTsai-AI-Instructions) 安裝這兩個 Agent Skills。
+2. 啟用 [profile 目錄](catalog/profiles.json) 中預設停用的 `ai-delivery` profile。
+3. 在請求中指定 `orchestrate-ai-delivery` 或 `write-implementation-prompt` 的名稱來呼叫。
+
+**授權：** 本儲存庫自行撰寫的內容採用 [Apache-2.0](LICENSE) 授權。詳見[授權範圍](#license-and-scope)。
+
+---
+
 Independent Agent Skills source repository for code-delegation workflows.
 
 - Stable source ID: `code-collaboration`
