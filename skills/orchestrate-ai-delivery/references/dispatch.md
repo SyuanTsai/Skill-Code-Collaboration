@@ -252,10 +252,20 @@ Claude CLI provides no model-free availability check. Do not use
 | List models without a model call | `junie list-models` |
 | Authentication | JetBrains account sign-in or `--auth`. Keep tokens out of commands and prompts. |
 
+On Windows, `junie` resolves to the `junie.bat` launcher. The launcher parses
+arguments with cmd delayed expansion and fails with "The syntax of the command
+is incorrect" (exit 255) when the task text spans lines. It can also alter `!`
+and `%` in the text. Run `junie --version` once through the launcher so it
+applies staged updates. Then call the installed `junie.exe` directly with the
+full prompt (Verified 2026-11-24 with Junie 26.11.3). If `JUNIE_VERSION` is set,
+use that version's directory instead of the `current` file.
+
 PowerShell 7 implementation example:
 
 ```powershell
-'' | junie --task (Get-Content -Raw "<prompt-file>") --project "<worktree>" --model "<model>" --effort "<effort>" --output-format json --json-output-file "<usage-file>"
+$junieData = if ($env:JUNIE_DATA_DIR) { $env:JUNIE_DATA_DIR } else { Join-Path $HOME '.local\share\junie' }
+$junieExe = Join-Path $junieData ('versions\{0}\junie\junie.exe' -f (Get-Content -Raw (Join-Path $junieData 'current')).Trim())
+'' | & $junieExe --task (Get-Content -Raw "<prompt-file>") --project "<worktree>" --model "<model>" --effort "<effort>" --output-format json --json-output-file "<usage-file>"
 ```
 
 POSIX-shell implementation example (shell syntax shown, execution **Unverified** on POSIX):
@@ -267,7 +277,7 @@ printf '' | junie --task "$(cat "<prompt-file>")" --project "<worktree>" --model
 Code review example (read-only enforcement **Unverified**):
 
 ```powershell
-'' | junie --review --task "<review-prompt>" --project "<worktree>" --model "<model>" --effort "<effort>" --output-format json --json-output-file "<usage-file>"
+'' | & $junieExe --review --task (Get-Content -Raw "<review-prompt-file>") --project "<worktree>" --model "<model>" --effort "<effort>" --output-format json --json-output-file "<usage-file>"
 ```
 
 The Windows dispatch with `gpt-5.6-luna`, effort `low`, and `--max-steps 3`

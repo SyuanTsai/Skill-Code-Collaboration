@@ -121,8 +121,8 @@ Use orchestrate-ai-delivery in this repository on branch <branch> to correct the
 Controller: VS Code Copilot Chat in Agent mode. Execution mode: external CLI, executor junie.
 ```
 
-PowerShell 7 dispatch from the controller's terminal:
+PowerShell 7 dispatch from the controller's terminal, with `$junieExe` resolved as described in the Junie CLI section of [references/dispatch.md](references/dispatch.md):
 
 ```powershell
-'' | junie --task "<step-prompt>" --project "<step-worktree>" --model "<model>" --effort "<effort>" --output-format json --json-output-file "<usage-file>"
+'' | & $junieExe --task (Get-Content -Raw "<step-prompt-file>") --project "<step-worktree>" --model "<model>" --effort "<effort>" --output-format json --json-output-file "<usage-file>"
 ```
