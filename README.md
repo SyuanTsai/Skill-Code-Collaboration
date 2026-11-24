@@ -14,7 +14,7 @@ SPDX-License-Identifier: Apache-2.0
 
 | Skill | What it does |
 | --- | --- |
-| [`orchestrate-ai-delivery`](skills/orchestrate-ai-delivery/SKILL.md) | Breaks one Jira issue into steps and dispatches each step to Claude CLI, Codex CLI, Copilot CLI, or a built-in subagent with an explicit model. Reviews diffs, addresses valid findings, runs required tests, and stops for human approval. |
+| [`orchestrate-ai-delivery`](skills/orchestrate-ai-delivery/SKILL.md) | Breaks a Jira issue or an ad-hoc requirement into steps and dispatches each step to Claude CLI, Codex CLI, Copilot CLI, Junie CLI, or a built-in subagent with an explicit model. Reviews diffs, addresses valid findings, runs required tests, and stops for human approval. |
 | [`write-implementation-prompt`](skills/write-implementation-prompt/SKILL.md) | Writes a self-contained implementation prompt scoped to the target repository and recommends an executor, an exact model, and a reasoning effort level. |
 
 **Platform:** The catalog lists both Skills for any platform. Repository validation uses PowerShell 7 on Windows, Linux, and macOS.
@@ -37,7 +37,7 @@ SPDX-License-Identifier: Apache-2.0
 
 | Skill | 功能 |
 | --- | --- |
-| [`orchestrate-ai-delivery`](skills/orchestrate-ai-delivery/SKILL.md) | 將單一 Jira 議題拆成步驟，為每個步驟指定模型，再交給 Claude CLI、Codex CLI、Copilot CLI 或內建子代理程式執行。審查變更差異、處理經確認的問題、執行必要測試，並停下來等待人工核准。 |
+| [`orchestrate-ai-delivery`](skills/orchestrate-ai-delivery/SKILL.md) | 將 Jira 議題或沒有單號的需求拆成步驟，為每個步驟指定模型，再交給 Claude CLI、Codex CLI、Copilot CLI、Junie CLI 或內建子代理程式執行。審查變更差異、處理經確認的問題、執行必要測試，並停下來等待人工核准。 |
 | [`write-implementation-prompt`](skills/write-implementation-prompt/SKILL.md) | 撰寫一份可獨立使用、以目標儲存庫為範圍的實作提示詞，並推薦執行者、確切的模型及推理強度。 |
 
 **平台：** 目錄將兩個 Skill 都列為適用於任何平台。儲存庫在 Windows、Linux 和 macOS 上使用 PowerShell 7 進行驗證。
@@ -63,7 +63,7 @@ Independent Agent Skills source repository for code-delegation workflows.
 
 | Skill | Profile | Purpose |
 | --- | --- | --- |
-| `orchestrate-ai-delivery` | `ai-delivery` | Plan, dispatch, review, and gate delivery of one Jira issue through a selected controller and executor. |
+| `orchestrate-ai-delivery` | `ai-delivery` | Plan, dispatch, review, and gate delivery of a Jira issue or an ad-hoc requirement with a selected controller and executor, including Junie CLI. |
 | `write-implementation-prompt` | `ai-delivery` | Create a repository-scoped implementation prompt and recommend an exact available executor model. |
 
 Name a Skill or make a request matching its description to invoke it. The orchestration Skill never commits, pushes, or writes Jira without the user's consent; work-environment Jira issues remain read-only.

@@ -24,6 +24,7 @@ Cost is relative only within one CLI's billing unit:
 - Codex cost is relative plan usage.
 - Copilot cost is relative AI Credits.
 - Claude cost is relative currency or subscription usage.
+- Junie cost is relative to the per-run cost Junie reports.
 
 K1 through K4 values are not comparable across CLIs. Across vendors, compare
 capability first, then compare cost only within a model family. Evidence is
@@ -37,6 +38,8 @@ that value.
 
 1. Pick the lowest capability tier that can complete the Step reliably.
 2. At equal capability, pick the lower-cost model.
+   At equal capability and cost, pick the entry listed first for that CLI in
+   `models.json`. Entries are ordered newest generation first.
 3. Default effort is `low` for C1, `medium` for C2 and C3, and `medium` for C4.
    Raise effort only for a concrete difficulty in that Step.
 4. Use cheaper models and lower effort for routine additions, small fixes, test
@@ -46,9 +49,13 @@ that value.
    escalating; "more reliable" alone is not a reason.
 6. Do not carry an expensive model or elevated effort forward from a previous Step
    by default.
-7. State the exact model ID, effort, and reason for every delegated Step.
+7. State the exact model ID, effort, capability tier, the rating's `reviewedOn`
+   date, and the reason for every delegated Step.
 8. Never select a model whose baseline status is not `active` or whose availability
    cache status is not `available`.
+9. When a candidate's rating is overdue (`reviewOverdue` is true), prefer a
+   non-overdue model of the same capability. If only overdue models fit, select
+   one and state "rating overdue since <date>" with the reason in the Plan.
 
 Reviewers default to C3 or higher. In the limited situation where only one review
 CLI is available, raise that reviewer by one capability tier.
@@ -103,9 +110,20 @@ pwsh -File <skill>/scripts/Update-ModelAvailability.ps1 -Environment work
 ```
 
 The normal invocation returns the cache without probing when it is fresh for the
-current Taipei week. An available ID that is absent from the baseline is recorded
+current Taipei week. The check covers `claude`, `codex`, `copilot`, and `junie`.
+Junie uses `junie list-models` without calling a model. Provide empty input on
+stdin because Junie fails when stdin is a null device. Junie may automatically
+apply a staged update at startup.
+
+An available ID that is absent from the baseline is recorded
 as `unevaluated`, is never auto-selected, and produces a suggestion to update
 `references/models.json` by pull request after rating it.
+
+The result includes a `review` field with the age limit, overdue active
+ratings, and unevaluated models, including newly discovered IDs. Each model
+record has `reviewedOn` and `reviewOverdue`. Warnings prefixed with `review: `
+list overdue ratings and summarize how many models need a rating. Review data
+and warnings are recalculated even when the availability cache is fresh.
 
 If a dispatched model fails, re-check its CLI immediately, ignoring weekly
 freshness:
@@ -119,6 +137,40 @@ existing entries, mark them stale, and report "availability not updated". This d
 not block other CLIs or dispatch through previously known available models. A cache
 with any stale CLI is retried on the next invocation even when it was written during
 the current Taipei week.
+
+## Rating review
+
+Each baseline entry has a `reviewedOn` date. The `reviewMaxAgeDays` limit is 30
+days, measured using Taipei calendar dates. The weekly availability check
+reports active ratings older than that limit and models that are unevaluated.
+
+Run or schedule the rating check without probing CLIs or writing caches:
+
+```powershell
+pwsh -File <skill>/scripts/Update-ModelAvailability.ps1 -Environment personal -ReviewOnly
+```
+
+For example, in Windows Task Scheduler, run it at 09:00 on the first day of
+each month:
+
+```cmd
+schtasks /Create /SC MONTHLY /D 1 /ST 09:00 /TN "orchestrate-ai-delivery rating review" /TR "pwsh -NoProfile -File <skill>\scripts\Update-ModelAvailability.ps1 -Environment personal -ReviewOnly"
+```
+
+The command outputs JSON. Redirect it to a file or check the result in your next
+conversation.
+
+When re-rating a model, use vendor documentation or the CLI catalog
+(`official`), observed delegated runs and usage (`measured`), or indirect
+evidence (`inferred`). Update `capability`, `cost`, `status`, `evidence`,
+`notes`, and `reviewedOn`, then open a pull request. List each change and its
+evidence in the pull request description.
+
+Claude CLI does not list models. A nonexistent ID fails before invocation with
+`unrecognized_model` and incurs no charge. Older IDs the CLI still accepts,
+such as `claude-fable-5-1`, run a model and incur charges. Use the vendor's
+model list to review Claude ratings because the weekly availability check
+cannot establish which models Claude offers.
 
 ## Baseline source and maintenance
 
@@ -141,7 +193,8 @@ then run:
 pwsh -File <skill>/scripts/Update-ModelBaseline.ps1 -BaselinePath <repository>/skills/orchestrate-ai-delivery/references/models.json
 ```
 
-New IDs are added as `unevaluated`; IDs that no CLI lists in either current
+The updater reconciles models from `codex`, `copilot`, and `junie`. New IDs are
+added as `unevaluated`. IDs that their CLI does not list in either current
 environment (`personal` and `work`) become `unavailable`. Claude is skipped because
 its CLI does not list models. Rate new entries, include evidence for ratings, status, and aliases, and
 open a pull request. Review cost and capability claims independently of local
