@@ -83,7 +83,7 @@ Report in the conversation:
 - Completed work and verification results.
 - Review summary: who reviewed, each finding adopted or converted to a follow-up, and why.
 - Follow-up items, Git and stage state, and human review suggestions.
-- Controller, executor, and reviewer usage according to [references/usage-report.md](references/usage-report.md). Mark unavailable values as unavailable; never estimate them.
+- Controller, executor, and reviewer usage according to [references/usage-report.md](references/usage-report.md). Always include the controller's exact model ID and its own usage read from its session record. Mark unavailable values as unavailable; never estimate them.
 
 ### Guardrails
 
