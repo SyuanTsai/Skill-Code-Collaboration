@@ -71,6 +71,18 @@ Describe 'Code Collaboration consumer conformance' {
         $text.Contains('never include local user names, absolute paths, machine identifiers, credentials, or tokens.', [StringComparison]::Ordinal) | Should -BeTrue
     }
 
+    It 'requires controller self-usage and model ID in usage reports' {
+        $text = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills/orchestrate-ai-delivery/references/usage-report.md')
+        $text.Contains("Always list the controller's exact model ID, read from its own session record, in the Model column; never leave it blank or write only the product name.", [StringComparison]::Ordinal) | Should -BeTrue
+        $text.Contains("Read the controller's own usage from its local session record before delivery; never write it as Unavailable when that record is readable.", [StringComparison]::Ordinal) | Should -BeTrue
+        $text.Contains('Label controller usage read during the session as "known as of <UTC time>, before delivery"; it excludes the delivery turn itself. Do not estimate the remainder.', [StringComparison]::Ordinal) | Should -BeTrue
+        $text.Contains('In the Source column, write record locations with ~ or a repository-relative path, never an absolute path or user name.', [StringComparison]::Ordinal) | Should -BeTrue
+        $text.Contains('message.id', [StringComparison]::Ordinal) | Should -BeTrue
+        $text.Contains('thread_token_usage', [StringComparison]::Ordinal) | Should -BeTrue
+        $text.Contains('session.usage_record', [StringComparison]::Ordinal) | Should -BeTrue
+        $text | Should -Not -Match '[A-Za-z]:\\Users\\|/Users/|/home/'
+    }
+
     It 'requires evidence-scoped dispatch for code-evidence documentation prompts' {
         $text = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills/write-implementation-prompt/SKILL.md')
         $text.Contains('When delegated work must investigate code before writing or updating documentation (code-evidence documentation), require an evidence-scoped dispatch; for a single small documentation edit, allow a streamlined dispatch without an evidence table.', [StringComparison]::Ordinal) | Should -BeTrue
