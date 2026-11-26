@@ -411,10 +411,9 @@ command below from the repository root. `<skill-dir>` is the installed
 pwsh -NoProfile -File <skill-dir>/scripts/Test-DispatchText.ps1 -Path <prompt-file>
 ```
 
-With `pwsh -File`, pass one prompt file per run; `-ForbiddenTerm` also accepts
-a comma-joined list such as `-ForbiddenTerm name1,name2`. To pass several files
-or allowed literals at once, call the script from PowerShell instead, for
-example `pwsh -NoProfile -Command "& '<skill-dir>/scripts/Test-DispatchText.ps1' -Path '<file1>','<file2>'"`.
+With `pwsh -File`, pass one prompt file per run and run the check once for each
+file. `-ForbiddenTerm` also accepts a comma-joined list such as
+`-ForbiddenTerm name1,name2`.
 For a short built-in sub-agent prompt, invoke
 the script in PowerShell with `-Text $prompt` or pipe the string to the script.
 Check the exact string passed to the sub-agent tool. Check only the text the
