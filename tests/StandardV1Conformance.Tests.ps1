@@ -33,6 +33,8 @@ Describe 'Code Collaboration consumer conformance' {
         $normalized = $dispatch -replace '\s+', ' '
         $normalized.Contains('Never copy, move, or read CLI credential or auth files', [StringComparison]::Ordinal) | Should -BeTrue
         $normalized.Contains('Sessions, logs, and caches that an executor CLI writes under its own home directory are normal CLI behavior.', [StringComparison]::Ordinal) | Should -BeTrue
+        $normalized.Contains('Do not work around them by relocating credentials; note in the delivery which CLI wrote state outside the repository.', [StringComparison]::Ordinal) | Should -BeTrue
+        $skill.Contains('CLI state an executor writes under its own home directory is normal; note it in the delivery.', [StringComparison]::Ordinal) | Should -BeTrue
     }
 
     It 'preserves the implementation prompt output contract' {
