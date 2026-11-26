@@ -398,10 +398,10 @@ Executor CLIs use the sign-in and configuration already present in the user's
 own CLI home directories. The controller must not isolate, relocate, or
 inspect that state.
 
-- Never copy, move, or read CLI credential or auth files, such as
-  `.credentials.json`, `auth.json`, or the configuration files stored next to
-  them, including into the repository, `.git`, a worktree, or a temporary
-  directory.
+- Never copy, move, or read CLI credential or auth files, such as the sign-in
+  files a CLI keeps in its home directory or the configuration files stored
+  next to them, including into the repository, `.git`, a worktree, or a
+  temporary directory.
 - Never redirect an executor's CLI configuration or home directory through
   environment variables such as `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, and never
   launch an executor with a substitute home directory to separate its state.

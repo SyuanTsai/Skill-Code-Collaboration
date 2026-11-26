@@ -27,7 +27,7 @@ Describe 'Code Collaboration consumer conformance' {
         $skill.Contains('Never copy, move, or read CLI credential or auth files, and never redirect an executor''s CLI configuration or home directory through environment variables.', [StringComparison]::Ordinal) | Should -BeTrue
         $dispatch = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills/orchestrate-ai-delivery/references/dispatch.md')
         $dispatch.Contains('## CLI credentials and home directories', [StringComparison]::Ordinal) | Should -BeTrue
-        foreach ($token in @('`.credentials.json`', '`auth.json`', '`CLAUDE_CONFIG_DIR`', '`CODEX_HOME`')) {
+        foreach ($token in @('`CLAUDE_CONFIG_DIR`', '`CODEX_HOME`')) {
             $dispatch.Contains($token, [StringComparison]::Ordinal) | Should -BeTrue
         }
         $normalized = $dispatch -replace '\s+', ' '
