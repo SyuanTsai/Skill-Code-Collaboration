@@ -8,7 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 Verified on 2026-11-24 with claude 2.1.317, codex-cli 0.166.0, GitHub Copilot CLI 1.0.105, and Junie 26.11.2 (Windows host). Re-verify with each CLI's --help after upgrades.
 
 Record usage after every controller, executor, and reviewer run. Use the table
-format below. Use the last cumulative value for a resumed session and list
+format below. For a resumed session, follow Resumed sessions below. List
 separate rows when the source reports usage by agent or model.
 
 | Role | Step | Tool (CLI or sub agent) | Model | Effort | Input tokens | Output tokens | Credit (with unit) | Cost (currency) | Source |
@@ -26,15 +26,30 @@ whenever a value is absent. For example, use `Unavailable — not reported by co
 Never estimate, infer, or back-calculate a missing field.
 
 Keep units separate. Codex reports tokens only. Copilot reports AI Credits and
-raw `totalNanoAiu` for the same usage. Count each run once in the AI Credits total.
+raw `totalNanoAiu` for the same usage. Count each session once in the AI Credits
+total, using the last usage file or summary of a resumed Copilot session.
 Claude reports `total_cost_usd` as currency. Preserve Junie's reported `cost`
 when currency is unstated and leave it out of totals. Sum only compatible units.
 
-For a resumed session, count a session-cumulative figure once: retain its last
-cumulative value only. Example: three resumes report 10k, then 25k, then 40k
-cumulative tokens. Report 40k, not 75k. If it is unclear whether a value is
-per-turn or cumulative, state that uncertainty and list raw values per run without
-summing them.
+## Resumed sessions
+
+Verified on 2026-11-26 on Windows with codex-cli 0.166.0, claude 2.1.317, and
+GitHub Copilot CLI 1.0.116. Junie CLI resume was not verified.
+
+Count each session once. Keep only the last value of a session-cumulative
+figure; sum a per-invocation figure across invocations. Never add a cumulative
+figure to a per-invocation figure from the same session. Example: three resumes
+report 10k, then 25k, then 40k cumulative tokens. Report 40k, not 75k.
+
+| CLI | Resumed-session behavior | What to record |
+| --- | --- | --- |
+| Codex CLI | `turn.completed.usage` is cumulative across all `exec` and `exec resume` runs on the thread. | Keep the last value: 43,794 / 190 followed by 87,976 / 290 means 87,976 input / 290 output, not 131,770 / 480. |
+| Claude Code | `usage` covers the current invocation; `modelUsage` and `total_cost_usd` are session-cumulative. | Sum `usage` across invocations or take the last `modelUsage` and `total_cost_usd`; use the other as a cross-check. Never sum `modelUsage` or `total_cost_usd` across invocations. For example, 149 + 150 output tokens equals the last `modelUsage` of 299; keep the last cost, 0.00532704 USD. |
+| GitHub Copilot CLI | The usage-file JSON (`totalNanoAiu`, `tokenDetails`, `modelMetrics`, `agentMetrics`, and `totalUserRequests`) and non-silent text summary are session-cumulative; `sessionStartTime` remains the initial start time. | Keep the last usage file or summary: 212,218,500 followed by 247,579,500 nanoAIU means 0.25 AI Credits, not 0.46. |
+| Junie CLI | Resume behavior was not verified. | Apply the uncertainty rule below. |
+
+If it is unclear whether a value is per-turn or cumulative, state that
+uncertainty and list raw values per run without summing them.
 
 ## Per-source notes
 
