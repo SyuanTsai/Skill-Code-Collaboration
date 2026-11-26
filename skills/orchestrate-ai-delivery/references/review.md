@@ -54,6 +54,14 @@ Fix valid findings to zero. A finding is valid when it shows one of these condit
 - Cross-Step integration is incorrect.
 - A requirement listed in the Jira description is violated.
 - A path added by the change can bypass, weaken, or forge an existing check, validation, or evidence binding.
+- The change regresses behavior relative to the baseline: an input or environment that succeeded before the change, such as a file-name length, a permission, or a platform difference, now fails.
+- The change modifies behavior that the requirement states must remain unchanged.
+
+### Unchanged Behavior and Baseline Regressions
+
+- When the requirement states that behavior must remain unchanged, do not modify that behavior. If a pre-existing defect is found in it, preserve the original behavior, record the defect as a follow-up item, and ask the user to decide.
+- A functional regression relative to the baseline is a valid finding and must be fixed, even when the controller's own change introduced it. Never downgrade it to a follow-up item.
+- Only suggestions such as hardening or refactoring that do not satisfy a Valid Findings condition become follow-up items.
 
 ### Finding Sources
 
@@ -68,6 +76,7 @@ Record these without stopping progress when they do not satisfy a Valid Findings
 - Optimization.
 - Hardening that only strengthens existing behavior; without it, the change is no weaker than before.
 - Pre-existing problems unrelated to the change.
+- Pre-existing defects in behavior that the requirement states must remain unchanged; preserve the original behavior and ask the user to decide.
 
 Use this tie-breaker: **Does this satisfy a Valid Findings condition?**
 
@@ -84,6 +93,8 @@ At the cumulative Jira Review, verify:
 - Every acceptance criterion against the completed behavior.
 - The cumulative diff, not only each isolated Step diff.
 - Cross-Step integration and interactions.
+- Baseline regressions: every input or environment that succeeded at the baseline, such as a file-name length after an added prefix or suffix, file permissions or attributes, and platform differences, still succeeds after the change.
+- Behavior that the requirement states must remain unchanged is unchanged, including its pre-existing defects.
 - All required locally executable checks, run by the controller; remote-only CI remains in the post-publication finding loop.
 - Each mandatory synchronization rule in repository instructions, such as `AGENTS.md`, `CONTRIBUTING`, and CI workflows.
 - Every Jira acceptance criterion maps to a completed change; do not record an acceptance requirement as a follow-up. Follow-ups are only suggestions outside acceptance criteria.
@@ -123,6 +134,11 @@ the `Valid Findings` section above):
 Limit the review to the Step objective, Jira acceptance criteria, and Valid
 Findings conditions. Do not raise hardening, refactoring, style, optimization,
 or extra features that do not satisfy a Valid Findings condition.
+
+Check for regressions relative to the baseline: inputs or environments that
+succeeded before the change, such as file-name length, permissions, or platform
+differences, must still succeed. Also check that behavior the requirement states
+must remain unchanged was not modified, even to fix a pre-existing defect.
 
 For every valid finding, cite the applicable Valid Findings condition, the
 repository-relative file and line, and concrete evidence. If there are no valid
