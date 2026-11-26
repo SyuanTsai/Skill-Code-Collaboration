@@ -49,11 +49,11 @@ Describe 'orchestrate-ai-delivery pre-send text check' {
         $findings[0].Kind | Should -BeExactly 'posix-home-path'
     }
 
-    It 'does not report escaped regular expressions or escape sequences as UNC paths' -ForEach @(
-        @{ Text = '"pattern": "\\d+\\.\\d+"' }
-        @{ Text = 'Use regex \\w+\\s+ here' }
-        @{ Text = '"msg": "a\\nb\\tc"' }
-        @{ Text = 'grep -E "\\bfoo\\b"' }
+    It 'does not report <Name> as a UNC path' -ForEach @(
+        @{ Name = 'escaped digit pattern'; Text = '"pattern": "\\d+\\.\\d+"' }
+        @{ Name = 'escaped word and space classes'; Text = 'Use regex \\w+\\s+ here' }
+        @{ Name = 'escaped newline and tab'; Text = '"msg": "a\\nb\\tc"' }
+        @{ Name = 'escaped word boundary'; Text = 'grep -E "\\bfoo\\b"' }
     ) {
         $findings = @(& $script:ScriptPath -Text $Text -NoEnvironmentTerm 6>$null)
         $LASTEXITCODE | Should -Be 0
