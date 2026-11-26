@@ -404,6 +404,18 @@ and `references/usage-report.md` together.
 2. Use repository-relative paths only. Prompts and reports must not contain user
    names, absolute paths, machine identifiers, credentials, tokens, or sensitive
    full outputs.
+   Before sending any prompt, review instructions, or delivery content, check for
+   and remove Windows drive paths, `/Users/<name>`, `/home/<name>`, and user names.
+   This check applies to external CLIs and built-in sub agents. Pass the working
+   directory through `-C` where supported or shell cwd for external CLIs; describe
+   built-in sub-agent worktree locations relative to the repository root.
+   A reusable PowerShell check is `$text -match '(?i)(?<![a-z0-9+.-])[a-z]:[\\/]|/(Users|home)/[^/\s]+'`.
+   Also check for the local user name literally; the regex cannot detect it alone.
+   Never read, copy, move, or rewrite any CLI credential or auth file. Never
+   override CLI configuration-directory or home environment variables for
+   executors, including `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `COPILOT_HOME`.
+   CLI-written sessions, logs, and trust settings in its home directory are normal
+   behavior; disclose them in delivery. Never relocate credentials to avoid them.
 3. Dispatch only work required for the objective. Record out-of-scope discoveries
    as follow-up items. Executors never commit or push. Every model-calling Codex
    command (`exec`, `exec resume`, or `exec review`) must pass an explicit

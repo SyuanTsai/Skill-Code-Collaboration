@@ -8,8 +8,9 @@ SPDX-License-Identifier: Apache-2.0
 Verified on 2026-11-24 with claude 2.1.317, codex-cli 0.166.0, GitHub Copilot CLI 1.0.105, and Junie 26.11.2 (Windows host). Re-verify with each CLI's --help after upgrades.
 
 Record usage after every controller, executor, and reviewer run. Use the table
-format below. For a resumed session, follow Resumed sessions below. List
-separate rows when the source reports usage by agent or model.
+format below. List the exact model ID for the controller and every role; resolve
+aliases from the actual usage source. For a resumed session, follow Resumed
+sessions below. List separate rows when the source reports usage by agent or model.
 
 | Role | Step | Tool (CLI or sub agent) | Model | Effort | Input tokens | Output tokens | Credit (with unit) | Cost (currency) | Source |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -24,6 +25,33 @@ separate rows when the source reports usage by agent or model.
 Write `Unavailable` (or the conversation-language equivalent) and the reason
 whenever a value is absent. For example, use `Unavailable — not reported by codex exec`.
 Never estimate, infer, or back-calculate a missing field.
+
+For a controller session still running at delivery, read its available cumulative
+usage immediately before delivery and label it `cumulative through pre-delivery`.
+Do not mark the entire controller row Unavailable when a readable source exists;
+only unavailable fields get that label and a reason. These local sources are for
+usage reads only. In Source, name only events or fields, never local absolute
+paths or user names. Do not paste raw session records into reports.
+
+### Controller sources
+
+- Claude Code: read `~/.claude/projects/<project-key>/<session-id>.jsonl`.
+  Deduplicate assistant events by `message.id`, then sum `message.usage` fields
+  `input_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, and
+  `output_tokens`; attribute exact models using `message.model`. Non-interactive
+  `claude -p --output-format json` also returns `modelUsage` at completion.
+- Codex CLI: read `~/.codex/sessions/YYYY/MM/DD/rollout-*-<thread-id>.jsonl`.
+  Take the last `event_msg` / `token_count` event's `info.total_token_usage`, a
+  thread-cumulative value. Read the exact model ID from `turn_context.model`.
+- Copilot CLI: read `~/.copilot/session-state/<session-id>/events.jsonl`.
+  `session.usage_checkpoint.totalNanoAiu` is cumulative through that checkpoint
+  and readable before delivery. At shutdown, `session.shutdown.accountingSnapshot`
+  (`totalNanoAiu`, `tokenDetails`) and `modelMetrics` are session-cumulative.
+  Use the actual model IDs in metrics or session model events.
+
+Keep available cache counters separate from uncached input and explain which
+counters the table includes. Do not add an aggregate input count to its cache
+subset. Do not count parent/model aggregates again alongside their agent rows.
 
 Keep units separate. Codex reports tokens only. Copilot reports AI Credits and
 raw `totalNanoAiu` for the same usage. Count each session once in the AI Credits
@@ -59,8 +87,8 @@ uncertainty and list raw values per run without summing them.
 | GitHub Copilot CLI | Prefer the JSON from `--usage-output-file <file>`. `agentMetrics` lists `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `reasoningTokens`, and `totalNanoAiu` by agent and model. Convert only at the ratio verified on 2026-11-24: AI Credits = `totalNanoAiu` / 1,000,000,000. Note the conversion and source field in the Source column. Use the non-silent text summary as a cross-check. |
 | Claude Code | The logged-in test verified JSON fields and values for `usage.input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `output_tokens`, `modelUsage`, `subagent_stats`, and `total_cost_usd`. `modelUsage` reports `inputTokens`, `outputTokens`, `cacheReadInputTokens`, `cacheCreationInputTokens`, and `costUSD` by model, including models used by sub agents. `costUSD` and `total_cost_usd` are currency amounts calculated at list prices. |
 | Junie CLI | Record every `llmUsage` entry, including auxiliary models. Each entry reports `model`, `calls`, `cost`, `inputTokens`, `cacheInputTokens`, `cacheCreateTokens`, and `outputTokens`. Record `cost` as reported and write `currency not stated by Junie` when the currency is absent. Leave amounts with unstated currency unconverted and out of totals. |
-| Built-in sub agents (Claude Code) | Interactive results report only total tokens, tool-call count, and duration. `claude -p --output-format json` reports `modelUsage` by model and `subagent_stats` counts. Use model-level attribution for `modelUsage`. |
-| Built-in sub agents (GitHub Copilot CLI) | Use `agentMetrics` from `--usage-output-file` to verify and report usage by sub-agent ID and actual model. |
+| Built-in sub agents (Claude Code) | Read transcripts under `~/.claude/projects/<project-key>/<session-id>/subagents/`; deduplicate assistant events by `message.id` and sum `message.usage` per agent and exact `message.model`. Interactive results report only total tokens, tool-call count, and duration. `claude -p --output-format json` reports `modelUsage` by model and `subagent_stats` counts. Use model-level attribution for `modelUsage`. |
+| Built-in sub agents (GitHub Copilot CLI) | Use `session.shutdown.agentMetrics` or `agentMetrics` from `--usage-output-file` to verify and report usage by sub-agent ID and actual model. |
 | Built-in sub agents (Codex CLI) | The parent's `turn.completed.usage` excludes sub agents. Report `Unavailable — not reported by codex exec` unless the controller can read the sub agent's total token count from local Codex thread state. Report that value as total tokens. Mark the token breakdown unavailable. |
 
 ## Waste note

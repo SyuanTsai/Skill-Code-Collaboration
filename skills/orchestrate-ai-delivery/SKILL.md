@@ -52,14 +52,16 @@ In built-in sub agent mode, no executor CLI is required. Before the first dispat
 
 - Base the Plan, Steps, and Review on the Jira issue or on the Objective and Acceptance Criteria the controller writes in the Plan from the user's requirement. For Jira work, comments and handoffs are supplementary. A comment explicitly marked authoritative overrides the description.
 - Map every change to the objective or an acceptance criterion.
-- Preserve progress: reviewer suggestions outside the agreed scope, including hardening, refactoring, style, and extra features, become follow-up items and do not stop delivery.
+- Preserve explicitly required behavior, including existing exceptions. Keep pre-existing defects unchanged when behavior preservation is required; report them as follow-up items for the user's decision.
+- A functional regression relative to baseline is a valid finding: fix and re-verify it, never defer it. Previously successful inputs, filenames, permissions, platforms, and environments must still work.
+- Preserve progress: only suggestions outside Valid Findings, such as hardening, refactoring, style, and extra features, become follow-up items and do not stop delivery.
 - Review and findings occur after implementation.
 - Define pre-publication required checks as tests named by the work source plus affected CI tests reproducible locally, such as licensing or inventory tests for new tracked files. The controller runs them, selects the repository-declared runner version, and confirms every execution ran more than zero tests. Remote-only CI belongs to the post-publication loop.
 
 ### Steps
 
 1. **Plan:** Before planning, read repository instructions and CI workflows. Define the Objective and Acceptance Criteria from the Jira issue or, without an issue key, write them from the user's requirement. Define the Scope, required Steps, and verification method, including mandatory synchronization rules, affected locally reproducible CI checks, and remote workflows. Map every acceptance criterion to a Step. Write each Step as a file- and function-level spec: change locations, behavior, test list, and acceptance. Classify each Step with the work-type tiers in [references/models.md](references/models.md), then choose its executor and the review CLIs, each with an exact model, effort, and reason, and show them in the Plan. Run independent Steps in parallel, each in its own Git worktree when it touches the repository.
-2. **Dispatch:** Produce every Step prompt with the `write-implementation-prompt` Skill, passing it the executor, model, effort, and reason fixed in the Plan, including objective, allowed files, scope, acceptance criteria, required tests, and completion report. Launch it with the executor and model chosen in the Plan using [references/dispatch.md](references/dispatch.md), and record the dispatch line it specifies.
+2. **Dispatch:** Produce every Step prompt with the `write-implementation-prompt` Skill, passing it the executor, model, effort, and reason fixed in the Plan, including objective, allowed files, scope, acceptance criteria, required tests, and completion report. Before sending prompts, review instructions, or delivery content, check for and remove Windows drive paths, `/Users/<name>`, `/home/<name>`, and user names. Apply this check to external CLIs and built-in sub agents. Pass the working directory through `-C` or shell cwd for external CLIs; describe sub-agent worktrees relative to the repository root. Launch it with the executor and model chosen in the Plan using [references/dispatch.md](references/dispatch.md), and record the dispatch line it specifies.
 3. **Step Review:** Have the controller and review CLI both review the implemented Step using [references/review.md](references/review.md).
 4. **Judge and diagnose findings:** Verify that each finding exists and satisfies a [Valid Findings](references/review.md) condition. For each valid finding or test failure, locate the root cause yourself from logs and code and write the smallest exact fix; record everything else as a follow-up item.
 5. **Fix and re-review:** Classify the fix again with the work-type tiers, dispatch it to a new session under the thread strategy in [references/dispatch.md](references/dispatch.md), then re-review only the fixed part and related regressions.
@@ -88,6 +90,8 @@ Report in the conversation:
 
 - Do not use budget fields, spending caps, or budget-based confirmations. Minimize unnecessary consumption instead.
 - Use repository-relative paths only.
+- Never read, copy, move, or rewrite any CLI credential or auth file. Never override CLI configuration-directory or home environment variables for executors, including `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `COPILOT_HOME`.
+- CLI-written sessions, logs, and trust settings in its home directory are normal behavior; disclose them in delivery. Never relocate credentials to avoid these writes.
 - Keep work without a Jira issue in the conversation and skip Jira writes.
 - Never commit automatically.
 - Follow the repository's own instructions.

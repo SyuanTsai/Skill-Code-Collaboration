@@ -22,6 +22,72 @@ Describe 'Code Collaboration consumer conformance' {
         $text.Contains('If execution mode is missing, ask; never assume it.', [StringComparison]::Ordinal) | Should -BeTrue
     }
 
+    It 'requires pre-delivery controller usage and exact model attribution' {
+        $text = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills/orchestrate-ai-delivery/references/usage-report.md')
+        foreach ($rule in @('cumulative through pre-delivery', 'message.id', 'message.usage',
+            'info.total_token_usage', 'turn_context.model', 'session.usage_checkpoint.totalNanoAiu',
+            'session.shutdown.accountingSnapshot', 'session.shutdown.agentMetrics',
+            'never local absolute', 'exact model ID', 'subagents/')) {
+            $text.Contains($rule, [StringComparison]::Ordinal) | Should -BeTrue
+        }
+    }
+
+    It 'distinguishes resumed invocation usage from session totals' {
+        $text = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills/orchestrate-ai-delivery/references/usage-report.md')
+        foreach ($rule in @('## Resumed sessions', 'cumulative across all `exec` and `exec resume` runs',
+            '`usage` covers the current invocation', '`modelUsage` and `total_cost_usd` are session-cumulative',
+            'Never add a cumulative', 'Count each session once')) {
+            $text.Contains($rule, [StringComparison]::Ordinal) | Should -BeTrue
+        }
+    }
+
+    It 'forbids credential relocation and executor CLI home overrides' {
+        foreach ($relative in @('SKILL.md', 'references/dispatch.md')) {
+            $text = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot "skills/orchestrate-ai-delivery/$relative")
+            foreach ($rule in @('Never read, copy, move, or rewrite any CLI credential or auth file.',
+                'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'COPILOT_HOME', 'trust settings', 'disclose them in delivery')) {
+                $text.Contains($rule, [StringComparison]::Ordinal) | Should -BeTrue
+            }
+        }
+    }
+
+    It 'checks dispatch privacy for external CLIs and built-in sub agents before sending' {
+        foreach ($relative in @('SKILL.md', 'references/dispatch.md')) {
+            $text = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot "skills/orchestrate-ai-delivery/$relative")
+            foreach ($rule in @('Before sending', 'Windows drive paths', '/Users/<name>', '/home/<name>',
+                'user names', 'shell cwd', 'relative to the repository root')) {
+                $text.Contains($rule, [StringComparison]::Ordinal) | Should -BeTrue
+            }
+        }
+    }
+
+    It 'detects private paths without mistaking URLs for drive paths' {
+        $pattern = '(?i)(?<![a-z0-9+.-])[a-z]:[\\/]|/(Users|home)/[^/\s]+'
+        $dispatch = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills/orchestrate-ai-delivery/references/dispatch.md')
+        $dispatch.Contains($pattern, [StringComparison]::Ordinal) | Should -BeTrue
+
+        foreach ($value in @('C:\work\repo', 'd:/src', '"C:\x"', '/Users/alice/repo', '/home/bob/x')) {
+            $value | Should -Match $pattern
+        }
+        foreach ($value in @('https://example.invalid/requirements', 'http://example.invalid/spec',
+            'skills/orchestrate-ai-delivery/SKILL.md', './tests/a.ps1')) {
+            $value | Should -Not -Match $pattern
+        }
+    }
+
+    It 'preserves required behavior and treats baseline regressions as valid findings' {
+        foreach ($relative in @('SKILL.md', 'references/review.md')) {
+            $text = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot "skills/orchestrate-ai-delivery/$relative")
+            foreach ($rule in @('Preserve explicitly required behavior', 'pre-existing defects',
+                "user's decision", 'regression relative to baseline', 're-verify')) {
+                $text.Contains($rule, [StringComparison]::Ordinal) | Should -BeTrue
+            }
+        }
+        $review = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills/orchestrate-ai-delivery/references/review.md')
+        $review.Contains('Compare behavior with baseline:', [StringComparison]::Ordinal) | Should -BeTrue
+        $review.Contains('temporary-file suffixes', [StringComparison]::Ordinal) | Should -BeTrue
+    }
+
     It 'preserves the implementation prompt output contract' {
         $text = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills/write-implementation-prompt/SKILL.md')
         foreach ($heading in @('Changed files', 'Summary', 'Test commands', 'Test results', 'Blockers')) {

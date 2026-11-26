@@ -50,6 +50,9 @@ Fix valid findings to zero. A finding is valid when it shows one of these condit
 - The objective is not achieved.
 - An acceptance criterion is not met.
 - The change introduces a functional bug or regression.
+- A functional regression relative to baseline makes previously successful inputs,
+  filenames, permissions, platforms, or environments fail. Fix and re-verify it;
+  never downgrade it to a follow-up, even if characterized as hardening.
 - A required test is missing or failing.
 - Cross-Step integration is incorrect.
 - A requirement listed in the Jira description is violated.
@@ -69,6 +72,11 @@ Record these without stopping progress when they do not satisfy a Valid Findings
 - Hardening that only strengthens existing behavior; without it, the change is no weaker than before.
 - Pre-existing problems unrelated to the change.
 
+Preserve explicitly required behavior, including existing exceptions. When the
+requirement says behavior must remain unchanged, keep pre-existing defects and
+report them as follow-up items for the user's decision. Fixing them violates that
+constraint; regressions introduced by this change must still be fixed.
+
 Use this tie-breaker: **Does this satisfy a Valid Findings condition?**
 
 Collect all findings from one review round before dispatching fixes once. Merge small cleanups into a required fix only when that keeps the fix small and coherent.
@@ -84,6 +92,8 @@ At the cumulative Jira Review, verify:
 - Every acceptance criterion against the completed behavior.
 - The cumulative diff, not only each isolated Step diff.
 - Cross-Step integration and interactions.
+- Functional regressions relative to baseline, including boundary-length filenames
+  when temporary-file suffixes are added, permissions, platforms, and environments.
 - All required locally executable checks, run by the controller; remote-only CI remains in the post-publication finding loop.
 - Each mandatory synchronization rule in repository instructions, such as `AGENTS.md`, `CONTRIBUTING`, and CI workflows.
 - Every Jira acceptance criterion maps to a completed change; do not record an acceptance requirement as a follow-up. Follow-ups are only suggestions outside acceptance criteria.
@@ -112,6 +122,10 @@ Diff or range to review:
 
 Required tests:
 <REQUIRED_TESTS>
+
+Compare behavior with baseline: check previously successful inputs, boundary-length
+filenames (including temporary-file suffixes), permissions, platforms, and
+environments. Preserve behavior explicitly required to remain unchanged.
 
 Valid Findings conditions (replace this placeholder with the complete list from
 the `Valid Findings` section above):
