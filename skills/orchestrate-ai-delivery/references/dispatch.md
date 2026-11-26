@@ -459,6 +459,27 @@ the repository root (for example, `<worktree-dir>/<step>`) and tell the sub
 agent to resolve every path from that worktree. Never paste the absolute
 worktree path into a prompt in either mode.
 
+## CLI credentials and home directories
+
+Executor CLIs use the sign-in and configuration already present in the user's
+own CLI home directories. The controller must not isolate, relocate, or
+inspect that state.
+
+- Never copy, move, or read CLI credential or auth files, such as the sign-in
+  files a CLI keeps in its home directory or the configuration files stored
+  next to them, including into the repository, `.git`, a worktree, or a
+  temporary directory.
+- Never redirect an executor's CLI configuration or home directory through
+  environment variables such as `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, and never
+  launch an executor with a substitute home directory to separate its state.
+- Sessions, logs, and caches that an executor CLI writes under its own home
+  directory are normal CLI behavior. Do not work around them by relocating
+  credentials; note in the delivery which CLI wrote state outside the
+  repository.
+- If a CLI is not signed in or cannot run with its own home directory, stop and
+  ask the user to sign in or fix the configuration instead of supplying
+  credentials another way.
+
 ## Dispatch rules
 
 1. Create every executor prompt with the `write-implementation-prompt` Skill. It

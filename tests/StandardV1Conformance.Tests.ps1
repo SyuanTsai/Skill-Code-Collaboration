@@ -22,6 +22,21 @@ Describe 'Code Collaboration consumer conformance' {
         $text.Contains('If execution mode is missing, ask; never assume it.', [StringComparison]::Ordinal) | Should -BeTrue
     }
 
+    It 'forbids copying CLI credentials or redirecting CLI home directories' {
+        $skill = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills/orchestrate-ai-delivery/SKILL.md')
+        $skill.Contains('Never copy, move, or read CLI credential or auth files, and never redirect an executor''s CLI configuration or home directory through environment variables.', [StringComparison]::Ordinal) | Should -BeTrue
+        $dispatch = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills/orchestrate-ai-delivery/references/dispatch.md')
+        $dispatch.Contains('## CLI credentials and home directories', [StringComparison]::Ordinal) | Should -BeTrue
+        foreach ($token in @('`CLAUDE_CONFIG_DIR`', '`CODEX_HOME`')) {
+            $dispatch.Contains($token, [StringComparison]::Ordinal) | Should -BeTrue
+        }
+        $normalized = $dispatch -replace '\s+', ' '
+        $normalized.Contains('Never copy, move, or read CLI credential or auth files', [StringComparison]::Ordinal) | Should -BeTrue
+        $normalized.Contains('Sessions, logs, and caches that an executor CLI writes under its own home directory are normal CLI behavior.', [StringComparison]::Ordinal) | Should -BeTrue
+        $normalized.Contains('Do not work around them by relocating credentials; note in the delivery which CLI wrote state outside the repository.', [StringComparison]::Ordinal) | Should -BeTrue
+        $skill.Contains('CLI state an executor writes under its own home directory is normal; note it in the delivery.', [StringComparison]::Ordinal) | Should -BeTrue
+    }
+
     It 'preserves the unchanged-behavior and baseline-regression finding policy' {
         $review = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills/orchestrate-ai-delivery/references/review.md')
         foreach ($sentence in @(
