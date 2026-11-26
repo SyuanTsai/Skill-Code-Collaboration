@@ -60,7 +60,7 @@ In built-in sub agent mode, no executor CLI is required. Before the first dispat
 ### Steps
 
 1. **Plan:** Before planning, read repository instructions and CI workflows. Define the Objective and Acceptance Criteria from the Jira issue or, without an issue key, write them from the user's requirement. Define the Scope, required Steps, and verification method, including mandatory synchronization rules, affected locally reproducible CI checks, and remote workflows. Map every acceptance criterion to a Step. Write each Step as a file- and function-level spec: change locations, behavior, test list, and acceptance. Classify each Step with the work-type tiers in [references/models.md](references/models.md), then choose its executor and the review CLIs, each with an exact model, effort, and reason, and show them in the Plan. Run independent Steps in parallel, each in its own Git worktree when it touches the repository.
-2. **Dispatch:** Produce every Step prompt with the `write-implementation-prompt` Skill, passing it the executor, model, effort, and reason fixed in the Plan, including objective, allowed files, scope, acceptance criteria, required tests, and completion report. Launch it with the executor and model chosen in the Plan using [references/dispatch.md](references/dispatch.md), and record the dispatch line it specifies.
+2. **Dispatch:** Produce every Step prompt with the `write-implementation-prompt` Skill, passing it the executor, model, effort, and reason fixed in the Plan, including objective, allowed files, scope, acceptance criteria, required tests, and completion report. Launch it with the executor and model chosen in the Plan using [references/dispatch.md](references/dispatch.md), and record the dispatch line it specifies. Before sending, run the pre-send check in [references/dispatch.md](references/dispatch.md) on the exact prompt and pass the working directory as a launch argument or relative description, never as an absolute path in the prompt.
 3. **Step Review:** Have the controller and review CLI both review the implemented Step using [references/review.md](references/review.md).
 4. **Judge and diagnose findings:** Verify that each finding exists and satisfies a [Valid Findings](references/review.md) condition. For each valid finding or test failure, locate the root cause yourself from logs and code and write the smallest exact fix; record everything else as a follow-up item. A regression relative to the baseline is valid even when the controller's own change introduced it.
 5. **Fix and re-review:** Classify the fix again with the work-type tiers, dispatch it to a new session under the thread strategy in [references/dispatch.md](references/dispatch.md), then re-review only the fixed part and related regressions.
@@ -88,7 +88,7 @@ Report in the conversation:
 ### Guardrails
 
 - Do not use budget fields, spending caps, or budget-based confirmations. Minimize unnecessary consumption instead.
-- Use repository-relative paths only.
+- Use repository-relative paths only, and run the pre-send check on every prompt and delivery.
 - Never copy, move, or read CLI credential or auth files, and never redirect an executor's CLI configuration or home directory through environment variables. CLI state an executor writes under its own home directory is normal; note it in the delivery. See the CLI credentials and home directories section of [references/dispatch.md](references/dispatch.md).
 - Keep work without a Jira issue in the conversation and skip Jira writes.
 - Never commit automatically.
@@ -96,7 +96,7 @@ Report in the conversation:
 
 ### References
 
-- [references/dispatch.md](references/dispatch.md): execution modes, CLI invocation, spec-only dispatch, parallelism, thread strategy, and the dispatch record, plus the Built-in sub-agent reference, Controller hosts, and Adding another CLI sections.
+- [references/dispatch.md](references/dispatch.md): execution modes, CLI invocation, spec-only dispatch, parallelism, thread strategy, and the dispatch record, plus the Built-in sub-agent reference, Controller hosts, Adding another CLI, Pre-send check, and Working directory hand-off sections. Run the pre-send check with `scripts/Test-DispatchText.ps1`.
 - [references/review.md](references/review.md): review composition, finding policy, and review prompt template.
 - [references/models.md](references/models.md) and [references/models.json](references/models.json): model selection, work-type tiers, and baseline list; perform the weekly availability check with `scripts/Update-ModelAvailability.ps1`.
 - [references/usage-report.md](references/usage-report.md): usage reporting.
