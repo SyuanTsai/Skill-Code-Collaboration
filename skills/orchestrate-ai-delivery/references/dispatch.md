@@ -392,6 +392,74 @@ the probes in `scripts/Update-ModelAvailability.ps1`, the CLI list in
 `scripts/Update-ModelBaseline.ps1`, the corresponding tests, this reference,
 and `references/usage-report.md` together.
 
+## Pre-send check
+
+Check every Step, fix, resume, and review prompt before sending it to an
+external CLI or built-in sub agent. Use the same check in both modes and before
+posting any delivery, usage report, or Jira comment draft.
+
+Remove absolute drive or home paths (patterns `[A-Za-z]:\`, `/Users/<name>`,
+and `/home/<name>`), UNC paths, the user's name, and machine identifiers.
+Replace paths with repository-relative paths or `<placeholder>` values. Inspect
+the final text for credentials and tokens and remove them before sending.
+
+Write the exact final text to a UTF-8 file outside the repository and run the
+command below from the repository root. `<skill-dir>` is the installed
+`orchestrate-ai-delivery` Skill directory.
+
+```text
+pwsh -NoProfile -File <skill-dir>/scripts/Test-DispatchText.ps1 -Path <prompt-file>
+```
+
+With `pwsh -File`, pass one prompt file per run; `-ForbiddenTerm` also accepts
+a comma-joined list such as `-ForbiddenTerm name1,name2`. To pass several files
+or allowed literals at once, call the script from PowerShell instead, for
+example `pwsh -NoProfile -Command "& '<skill-dir>/scripts/Test-DispatchText.ps1' -Path '<file1>','<file2>'"`.
+For a short built-in sub-agent prompt, invoke
+the script in PowerShell with `-Text $prompt` or pipe the string to the script.
+Check the exact string passed to the sub-agent tool. Check only the text the
+executor or reader receives. Launch arguments such as the prompt-file and
+usage-file paths are outside the check.
+
+The script detects drive paths with either slash direction, including
+`file:///` drive URLs and JSON-escaped paths. It also detects UNC paths, POSIX
+home paths (including `/root/`), and the current user name, machine name, and
+home directory. `-NoEnvironmentTerm` skips the automatic terms. Add
+controller-known names such as the Git author name with
+`-ForbiddenTerm <string[]>`, which matches literal terms case-insensitively.
+Use `-AllowLiteral <string[]>` only for an exact documented sample the Step
+genuinely needs, and record why in the dispatch record.
+
+Send only on exit code 0. On exit code 1, use the log-safe findings (`Source`,
+`Line`, `Column`, `Kind` only) to rewrite the reported lines with relative paths
+or placeholders and rerun the check.
+A missing file is an error. Never send on a non-zero result.
+The script runs on PowerShell 7 on Windows, Linux, and macOS, and on Windows
+PowerShell 5.1. If `pwsh` is unavailable, check manually against the same
+patterns before sending and record `pre-send check: manual` in the dispatch
+record.
+
+## Working directory hand-off
+
+For an external CLI, pass the Step worktree through a launch argument or the
+shell's current directory. Prefer launching from the repository root with a
+relative `<worktree>` such as the repository's own worktree directory.
+
+- Use `codex exec -C <worktree>`, `copilot -C <worktree>`, or
+  `junie --project <worktree>`.
+- For `claude -p` and `codex exec resume`, set the shell's current directory to
+  `<worktree>` first.
+
+In the prompt, say "the current working directory is the Step worktree root"
+and use repository-relative paths.
+
+A built-in sub agent usually starts in the controller's working directory. If
+the sub-agent tool offers a worktree or working-directory option, pass the
+location through that option. Otherwise, describe the Step worktree relative to
+the repository root (for example, `<worktree-dir>/<step>`) and tell the sub
+agent to resolve every path from that worktree. Never paste the absolute
+worktree path into a prompt in either mode.
+
 ## Dispatch rules
 
 1. Create every executor prompt with the `write-implementation-prompt` Skill. It
@@ -403,7 +471,9 @@ and `references/usage-report.md` together.
    context. If a Skill or model list cannot be confirmed, state what is missing.
 2. Use repository-relative paths only. Prompts and reports must not contain user
    names, absolute paths, machine identifiers, credentials, tokens, or sensitive
-   full outputs.
+   full outputs. Run the [Pre-send check](#pre-send-check) on every prompt and
+   delivery before sending it, and pass the working directory as described in
+   [Working directory hand-off](#working-directory-hand-off).
 3. Dispatch only work required for the objective. Record out-of-scope discoveries
    as follow-up items. Executors never commit or push. Every model-calling Codex
    command (`exec`, `exec resume`, or `exec review`) must pass an explicit
@@ -456,9 +526,10 @@ and `references/usage-report.md` together.
    and views diffs itself.
 9. Record every dispatch, fix round, and review as one line in the controller's
    status record, using the model baseline's capability and `reviewedOn` value.
+   Record the pre-send result as `pre-send 0` or `pre-send manual`.
    Use the form
-   `<cli>-<model>-<task> | effort <effort> | C<capability> reviewed <reviewedOn> | <reason>`, for example
-   `codex-gpt-5.6-terra-S2-fix1 | effort medium | C2 reviewed <reviewedOn> | located root cause, one-line change`.
+   `<cli>-<model>-<task> | effort <effort> | C<capability> reviewed <reviewedOn> | pre-send <result> | <reason>`, for example
+   `codex-gpt-5.6-terra-S2-fix1 | effort medium | C2 reviewed <reviewedOn> | pre-send 0 | located root cause, one-line change`.
    Use the same `<cli>-<model>-<task>` text as the name of any background task and
    its output files, so the usage report can map each run back to its choice.
 
@@ -484,6 +555,6 @@ Acceptance: <required test command> passes; no other file changes.
 
 Classification: fix with a located root cause, so C2 or C3 `medium`; dispatch it to
 a new session (record line
-`codex-gpt-5.6-terra-S3-fix1 | effort medium | C2 reviewed <reviewedOn> | root cause located by controller`).
+`codex-gpt-5.6-terra-S3-fix1 | effort medium | C2 reviewed <reviewedOn> | pre-send 0 | root cause located by controller`).
 If two consecutive fix rounds of this Step had used C4, the self-check in
 `references/models.md` would require re-examining the spec first.

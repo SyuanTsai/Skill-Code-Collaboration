@@ -94,6 +94,9 @@ At the cumulative Jira Review, verify:
 
 ## Review Prompt Template
 
+Run the Pre-send check in [dispatch.md](dispatch.md) on the filled-in review prompt
+before launching each review CLI and on the review summary before delivery.
+
 ```text
 Perform a read-only review. Do not edit files, stage changes, commit, push,
 or perform any other mutation.
