@@ -99,7 +99,7 @@ begin {
 
     $rules = @(
         @{ Kind = 'windows-drive-path'; Pattern = [regex]'(?<![\p{L}\p{Nd}+.-])[A-Za-z]:[\\/]' }
-        @{ Kind = 'unc-path'; Pattern = [regex]'(?<!\\)\\\\[^\\/\s"''<>|:*?]+\\[^\\/\s"''<>|:*?]+' }
+        @{ Kind = 'unc-path'; Pattern = [regex]'(?<![\\:])(?:\\\\[^\\/\s"''<>|:*?]+\\[^\\/\s"''<>|:*?]+|\\\\\\\\[^\\/\s"''<>|:*?]+\\\\[^\\/\s"''<>|:*?]+)' }
         @{ Kind = 'posix-home-path'; Pattern = [regex]'(?<![\p{L}\p{Nd}_.~-])/(?:Users/[\p{L}\p{Nd}_.-]|home/[\p{L}\p{Nd}_.-]|root/)' }
         if (-not $NoEnvironmentTerm) {
             $environmentTerms = @(

@@ -49,8 +49,25 @@ Describe 'orchestrate-ai-delivery pre-send text check' {
         $findings[0].Kind | Should -BeExactly 'posix-home-path'
     }
 
+    It 'does not report escaped regular expressions or escape sequences as UNC paths' -ForEach @(
+        @{ Text = '"pattern": "\\d+\\.\\d+"' }
+        @{ Text = 'Use regex \\w+\\s+ here' }
+        @{ Text = '"msg": "a\\nb\\tc"' }
+        @{ Text = 'grep -E "\\bfoo\\b"' }
+    ) {
+        $findings = @(& $script:ScriptPath -Text $Text -NoEnvironmentTerm 6>$null)
+        $LASTEXITCODE | Should -Be 0
+        $findings.Count | Should -Be 0
+    }
     It 'detects a UNC path' {
         $findings = @(& $script:ScriptPath -Text '\\server\share\x' -NoEnvironmentTerm 6>$null)
+        $LASTEXITCODE | Should -Be 1
+        $findings.Count | Should -Be 1
+        $findings[0].Kind | Should -BeExactly 'unc-path'
+    }
+
+    It 'detects a JSON-escaped UNC path' {
+        $findings = @(& $script:ScriptPath -Text '"path": "\\\\build-server\\shared\\project"' -NoEnvironmentTerm 6>$null)
         $LASTEXITCODE | Should -Be 1
         $findings.Count | Should -Be 1
         $findings[0].Kind | Should -BeExactly 'unc-path'
