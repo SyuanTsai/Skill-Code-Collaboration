@@ -495,10 +495,9 @@ inspect that state.
    delivery before sending it, and pass the working directory as described in
    [Working directory hand-off](#working-directory-hand-off).
 3. Dispatch only work required for the objective. Record out-of-scope discoveries
-   as follow-up items. Executors never commit or push. Every model-calling Codex
-   command (`exec`, `exec resume`, or `exec review`) must pass an explicit
-   `-m <slug>`; never rely on the user's configuration file default. Commands
-   such as `codex debug models` that do not call a model are excluded.
+   as follow-up items. Executors never commit or push. Every model-calling Codex invocation, namely `exec`, `exec resume`, or
+   `exec review`, must pass an explicit `-m <slug>`; never rely on the user's
+   configuration file default. Commands such as `codex debug models` that do not call a model are excluded.
 4. Run independent Steps in parallel, each in its own Git worktree on its own
    branch. The default maximum is three concurrent executors. State the reason for
    any different limit. Before launch, check running executors, worktrees, and
