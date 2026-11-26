@@ -89,6 +89,7 @@ Report in the conversation:
 
 - Do not use budget fields, spending caps, or budget-based confirmations. Minimize unnecessary consumption instead.
 - Use repository-relative paths only.
+- Never copy, move, or read CLI credential or auth files, and never redirect an executor's CLI configuration or home directory through environment variables. CLI state an executor writes under its own home directory is normal; note it in the delivery. See the CLI credentials and home directories section of [references/dispatch.md](references/dispatch.md).
 - Keep work without a Jira issue in the conversation and skip Jira writes.
 - Never commit automatically.
 - Follow the repository's own instructions.
