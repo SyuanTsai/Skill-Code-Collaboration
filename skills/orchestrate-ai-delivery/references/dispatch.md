@@ -398,7 +398,7 @@ Check every Step, fix, resume, and review prompt before sending it to an
 external CLI or built-in sub agent. Use the same check in both modes and before
 posting any delivery, usage report, or Jira comment draft.
 
-Remove absolute drive or home paths (patterns `[A-Za-z]:\`, `/Users/<name>`,
+Remove absolute drive or home paths (patterns `C:\<path>`, `/Users/<name>`,
 and `/home/<name>`), UNC paths, the user's name, and machine identifiers.
 Replace paths with repository-relative paths or `<placeholder>` values. Inspect
 the final text for credentials and tokens and remove them before sending.
