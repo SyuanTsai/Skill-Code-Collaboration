@@ -68,6 +68,32 @@ Describe 'Code Collaboration consumer conformance' {
         }
     }
 
+    # Scenario: A fallback violates an acceptance criterion that independent re-review missed.
+    # Purpose: Require the controller to verify each criterion before declaring delivery complete.
+    It 'UnitT15_requires evidence for each acceptance criterion before the completion gate' {
+        $skill = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills/orchestrate-ai-delivery/SKILL.md')
+        $review = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills/orchestrate-ai-delivery/references/review.md')
+        $review = $review -replace '\s+', ' '
+
+        foreach ($sentence in @(
+            'Before applying an explicit user change to an acceptance criterion, record its decision source and exact scope.'
+            'Record each applicable acceptance criterion, its concrete evidence, and its result (`met`, `unmet`, or `unverified`) in the delivery.'
+            'Report zero valid findings only when every applicable acceptance criterion is verified as `met` and no other valid findings remain.'
+            'If any criterion is `unmet` or `unverified`, mark the delivery incomplete, list the remaining fixes or verification needed, and stop at the human gate.'
+        )) {
+            $skill.Contains($sentence, [StringComparison]::Ordinal) | Should -BeTrue -Because "the workflow must state '$sentence'"
+        }
+
+        foreach ($sentence in @(
+            'Record every `unmet` acceptance criterion as an open valid finding, including violations the controller finds that independent review or re-review did not report.'
+            'Keep it open even when the full test suite passes or a fallback preserves baseline behavior.'
+            'Mark the criterion `met` when the evidence confirms it, `unmet` when the evidence shows a violation, or `unverified` when evidence is insufficient.'
+            'Check normal, fallback, and failure paths against each applicable acceptance criterion.'
+        )) {
+            $review.Contains($sentence, [StringComparison]::Ordinal) | Should -BeTrue -Because "the review reference must state '$sentence'"
+        }
+    }
+
     It 'preserves the implementation prompt output contract' {
         $text = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills/write-implementation-prompt/SKILL.md')
         foreach ($heading in @('Changed files', 'Summary', 'Test commands', 'Test results', 'Blockers')) {
