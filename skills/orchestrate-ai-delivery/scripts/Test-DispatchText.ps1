@@ -166,11 +166,15 @@ begin {
             $source = "[（(]$space*(?:source|來源)$space*[:：]$space*[^\s()（）。，！？.!?][^()（）\r\n]*[）)]"
             $englishInputEnd = "(?=${space}*(?:$|[.,;:?!。，；：？！\p{Ps}\p{Pe}]|(?:must|should|still|will|can|remain|remains)\b))"
             $chineseInputEnd = "(?=${space}*(?:$|[.,;:?!。，；：？！\p{Ps}\p{Pe}]|在變更後|仍|應|須|可|(?:都|皆)(?:仍|應|須|可|必須)))"
-            $quotedPhrases = foreach ($pair in @('""', "''", '“”', "‘’", '``', '「」', '『』')) {
-                $open = [regex]::Escape([string]$pair[0])
-                $close = [regex]::Escape([string]$pair[1])
-                "$open(?<AllowedPhrase>$english|$chinese)$close"
-            }
+            $quotedBody = "(?<AllowedPhrase>$english|$chinese)"
+            $quotedPhrases = @(
+                # Straight double and single quotes, and Markdown backticks, close with the same character.
+                ('(?<Quote>[\x22\x27\x60])' + $quotedBody + '\k<Quote>')
+                ('\u201C' + $quotedBody + '\u201D')
+                ('\u2018' + $quotedBody + '\u2019')
+                ('「' + $quotedBody + '」')
+                ('『' + $quotedBody + '』')
+            )
             $quotedPhrase = '(?:' + ($quotedPhrases -join '|') + ')'
             # Ellipses and dotted abbreviations such as e.g. do not end the enclosing clause.
             $afterPeriod = "(?<!\.\.)(?<!\b[a-z]\.[a-z]\.)(?<=\.)$space+"
