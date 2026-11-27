@@ -66,7 +66,7 @@ Fix valid findings to zero, applying the explicit user decision rule below for b
 
 ### Finding Sources
 
-Apply this policy to findings from review CLIs and, after publication, failed PR CI and automated or human review comments on the PR. Return valid findings to the fix loop and repeat the pre-publication gate after fixing them.
+Apply this policy to findings from the controller, review CLIs, and, after publication, failed PR CI and automated or human review comments on the PR. Record every `unmet` acceptance criterion as an open valid finding, including violations the controller finds that independent review or re-review did not report. Keep it open even when the full test suite passes or a fallback preserves baseline behavior. For example, a fallback that preserves the old direct write can still violate a new atomic-write requirement. Return valid findings to the fix loop and repeat the pre-publication gate after fixing them.
 
 ### Follow-up Items
 
@@ -91,14 +91,13 @@ Re-review the fixed part and related regressions. Preserve the reviewer's abilit
 
 At the cumulative Jira Review, verify:
 
-- Every acceptance criterion against the completed behavior.
+- For each applicable acceptance criterion, check the completed behavior and record concrete evidence from the diff, tests, or a targeted check. Mark the criterion `met` when the evidence confirms it, `unmet` when the evidence shows a violation, or `unverified` when evidence is insufficient. For an `unverified` criterion, record what evidence is missing.
 - The cumulative diff, not only each isolated Step diff.
 - Cross-Step integration and interactions.
 - Baseline regressions: verify that inputs and environments that succeeded at the baseline still succeed, including file-name length after an added prefix or suffix, file permissions or attributes, and platform differences. Verify the scope and decision source for any specific regression the user explicitly accepted.
 - Behavior that the requirement states must remain unchanged is unchanged, including its pre-existing defects.
 - All required locally executable checks, run by the controller; remote-only CI remains in the post-publication finding loop.
 - Each mandatory synchronization rule in repository instructions, such as `AGENTS.md`, `CONTRIBUTING`, and CI workflows.
-- Every Jira acceptance criterion maps to a completed change; do not record an acceptance requirement as a follow-up. Follow-ups are only suggestions outside acceptance criteria.
 - Every required test execution ran more than zero tests, and its passed plus skipped count equals its total.
 - Select the test runner and version declared by the repository CI workflow, configuration, or tests. When a failure indicates incompatible runner semantics, verify that version before judging a finding.
 - Scope: no out-of-scope files changed.
@@ -136,6 +135,9 @@ the `Valid Findings` section above):
 Limit the review to the Step objective, Jira acceptance criteria, and Valid
 Findings conditions. Do not raise hardening, refactoring, style, optimization,
 or extra features that do not satisfy a Valid Findings condition.
+
+Check normal, fallback, and failure paths against each applicable acceptance
+criterion.
 
 Compare the change against the baseline and report functional regressions in
 scope. Check inputs and environments that succeeded before the change, including
