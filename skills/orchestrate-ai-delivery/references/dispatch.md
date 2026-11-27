@@ -438,8 +438,12 @@ checks wording patterns within each line. Sourced user decisions remain review
 background: for example, `The user already accepted the format (Source: approval)`
 or `使用者已接受格式（來源：授權留言）`. The check mechanically recognizes
 these contexts and does not verify the source. Adjacent descriptions of inputs
-accepted by the baseline also remain review context. Read the entire prompt to verify
-that the reviewer can report every valid finding in scope.
+accepted by the baseline also remain review context. A paired quotation can name
+an earlier label in an explicit instruction to keep findings open, such as
+`Report valid findings labeled “already accepted”.` A quotation can also name
+wording that the directive prohibits, such as `Never tell reviewers “do not re-raise” a valid finding.`
+The quotation check reads the directive across line wraps. Review the entire
+prompt to verify that the reviewer can report every valid finding in scope.
 Use `-AllowLiteral <string[]>` only for an exact documented sample the Step
 genuinely needs, and record why in the dispatch record. Prompt suppression
 findings are reported even inside an allowed literal.
