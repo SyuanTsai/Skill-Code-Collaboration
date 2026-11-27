@@ -52,7 +52,9 @@ In built-in sub agent mode, no executor CLI is required. Before the first dispat
 
 - Base the Plan, Steps, and Review on the Jira issue or on the Objective and Acceptance Criteria the controller writes in the Plan from the user's requirement. For Jira work, comments and handoffs are supplementary. A comment explicitly marked authoritative overrides the description.
 - Map every change to the objective or an acceptance criterion.
-- Preserve progress: reviewer suggestions outside the agreed scope, including hardening, refactoring, style, and extra features, become follow-up items and do not stop delivery. A functional regression relative to the baseline is a valid finding and never a follow-up item.
+- Record reviewer suggestions outside the agreed scope, including hardening, refactoring, style, and extra features, as follow-up items and continue delivery.
+- A functional regression relative to the baseline remains a valid finding until it is fixed or the user explicitly accepts that specific regression. If the requirements cannot all be met, disclose the blocker, keep the delivery incomplete, and stop at the human gate. Record the scope and decision source only when the user explicitly accepts the specific regression.
+- Keep re-review scoped to the fix and related regressions. Let reviewers report every valid finding in scope, including recurring findings. When an explicit user decision applies, cite its source as scope context and preserve the reviewer's ability to raise findings.
 - When the requirement states that behavior must remain unchanged, never modify that behavior; if a pre-existing defect is found in it, preserve the original behavior, record it as a follow-up item, and ask the user to decide.
 - Review and findings occur after implementation.
 - Define pre-publication required checks as tests named by the work source plus affected CI tests reproducible locally, such as licensing or inventory tests for new tracked files. The controller runs them, selects the repository-declared runner version, and confirms every execution ran more than zero tests. Remote-only CI belongs to the post-publication loop.
