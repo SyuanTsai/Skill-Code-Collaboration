@@ -45,7 +45,7 @@ Only when neither a cross-family nor same-family reviewer can run may the contro
 
 ### Valid Findings
 
-Fix valid findings to zero. A finding is valid when it shows one of these conditions:
+Fix valid findings to zero, applying the explicit user decision rule below for baseline regressions. A finding is valid when it shows one of these conditions:
 
 - The objective is not achieved.
 - An acceptance criterion is not met.
@@ -60,7 +60,8 @@ Fix valid findings to zero. A finding is valid when it shows one of these condit
 ### Unchanged Behavior and Baseline Regressions
 
 - When the requirement states that behavior must remain unchanged, do not modify that behavior. If a pre-existing defect is found in it, preserve the original behavior, record the defect as a follow-up item, and ask the user to decide.
-- A functional regression relative to the baseline is a valid finding and must be fixed, even when the controller's own change introduced it. Never downgrade it to a follow-up item.
+- A functional regression relative to the baseline remains a valid finding until it is fixed or the user explicitly accepts that specific regression, even when the controller's own change introduced it. Never downgrade it to a follow-up item.
+- If the requirements cannot all be met, disclose the blocker, keep the delivery incomplete, and stop at the human gate for the user's decision. Record the affected scope and decision source only after the user explicitly accepts that specific regression.
 - Only suggestions such as hardening or refactoring that do not satisfy a Valid Findings condition become follow-up items.
 
 ### Finding Sources
@@ -84,7 +85,7 @@ Collect all findings from one review round before dispatching fixes once. Merge 
 
 Before dispatching a fix, the controller confirms each valid finding against the code, locates its root cause, and writes the exact change into the fix prompt, with a regression test when one applies or otherwise the validation command or inspection that proves the fix. Never forward a finding or failure log to an executor with an open-ended request to diagnose it. Select the fix model with the work-type tiers in [models.md](models.md).
 
-Re-review the fixed part and related regressions. Treat new suggestions about unchanged code as follow-up items when they do not affect acceptance criteria.
+Re-review the fixed part and related regressions. Preserve the reviewer's ability to report every valid finding within that scope, including findings that recur. A documented, explicit user decision may give the reviewer scope context when cited with its source. Keep directions to omit valid findings out of every review prompt. Treat new suggestions about unchanged code as follow-up items when they do not affect acceptance criteria.
 
 ## Jira Review Checklist
 
@@ -93,7 +94,7 @@ At the cumulative Jira Review, verify:
 - Every acceptance criterion against the completed behavior.
 - The cumulative diff, not only each isolated Step diff.
 - Cross-Step integration and interactions.
-- Baseline regressions: every input or environment that succeeded at the baseline, such as a file-name length after an added prefix or suffix, file permissions or attributes, and platform differences, still succeeds after the change.
+- Baseline regressions: verify that inputs and environments that succeeded at the baseline still succeed, including file-name length after an added prefix or suffix, file permissions or attributes, and platform differences. Verify the scope and decision source for any specific regression the user explicitly accepted.
 - Behavior that the requirement states must remain unchanged is unchanged, including its pre-existing defects.
 - All required locally executable checks, run by the controller; remote-only CI remains in the post-publication finding loop.
 - Each mandatory synchronization rule in repository instructions, such as `AGENTS.md`, `CONTRIBUTING`, and CI workflows.
@@ -106,7 +107,8 @@ At the cumulative Jira Review, verify:
 ## Review Prompt Template
 
 Run the Pre-send check in [dispatch.md](dispatch.md) on the filled-in review prompt
-before launching each review CLI and on the review summary before delivery.
+with `-Prompt` before launching each review CLI. Check the review summary before
+delivery using the report command.
 
 ```text
 Perform a read-only review. Do not edit files, stage changes, commit, push,
@@ -135,10 +137,13 @@ Limit the review to the Step objective, Jira acceptance criteria, and Valid
 Findings conditions. Do not raise hardening, refactoring, style, optimization,
 or extra features that do not satisfy a Valid Findings condition.
 
-Check for regressions relative to the baseline: inputs or environments that
-succeeded before the change, such as file-name length, permissions, or platform
-differences, must still succeed. Also check that behavior the requirement states
-must remain unchanged was not modified, even to fix a pre-existing defect.
+Compare the change against the baseline and report functional regressions in
+scope. Check inputs and environments that succeeded before the change, including
+file-name length, permissions, and platform differences. Use any explicit user
+decision with a cited source to interpret the scope. Report every valid finding
+within scope, including any finding that recurs in re-review. Also check that
+behavior the requirement states must remain unchanged was not modified, even
+to fix a pre-existing defect.
 
 For every valid finding, cite the applicable Valid Findings condition, the
 repository-relative file and line, and concrete evidence. If there are no valid
@@ -151,5 +156,7 @@ Do not include local absolute paths or credentials in the output.
 
 In the delivery review summary, record each reviewer and model, every finding,
 the decision (`valid` or `follow-up`), and the reason for that decision.
+For a specific baseline regression the user explicitly accepts, also record the
+scope and source of that decision.
 When a review CLI reports all-zero or missing usage, record usage as unavailable,
 not as zero.

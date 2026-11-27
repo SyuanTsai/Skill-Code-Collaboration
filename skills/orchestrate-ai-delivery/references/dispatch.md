@@ -394,9 +394,9 @@ and `references/usage-report.md` together.
 
 ## Pre-send check
 
-Check every Step, fix, resume, and review prompt before sending it to an
-external CLI or built-in sub agent. Use the same check in both modes and before
-posting any delivery, usage report, or Jira comment draft.
+Use `-Prompt` to check every Step, fix, resume, and review prompt before sending
+it to an external CLI or built-in sub agent. Check delivery, usage report, and
+Jira comment drafts before posting them, using the command for drafts below.
 
 Remove absolute drive or home paths (patterns `C:\<path>`, `/Users/<name>`,
 and `/home/<name>`), UNC paths, the user's name, and machine identifiers.
@@ -408,14 +408,20 @@ command below from the repository root. `<skill-dir>` is the installed
 `orchestrate-ai-delivery` Skill directory.
 
 ```text
-pwsh -NoProfile -File <skill-dir>/scripts/Test-DispatchText.ps1 -Path <prompt-file>
+pwsh -NoProfile -File <skill-dir>/scripts/Test-DispatchText.ps1 -Prompt -Path <prompt-file>
 ```
 
-With `pwsh -File`, pass one prompt file per run and run the check once for each
-file. `-ForbiddenTerm` also accepts a comma-joined list such as
-`-ForbiddenTerm name1,name2`.
+For a delivery, usage report, or Jira comment draft, run:
+
+```text
+pwsh -NoProfile -File <skill-dir>/scripts/Test-DispatchText.ps1 -Path <draft-file>
+```
+
+With `pwsh -File`, pass one file per run and run the check once for each file.
+`-ForbiddenTerm` also accepts a comma-joined list such as `-ForbiddenTerm name1,name2`.
 For a short built-in sub-agent prompt, invoke
-the script in PowerShell with `-Text $prompt` or pipe the string to the script.
+the script in PowerShell with `-Prompt -Text $prompt` or pipe the string to the
+script with `-Prompt`.
 Check the exact string passed to the sub-agent tool. Check only the text the
 executor or reader receives. Launch arguments such as the prompt-file and
 usage-file paths are outside the check.
@@ -426,12 +432,25 @@ home paths (including `/root/`), and the current user name, machine name, and
 home directory. `-NoEnvironmentTerm` skips the automatic terms. Add
 controller-known names such as the Git author name with
 `-ForbiddenTerm <string[]>`, which matches literal terms case-insensitively.
+With `-Prompt`, the script also reports common English and Traditional Chinese
+wording that can suppress review findings as `review-suppression`. The script
+checks wording patterns within each line. Sourced user decisions remain review
+background: for example, `The user already accepted the format (Source: approval)`
+or `使用者已接受格式（來源：授權留言）`. The check mechanically recognizes
+these contexts and does not verify the source. Adjacent descriptions of inputs
+accepted by the baseline also remain review context. Read the entire prompt to verify
+that the reviewer can report every valid finding in scope.
 Use `-AllowLiteral <string[]>` only for an exact documented sample the Step
-genuinely needs, and record why in the dispatch record.
+genuinely needs, and record why in the dispatch record. Prompt suppression
+findings are reported even inside an allowed literal.
 
 Send only on exit code 0. On exit code 1, use the log-safe findings (`Source`,
-`Line`, `Column`, `Kind` only) to rewrite the reported lines with relative paths
-or placeholders and rerun the check.
+`Line`, `Column`, `Kind` only) to find and revise the reported lines. Replace
+local identifiers with relative paths or placeholders as appropriate. Rewrite
+suppression wording to preserve normal review scope and let reviewers report
+every valid finding, including recurring findings. Cite the source of any
+explicit user decision included as scope context. Rerun the check on the exact
+revised text.
 A missing file is an error. Never send on a non-zero result.
 The script runs on PowerShell 7 on Windows, Linux, and macOS, and on Windows
 PowerShell 5.1. If `pwsh` is unavailable, check manually against the same

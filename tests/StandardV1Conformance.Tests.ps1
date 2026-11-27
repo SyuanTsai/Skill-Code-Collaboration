@@ -37,17 +37,21 @@ Describe 'Code Collaboration consumer conformance' {
         $skill.Contains('CLI state an executor writes under its own home directory is normal; note it in the delivery.', [StringComparison]::Ordinal) | Should -BeTrue
     }
 
-    It 'preserves the unchanged-behavior and baseline-regression finding policy' {
+    # Scenario: The finding policy covers unchanged behavior, baseline regressions, and re-review.
+    # Purpose: Preserve explicit user decisions and all valid findings through review.
+    It 'UnitT10_preserves the unchanged-behavior and baseline-regression finding policy' {
         $review = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills/orchestrate-ai-delivery/references/review.md')
         foreach ($sentence in @(
             '### Unchanged Behavior and Baseline Regressions'
             'The change regresses behavior relative to the baseline: an input or environment that succeeded before the change, such as a file-name length, a permission, or a platform difference, now fails.'
             'The change modifies behavior that the requirement states must remain unchanged.'
             'When the requirement states that behavior must remain unchanged, do not modify that behavior. If a pre-existing defect is found in it, preserve the original behavior, record the defect as a follow-up item, and ask the user to decide.'
-            'A functional regression relative to the baseline is a valid finding and must be fixed, even when the controller''s own change introduced it. Never downgrade it to a follow-up item.'
+            'A functional regression relative to the baseline remains a valid finding until it is fixed or the user explicitly accepts that specific regression, even when the controller''s own change introduced it. Never downgrade it to a follow-up item.'
+            'If the requirements cannot all be met, disclose the blocker, keep the delivery incomplete, and stop at the human gate for the user''s decision. Record the affected scope and decision source only after the user explicitly accepts that specific regression.'
+            'Re-review the fixed part and related regressions. Preserve the reviewer''s ability to report every valid finding within that scope, including findings that recur. A documented, explicit user decision may give the reviewer scope context when cited with its source. Keep directions to omit valid findings out of every review prompt.'
             'Only suggestions such as hardening or refactoring that do not satisfy a Valid Findings condition become follow-up items.'
             'Pre-existing defects in behavior that the requirement states must remain unchanged; preserve the original behavior and ask the user to decide.'
-            'Baseline regressions: every input or environment that succeeded at the baseline, such as a file-name length after an added prefix or suffix, file permissions or attributes, and platform differences, still succeeds after the change.'
+            'Baseline regressions: verify that inputs and environments that succeeded at the baseline still succeed, including file-name length after an added prefix or suffix, file permissions or attributes, and platform differences. Verify the scope and decision source for any specific regression the user explicitly accepted.'
             'Behavior that the requirement states must remain unchanged is unchanged, including its pre-existing defects.'
         )) {
             $review.Contains($sentence, [StringComparison]::Ordinal) | Should -BeTrue
@@ -55,7 +59,8 @@ Describe 'Code Collaboration consumer conformance' {
 
         $skill = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills/orchestrate-ai-delivery/SKILL.md')
         foreach ($sentence in @(
-            'A functional regression relative to the baseline is a valid finding and never a follow-up item.'
+            'A functional regression relative to the baseline remains a valid finding until it is fixed or the user explicitly accepts that specific regression. If the requirements cannot all be met, disclose the blocker, keep the delivery incomplete, and stop at the human gate. Record the scope and decision source only when the user explicitly accepts the specific regression.'
+            'Keep re-review scoped to the fix and related regressions. Let reviewers report every valid finding in scope, including recurring findings. When an explicit user decision applies, cite its source as scope context and preserve the reviewer''s ability to raise findings.'
             'When the requirement states that behavior must remain unchanged, never modify that behavior; if a pre-existing defect is found in it, preserve the original behavior, record it as a follow-up item, and ask the user to decide.'
             'A regression relative to the baseline is valid even when the controller''s own change introduced it.'
         )) {
