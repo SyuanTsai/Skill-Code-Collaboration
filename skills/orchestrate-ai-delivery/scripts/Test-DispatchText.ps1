@@ -20,6 +20,8 @@ checked separately and uses the source label <text>.
 .PARAMETER Prompt
 Enables pattern checks for review-suppression wording in executor and review
 prompts. Omit this switch when checking delivery, usage, or Jira comment drafts.
+The check recognizes quoted examples in explicit instructions to preserve
+findings or to prohibit suppression.
 
 .PARAMETER ForbiddenTerm
 Additional literal terms to check for, ignoring case. Comma-joined values are
@@ -28,7 +30,7 @@ split, so -ForbiddenTerm a,b works with pwsh -File.
 .PARAMETER AllowLiteral
 Case-sensitive literal examples to allow. A finding is suppressed when its
 entire match is contained in one occurrence of an allowed literal on that line.
-Review-suppression findings are always reported in prompt mode.
+This parameter does not allow review-suppression wording in prompt mode.
 
 .PARAMETER NoEnvironmentTerm
 Skips checks for the local user name, machine name, and home directory.
@@ -75,8 +77,21 @@ begin {
     function Find-DispatchTextMatch {
         param([string]$Source, [string]$Content)
 
+        $Content = $Content.Replace("`r`n", "`n")
+        $quotedStarts = [System.Collections.Generic.HashSet[int]]::new()
+        if ($Prompt) {
+            # Fold line wraps while keeping paragraph and list boundaries and preserving every index.
+            $quoteContext = [regex]::Replace($Content, '\n(?![\p{Zs}\t]*(?:\n|(?:[-*+]|\d+[.)])[\p{Zs}\t]+))', ' ')
+            foreach ($occurrence in $quotedContextPattern.Matches($quoteContext)) {
+                foreach ($phrase in $occurrence.Groups['AllowedPhrase'].Captures) {
+                    [void]$quotedStarts.Add($phrase.Index)
+                }
+            }
+        }
+
         $lineNumber = 0
-        foreach ($line in ($Content -split '\r?\n')) {
+        $lineOffset = 0
+        foreach ($line in ($Content -split '\n')) {
             $lineNumber++
             $allowedSpans = foreach ($pattern in $allowPatterns) {
                 foreach ($occurrence in $pattern.Matches($line)) {
@@ -88,11 +103,12 @@ begin {
                 $ruleAllowedSpans = $allowedSpans
                 if ($rule['SkipAllowLiteral']) {
                     $ruleAllowedSpans = foreach ($occurrence in $rule.ContextAllowPattern.Matches($line)) {
-                        $occurrence.Groups['Acceptance']
+                        $occurrence.Groups['AllowedPhrase']
                     }
                 }
 
                 foreach ($match in $rule.Pattern.Matches($line)) {
+                    if ($rule['SkipAllowLiteral'] -and $quotedStarts.Contains($lineOffset + $match.Index)) { continue }
                     $allowed = $false
                     foreach ($span in $ruleAllowedSpans) {
                         if ($match.Index -ge $span.Index -and
@@ -111,6 +127,7 @@ begin {
                     }
                 }
             }
+            $lineOffset += $line.Length + 1
         }
     }
 
@@ -137,7 +154,8 @@ begin {
         if ($Prompt) {
             $space = '[\p{Zs}\t]'
             $hyphen = '[-\u00AD\u2010-\u2015\u2212\uFE63\uFF0D]'
-            $english = "\b(?:do$space+not$space+re$space*(?:$hyphen$space*)?raise|already$space+accepted|known$space+and$space+accepted)\b"
+            $noReRaise = "\bdo$space+not$space+re$space*(?:$hyphen$space*)?raise\b"
+            $english = "(?:$noReRaise|\b(?:already$space+accepted|known$space+and$space+accepted)\b)"
             $chinese = "(?:不$space*要$space*再$space*提|已$space*(?:知$space*並$space*)?接$space*受)"
             $options = [System.Text.RegularExpressions.RegexOptions]'IgnoreCase, CultureInvariant'
             # Bound both the subject and source to this sentence. Only the acceptance
@@ -148,12 +166,56 @@ begin {
             $source = "[（(]$space*(?:source|來源)$space*[:：]$space*[^\s()（）。，！？.!?][^()（）\r\n]*[）)]"
             $englishInputEnd = "(?=${space}*(?:$|[.,;:?!。，；：？！\p{Ps}\p{Pe}]|(?:must|should|still|will|can|remain|remains)\b))"
             $chineseInputEnd = "(?=${space}*(?:$|[.,;:?!。，；：？！\p{Ps}\p{Pe}]|在變更後|仍|應|須|可|(?:都|皆)(?:仍|應|須|可|必須)))"
-            $context = "$userSubject(?<Acceptance>$acceptance)(?=${space}*(?:[^\s。！？.!?()（）]$sentenceText*)?${space}*$source)|\b(?:the$space+)?baseline(?:$space+version)?$space+(?<Acceptance>already$space+accepted)\b$space+(?:(?:these|those|the|valid)$space+)*inputs?\b$englishInputEnd|\binputs$space+(?:the$space+)?baseline(?:$space+version)?$space+(?<Acceptance>already$space+accepted)\b$englishInputEnd|基準(?:版本)?$space*(?<Acceptance>已$space*接$space*受)$space*的$space*輸入$chineseInputEnd"
+            $quotedBody = "(?<AllowedPhrase>$english|$chinese)"
+            $quotedPhrases = @(
+                # Straight double and single quotes, and Markdown backticks, close with the same character.
+                ('(?<Quote>[\x22\x27\x60])' + $quotedBody + '\k<Quote>')
+                ('\u201C' + $quotedBody + '\u201D')
+                ('\u2018' + $quotedBody + '\u2019')
+                ('「' + $quotedBody + '」')
+                ('『' + $quotedBody + '』')
+            )
+            $quotedPhrase = '(?:' + ($quotedPhrases -join '|') + ')'
+            # Ellipses and dotted abbreviations such as e.g. do not end the enclosing clause.
+            $afterPeriod = "(?<!\.\.)(?<!\b[a-z]\.[a-z]\.)(?<=\.)$space+"
+            $directiveStart = "(?:^|$afterPeriod|(?<=[!?。！？;；]))$space*(?:(?:[-*+]|\d+[.)])$space+)?"
+            # An explicit suppression phrase in the next clause will be checked separately.
+            $nextClause = "[,;，；][^\n.!?。！？;；]*?(?:$english|$chinese)"
+            $directiveEnd = "(?=$space*(?:$|\.(?!\.)|[!?。！？]|$nextClause))"
+            $englishLead = "(?:(?:please|always)$space+|(?:you|reviewers?)$space+(?:must|should)$space+)?"
+            $englishNegation = "(?:never|do$space+not)$space+"
+            $labeledEnglishFinding = "(?:(?:all|any|every|each|the|valid|recurring|unresolved|remaining|baseline)$space+)*(?:findings?|regressions?)$space+(?:that$space+(?:was|were)$space+)?(?:previously$space+)?(?:labell?ed|marked|described|tagged)$space+(?:as$space+)?"
+            $keepEnglish = "(?:report|retain|keep|preserve|re-raise|${englishNegation}(?:suppress|omit|skip|ignore|drop|hide))$space+$labeledEnglishFinding"
+            $englishQuotedLabels = "$quotedPhrase(?:$space+(?:and|or)$space+$quotedPhrase)*"
+            $keepEnglishTail = "(?:$space+in$space+the$space+(?:report|review)|$space+and$space+(?:keep|leave)$space+(?:it|them)$space+open(?:$space+pending$space+(?:a$space+)?user$space+decision)?)?"
+            $forbidReviewer = "$englishNegation(?:tell|instruct)$space+(?:the$space+)?reviewers?$space+(?:to$space+)?"
+            $forbidWording = "$englishNegation(?:say|write|use)$space+"
+            $forbidEnglishTail = "(?:$space+(?:(?:a|the|this|that|any)$space+)?(?:valid$space+)?(?:findings?|regressions?))?"
+            $chineseNegation = "(?:禁止|不得|不要|勿)$space*"
+            $keepChinese = "(?:請$space*)?(?:保留|回報|重新提出|提出|報告|${chineseNegation}(?:抑制|略過|隱藏))$space*(?:(?:任何|所有|每個|每項)$space*)?(?:(?:曾|先前)$space*)?被$space*(?:標記為|標成|標為|描述為)$space*"
+            $keepChineseTail = "(?:$space*的$space*(?:有效$space*)?(?:findings?\b|退化|問題|發現))?(?:$space*[,，]?$space*等待使用者決定)?"
+            $forbidChinese = "(?:請$space*)?$chineseNegation(?:對$space*審查(?:者|員)$space*(?:說|寫)|使用|寫出)$space*"
+            $contexts = @(
+                "$userSubject(?<AllowedPhrase>$acceptance)(?=${space}*(?:[^\s。！？.!?()（）]$sentenceText*)?${space}*$source)"
+                "\b(?:the$space+)?baseline(?:$space+version)?$space+(?<AllowedPhrase>already$space+accepted)\b$space+(?:(?:these|those|the|valid)$space+)*inputs?\b$englishInputEnd"
+                "\binputs$space+(?:the$space+)?baseline(?:$space+version)?$space+(?<AllowedPhrase>already$space+accepted)\b$englishInputEnd"
+                "基準(?:版本)?$space*(?<AllowedPhrase>已$space*接$space*受)$space*的$space*輸入$chineseInputEnd"
+            )
+            $quoteContexts = @(
+                "$directiveStart$englishLead$keepEnglish$englishQuotedLabels$keepEnglishTail$directiveEnd"
+                "$directiveStart$englishLead(?:$forbidReviewer|$forbidWording)$quotedPhrase$directiveEnd"
+                # A finding can follow a quoted imperative as its object. An acceptance label
+                # before a finding is an adjective, so leave it to the suppression check.
+                "$directiveStart$englishLead$forbidReviewer(?=.$noReRaise)$quotedPhrase$forbidEnglishTail$directiveEnd"
+                "$directiveStart$keepChinese$quotedPhrase$keepChineseTail$directiveEnd"
+                "$directiveStart$forbidChinese$quotedPhrase$directiveEnd"
+            )
+            $quotedContextPattern = [regex]::new(($quoteContexts -join '|'), ($options -bor [System.Text.RegularExpressions.RegexOptions]::Multiline))
             @{
                 Kind = 'review-suppression'
                 Pattern = [regex]::new("$english|$chinese", $options)
                 SkipAllowLiteral = $true
-                ContextAllowPattern = [regex]::new($context, $options)
+                ContextAllowPattern = [regex]::new(($contexts -join '|'), $options)
             }
         }
         foreach ($term in $ForbiddenTerm) {
