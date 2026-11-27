@@ -74,6 +74,7 @@ Describe 'Code Collaboration consumer conformance' {
         $skill = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills/orchestrate-ai-delivery/SKILL.md')
         $review = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills/orchestrate-ai-delivery/references/review.md')
         $review = $review -replace '\s+', ' '
+        $skill.Contains('[cumulative review checklist](references/review.md)', [StringComparison]::Ordinal) | Should -BeTrue -Because 'the cumulative checklist link must resolve as a file reference'
 
         foreach ($sentence in @(
             'Before applying an explicit user change to an acceptance criterion, record its decision source and exact scope.'
